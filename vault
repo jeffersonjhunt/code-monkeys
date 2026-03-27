@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+#
+# vault — encrypt/decrypt secrets at rest
+#
+# Usage: vault lock | unlock | rekey | status
+#
+# Manages: ssh/ (directory), env (file), aws/ (directory)
+# Encrypted to: .ssh.vault, .env.vault, and .aws.vault
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Each entry: "source:vault_file:type" (type is dir or file)
+VAULTS=(
+  "ssh:.ssh.vault:dir"
+  "env:.env.vault:file"
+  "aws:.aws.vault:dir"
+)
+
+OPENSSL_ARGS=(-aes-256-cbc -salt -pbkdf2 -iter 600000)
+
+usage() {
+  cat <<EOF
+Usage: vault <command>
+
+Commands:
+  unlock    Decrypt all vaults
+  lock      Encrypt all vaults and remove plaintext
+  rekey     Re-encrypt all vaults with a new password
+  status    Show lock/unlock state of each vault
+EOF
+}
+
+read_password() {
+  local prompt="${1:-Enter vault password:}"
+  local pass
+  if [[ -t 0 ]]; then
+    read -rs -p "$prompt " pass </dev/tty
+    echo "" >/dev/tty
+  else
+    read -r pass
+  fi
+  echo "$pass"
+}
+
+do_unlock() {
+  local password
+  password=$(read_password "Enter vault password:")
+
+  local failed=false
+  for entry in "${VAULTS[@]}"; do
+    local source="${entry%%:*}"
+    local rest="${entry#*:}"
+    local vault_file="${rest%%:*}"
+    local type="${rest##*:}"
+    local vault_path="${SCRIPT_DIR}/${vault_file}"
+    local source_path="${SCRIPT_DIR}/${source}"
+
+    if [[ "$type" == "dir" && -d "$source_path" ]] || [[ "$type" == "file" && -f "$source_path" ]]; then
+      echo "  skip: ${source} already exists"
+      continue
+    fi
+
+    if [[ ! -f "$vault_path" ]]; then
+      echo "  skip: ${vault_file} not found"
+      continue
+    fi
+
+    if ! openssl enc -d "${OPENSSL_ARGS[@]}" -pass pass:"$password" -in "$vault_path" | tar xf - -C "$SCRIPT_DIR"; then
+      echo "  FAILED: ${source}"
+      failed=true
+      continue
+    fi
+
+    if [[ "$type" == "dir" ]]; then
+      chmod 700 "$source_path"
+      find "$source_path" -type f -exec chmod 600 {} +
+      echo "  unlocked: ${source}/ ($(find "$source_path" -type f | wc -l | tr -d ' ') files)"
+    else
+      chmod 600 "$source_path"
+      echo "  unlocked: ${source}"
+    fi
+  done
+
+  $failed && exit 1
+  return 0
+}
+
+do_lock() {
+  local password
+  password=$(read_password "Enter vault password:")
+  local verify
+  verify=$(read_password "Verify password:")
+
+  if [[ "$password" != "$verify" ]]; then
+    echo "Passwords do not match."
+    exit 1
+  fi
+
+  local found=false
+  for entry in "${VAULTS[@]}"; do
+    local source="${entry%%:*}"
+    local rest="${entry#*:}"
+    local vault_file="${rest%%:*}"
+    local type="${rest##*:}"
+    local vault_path="${SCRIPT_DIR}/${vault_file}"
+    local source_path="${SCRIPT_DIR}/${source}"
+
+    if [[ "$type" == "dir" && ! -d "$source_path" ]] || [[ "$type" == "file" && ! -f "$source_path" ]]; then
+      echo "  skip: ${source} not found"
+      continue
+    fi
+
+    found=true
+    tar cf - -C "$SCRIPT_DIR" "$source" | openssl enc "${OPENSSL_ARGS[@]}" -pass pass:"$password" -out "$vault_path"
+
+    if [[ "$type" == "dir" ]]; then
+      rm -rf "$source_path"
+    else
+      rm -f "$source_path"
+    fi
+    echo "  locked: ${source} → ${vault_file}"
+  done
+
+  if ! $found; then
+    echo "Nothing to lock."
+    exit 1
+  fi
+}
+
+do_rekey() {
+  local old_password
+  old_password=$(read_password "Enter current password:")
+  local new_password
+  new_password=$(read_password "Enter new password:")
+  local verify
+  verify=$(read_password "Verify new password:")
+
+  if [[ "$new_password" != "$verify" ]]; then
+    echo "Passwords do not match."
+    exit 1
+  fi
+
+  local tmp
+  tmp=$(mktemp)
+  trap 'rm -f "$tmp"' EXIT
+
+  for entry in "${VAULTS[@]}"; do
+    local source="${entry%%:*}"
+    local rest="${entry#*:}"
+    local vault_file="${rest%%:*}"
+    local vault_path="${SCRIPT_DIR}/${vault_file}"
+
+    if [[ ! -f "$vault_path" ]]; then
+      echo "  skip: ${vault_file} not found"
+      continue
+    fi
+
+    openssl enc -d "${OPENSSL_ARGS[@]}" -pass pass:"$old_password" -in "$vault_path" -out "$tmp"
+    openssl enc "${OPENSSL_ARGS[@]}" -pass pass:"$new_password" -in "$tmp" -out "$vault_path"
+    echo "  rekeyed: ${vault_file}"
+  done
+}
+
+do_status() {
+  for entry in "${VAULTS[@]}"; do
+    local source="${entry%%:*}"
+    local rest="${entry#*:}"
+    local vault_file="${rest%%:*}"
+    local type="${rest##*:}"
+    local vault_path="${SCRIPT_DIR}/${vault_file}"
+    local source_path="${SCRIPT_DIR}/${source}"
+
+    local has_vault=false
+    local has_source=false
+    [[ -f "$vault_path" ]] && has_vault=true
+    if [[ "$type" == "dir" ]]; then
+      [[ -d "$source_path" ]] && has_source=true
+    else
+      [[ -f "$source_path" ]] && has_source=true
+    fi
+
+    if $has_source && $has_vault; then
+      printf "  %-8s UNLOCKED\n" "${source}"
+    elif $has_source; then
+      printf "  %-8s UNLOCKED (no vault file — run 'vault lock' to create)\n" "${source}"
+    elif $has_vault; then
+      printf "  %-8s LOCKED\n" "${source}"
+    else
+      printf "  %-8s NO VAULT\n" "${source}"
+    fi
+  done
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+case "$1" in
+  unlock) do_unlock ;;
+  lock)   do_lock ;;
+  rekey)  do_rekey ;;
+  status) do_status ;;
+  *)      usage; exit 1 ;;
+esac

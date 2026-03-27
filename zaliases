@@ -1,0 +1,31 @@
+
+alias probe='docker run --rm minion:latest nmap -A -O -T4'
+
+alias vi=vim
+alias code='/Applications/Visual\ Studio\ Code.app/Contents/Resources/app/bin/code'
+alias mdo='docker run --rm -v .:/data minion'
+
+alias pshell=pwsh
+alias powershell=pwsh
+
+alias git.all='for repo in $(find . -maxdepth 1 -type d | tail -n+2); do cd ${repo}; echo processing ${repo}; git pull; cd ..; done'
+alias git.history='git log --graph --decorate --pretty=oneline --abbrev-commit master origin/master'
+alias git.sync='git fetch upstream; git checkout master; git merge upstream/master'
+
+alias dps='docker ps --format "table {{.Names}}\t{{.ID}}\t{{.Ports}}\t{{.Status}}"'
+alias dpi='docker images'
+alias drm='docker rmi $(dpi | grep none | cut -w -f 3)'
+alias k='kubectl'
+
+alias utmctl="/Applications/UTM.app/Contents/MacOS/utmctl"
+
+alias ocd='sudo apt update -y && sudo apt full-upgrade -y && sudo apt autoclean -y && sudo apt autoremove -y'
+alias reset-spotlight='sudo rm -R /System/Volumes/Data/Spotlight-V100 && sudo mdutil -E /'
+
+alias errors='journalctl -r -p 0..3'
+
+alias cls='clear; ls'
+
+alias get_idf='source ${HOME}/Source/3rd_Party/esp-idf/export.sh'
+
+alias hf_login='hf auth login --token $HF_TOKEN --add-to-git-credential'

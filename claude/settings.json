@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(make *)",
+      "Bash(docker build*)",
+      "Bash(docker buildx*)",
+      "Bash(docker images*)",
+      "Bash(docker ps*)"
+    ]
+  }
+}

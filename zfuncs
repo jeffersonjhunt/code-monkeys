@@ -1,0 +1,357 @@
+#
+# Init
+#
+
+local flist=()
+flist+=(_ssh.intern)
+flist+=(ssh.ds)
+flist+=(code-here)
+flist+=(code-mac)
+flist+=(code-linux)
+flist+=(code-win)
+flist+=(which-os)
+flist+=(tree)
+flist+=(pmd)
+flist+=(tad)
+flist+=(clamscan)
+flist+=(primate)
+
+function() {
+  for fname in ${flist}; do
+    if typeset -f ${fname} > /dev/null; then
+      echo there is a ${fname} function
+    fi
+  done
+}
+
+
+#
+# Functions
+#
+
+# starts a primate container with a persistent home volume
+function primate() {
+
+  local __NO_WORKSPACE=false
+  local __args=()
+  for arg in "$@"; do
+    if [[ "$arg" == "--no-workspace" ]]; then
+      __NO_WORKSPACE=true
+    else
+      __args+=("$arg")
+    fi
+  done
+  set -- "${__args[@]}"
+
+  if [[ "$#" -lt 1 ]]; then
+    echo "Usage: primate <image> [--no-workspace] [docker args...]"
+    return 1
+  fi
+
+  local __IMAGE=$1
+  shift
+
+  local __WORKSPACE_MOUNT=()
+  if [[ "$__NO_WORKSPACE" == false ]]; then
+    __WORKSPACE_MOUNT=(--volume "$(pwd):/home/codemonkey/workspace")
+  fi
+
+  local __ENV_FILE="$(dirname $(readlink -f ${(%):-%x}))/env"
+  local __ENV_FILE_MOUNT=()
+  if [[ -f "$__ENV_FILE" ]]; then
+    __ENV_FILE_MOUNT=(--env-file "$__ENV_FILE")
+  fi
+
+  echo "starting ${__IMAGE} with volume ${__IMAGE}-home"
+
+  local __CMD=(zsh)
+  local __ENTRYPOINT=$(docker inspect --format='{{len .Config.Entrypoint}}' "${__IMAGE}:latest" 2>/dev/null)
+  if [[ "$__ENTRYPOINT" -gt 0 ]]; then
+    __CMD=()
+  fi
+
+  local __GPU_OPTS=()
+  if [[ "$(uname -r)" == *-nvidia ]]; then
+    __GPU_OPTS=(--gpus all)
+  fi
+
+  local __PORT_OPTS=()
+  local __PORTS=$(docker inspect --format='{{range $p, $_ := .Config.ExposedPorts}}{{$p}} {{end}}' "${__IMAGE}:latest" 2>/dev/null)
+  for __PORT in ${=__PORTS}; do
+    __PORT_OPTS+=(-p "${__PORT%/*}:${__PORT%/*}")
+  done
+
+  docker run --rm -it \
+    --hostname "${__IMAGE}" \
+    "${__ENV_FILE_MOUNT[@]}" \
+    "${__GPU_OPTS[@]}" \
+    "${__PORT_OPTS[@]}" \
+    --volume ~/.ssh:/home/codemonkey/.ssh \
+    --volume ~/.aws:/home/codemonkey/.aws \
+    "${__WORKSPACE_MOUNT[@]}" \
+    --volume ${__IMAGE}-home:/home/codemonkey \
+    --user=codemonkey:codemonkey \
+    $@ \
+    ${__IMAGE} "${__CMD[@]}"
+}
+
+function _primate() {
+  local known_primates=(codemonkey minion embedded miniforge3 claude opencode llama-cpp-spark comfy-ui-spark lamp huggingface)
+  local local_images=(${(f)"$(docker images --format '{{.Repository}}' 2>/dev/null)"})
+  local available=()
+  for name in "${known_primates[@]}"; do
+    if (( ${local_images[(Ie)$name]} )); then
+      available+=("$name")
+    fi
+  done
+
+  case "$CURRENT" in
+    2) _describe 'primate image' available ;;
+    *) _values 'options' '--no-workspace[Do not mount the current directory as workspace]' ;;
+  esac
+}
+compdef _primate primate
+
+function primate-upgrade() {
+  if [[ "$#" -lt 1 ]]; then
+    echo "Usage: primate-upgrade <image> [image...]"
+    echo "       primate-upgrade --all"
+    return 1
+  fi
+
+  local __REPO="$(dirname $(readlink -f ${(%):-%x}))"
+  local __IMAGES=("$@")
+
+  if [[ "$1" == "--all" ]]; then
+    __IMAGES=()
+    local known=(codemonkey minion embedded miniforge3 claude opencode lamp huggingface)
+    for name in "${known[@]}"; do
+      if docker volume inspect "${name}-home" &>/dev/null; then
+        __IMAGES+=("$name")
+      fi
+    done
+    if [[ ${#__IMAGES[@]} -eq 0 ]]; then
+      echo "No primate home volumes found."
+      return 0
+    fi
+  fi
+
+  for __IMAGE in "${__IMAGES[@]}"; do
+    local __VOL="${__IMAGE}-home"
+    if ! docker volume inspect "$__VOL" &>/dev/null; then
+      echo "skip: volume ${__VOL} does not exist"
+      continue
+    fi
+
+    echo "upgrading ${__IMAGE}..."
+    docker run --rm \
+      --volume "${__REPO}:/opt/user-jhunt:ro" \
+      --volume "${__VOL}:/home/codemonkey" \
+      codemonkey:latest bash -c '
+        SRC=/opt/user-jhunt
+        HOME=/home/codemonkey
+
+        # dotfiles
+        cp "$SRC/zaliases"  "$HOME/.zaliases"
+        cp "$SRC/zbase"     "$HOME/.zbase"
+        cp "$SRC/zprofile"  "$HOME/.zprofile"
+        cp "$SRC/gitconfig" "$HOME/.gitconfig"
+        cp "$SRC/gitignore" "$HOME/.gitignore"
+        cp "$SRC/vimrc"     "$HOME/.vimrc"
+        cp "$SRC/toprc"     "$HOME/.toprc"
+        cp "$SRC/zshrc.template" "$HOME/.zshrc"
+        cp "$SRC/zfuncs"    "$HOME/.zfuncs"
+
+        # oh-my-zsh update
+        if [ -d "$HOME/.oh-my-zsh" ]; then
+          git -C "$HOME/.oh-my-zsh" pull --quiet 2>/dev/null || true
+          for plugin in zsh-autosuggestions zsh-completions zsh-syntax-highlighting; do
+            if [ -d "$HOME/.oh-my-zsh/custom/plugins/$plugin" ]; then
+              git -C "$HOME/.oh-my-zsh/custom/plugins/$plugin" pull --quiet 2>/dev/null || true
+            fi
+          done
+        fi
+
+        # oh-my-zsh theme
+        mkdir -p "$HOME/.oh-my-zsh/custom/themes"
+        cp "$SRC/jjh.zsh-theme" "$HOME/.oh-my-zsh/custom/themes/jjh.zsh-theme"
+
+        # claude config
+        if [ -d "$SRC/claude" ]; then
+          mkdir -p "$HOME/.claude/commands"
+          cp "$SRC/claude/settings.json" "$HOME/.claude/settings.json"
+          cp "$SRC/claude/commands/"* "$HOME/.claude/commands/" 2>/dev/null
+        fi
+
+        # fix ownership
+        chown -R codemonkey:codemonkey "$HOME"
+      '
+    echo "  done: ${__IMAGE}"
+  done
+}
+
+# Take A Dump (takes a java heapdump in a running container)
+function tad() {
+
+  if [[ "$#" -ne 1 ]]; then
+    echo "Usage: take-a-dump <target container name>"
+    return 1
+  fi
+  local _TARGET=$1
+
+  echo "Taking a dump of ${_TARGET}"
+
+  _PID=$(docker exec ${_TARGET} ps aux | grep java | awk '{print $2}')
+  if [[ -z ${_PID} ]]; then
+	  echo "unable to to find Java process"
+	  return 1
+  fi
+  echo "Found Java PID: ${_PID}"
+
+  _JDK=$(docker exec ${_TARGET} ps aux | grep java | awk '{print $11}' | sed 's/\(.*\)\/java/\1/g' )
+  if [[ -z ${_JDK} ]]; then
+	  echo "unable to find jmap"
+	  return 1
+  fi
+  echo "Found Java PID: ${_JDK}"
+
+  _DATE=$(date +"%s")
+  _FILENAME="${_TARGET}--heap-${_DATE}.hprof"
+  echo "Taking a heap dump of ${TARGET} with PID:${_PID} using ${_JDK}/jmap -dump:format=b,file=/dumps/${TARGET}-heap-${_DATE}.hprof ${_PID}"
+  docker exec ${_TARGET} $_JDK/jmap -dump:format=b,file=/dumps/${_TARGET}-heap-01.hprof $_PID
+
+  echo "dump taken ${_FILENAME}, check in host /tmp directory"
+}
+
+function which-os() {
+  local os=$(uname -a | awk '{print $1}')
+  if [[ "${os}" = "Darwin" ]]; then
+    echo -n "MacOS"
+  elif [[ "${os}" = "Linux" ]]; then
+    echo -n "Linux"
+  elif [[ "${os}" = "Win32" ]]; then
+    echo -n "WSL"
+  else 
+    return "Unknown"
+  fi
+}
+
+function code-mac() {
+  open -a XQuartz
+  xhost +localhost
+
+  if [[ $# = 0 ]]
+  then
+    open -a "Visual Studio Code"
+  else
+    [[ $1 = /* ]] && F="$1" || F="$PWD/${1#./}"
+    open -a "Visual Studio Code" --args "$F"
+  fi
+}
+
+function code-linux() {
+  if [[ $# = 0 ]]
+  then
+    code .
+  else
+    code $@
+  fi 
+}
+
+function code-win() {
+  # TODO
+}
+
+function code-here () {
+  local os=$(which-os)
+  if [[ "${os}" = "Linux" ]]; then
+    code-linux $@
+    return
+  elif [[ "${os}" = "MacOS" ]]; then
+    code-mac $@
+    return
+  fi
+}
+
+function tree () {
+  local os=$(which-os)
+  if [[ "${os}" != "MacOS" ]]; then
+    /usr/bin/tree $@
+    return
+  fi
+  if [[ -n $* ]]; then
+    if [[ $1 == /* ]]; then
+      _TARGET=$1
+    else
+      _TARGET=$(pwd)/$1
+    fi
+    docker run --rm -e _TARGET=${_TARGET} -v ${_TARGET}:/tmp minion bash -c 'echo ${_TARGET}; cd /tmp; tree | tail -n +2 '
+  else
+    local _TARGET=$(pwd)
+    docker run --rm -e _TARGET=${_TARGET} -v $(pwd):/tmp minion bash -c 'echo ${_TARGET}; cd /tmp; tree | tail -n +2 '
+  fi
+}
+
+function TAR () {
+  if [[ "$#" -ne 3 ]]; then
+    echo "Usage: TAR <args> <target> <source>"
+    return 1
+  fi
+
+  local _ARGS=$1
+  local _TARGET=$2
+  local _SOURCE=$3
+  local _DEST=$(pwd)
+
+  docker run --rm \
+    -e _ARGS=${_ARGS} \
+    -e _TARGET=${_TARGET} \
+    -e _SOURCE=${_SOURCE} \
+    -v ${_DEST}:/tmp/.TAR.ouput \
+    -v ${_DEST}/${_SOURCE}:/tmp/${_SOURCE} \
+    minion bash -c 'cd /tmp; tar ${_ARGS} ${_TARGET} ${_SOURCE}; mv ${_TARGET} /tmp/.TAR.ouput;'
+}
+
+function clamscan() {
+  local _TARGET=
+  if [[ -n $* ]]; then
+    _TARGET=$1
+  else
+    _TARGET=$(pwd)
+  fi
+  docker run --rm -v ${_TARGET}:/scan minion bash -c 'clamscan -r /scan' | sed 's/\/scan\///'
+}
+
+function pmd () {
+  #pmd check -d /usr/src -R rulesets/java/quickstart.xml -f text
+  local _TARGET=
+  if [[ -n $* ]]; then
+    _TARGET=$[$#]
+  else
+    _TARGET=$(pwd)
+  fi
+    docker run --rm -e _TARGET=${_TARGET} -v $(pwd):/tmp/src minion bash -c 'echo ${_TARGET}; cd /tmp; pmd check -d /tmp/src rulesets/java/quickstart.xml -f text'
+}
+
+function watch() {
+  if [[ "$#" -ne 1 ]]; then
+    echo "Usage: watch <command>"
+    return 1
+  fi
+  local _TARGET=$1
+  local _STARTED=$(date)
+
+  while (true); do
+    clear
+    local _LAST=$(date)
+
+    echo "watching ${_TARGET}"
+    echo "started on ${_STARTED}, last run on ${_LAST}, rerun in 2 seconds"
+
+    echo
+    zsh -c "${_TARGET}"
+    sleep 2
+  done
+}
+
+# Fin

@@ -1,0 +1,283 @@
+#!/bin/bash
+#
+# setup — configure a new box (Linux, MacOS, Windows WSL2)
+#
+# Usage: setup [--dry-run] [--uninstall] [--help]
+#
+
+set -euo pipefail
+
+SRC="$(cd "$(dirname "$0")" && pwd)"
+
+# --- Configuration ---
+
+DOT_LINKS="ssh aws gitconfig gitignore toprc vimrc zaliases zbase zfuncs zprofile"
+DIR_LINKS="fastfetch::config jjh.zsh-theme::oh-my-zsh/custom/themes claude::claude"
+GIT_REPOS=(
+  "https://github.com/zsh-users/zsh-autosuggestions.git::${HOME}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
+  "https://github.com/zsh-users/zsh-completions.git::${HOME}/.oh-my-zsh/custom/plugins/zsh-completions"
+  "https://github.com/zsh-users/zsh-syntax-highlighting.git::${HOME}/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting"
+)
+
+# --- Options ---
+
+DRY_RUN=false
+UNINSTALL=false
+
+# --- Functions ---
+
+usage() {
+  cat <<EOF
+Usage: setup [OPTIONS]
+
+Set up a new box with dotfiles and shell configuration.
+
+Options:
+  --dry-run     Show what would be done without making changes
+  --uninstall   Remove symlinks, cloned repos, and marker file
+  --help        Show this help message
+EOF
+}
+
+detect_os() {
+  case "$(uname -s)" in
+    Darwin) echo "MacOS" ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        echo "WSL"
+      else
+        echo "Linux"
+      fi
+      ;;
+    *) echo "Unknown" ;;
+  esac
+}
+
+run() {
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  [dry-run] $*"
+  else
+    echo "  $*"
+    "$@"
+  fi
+}
+
+create_dot_links() {
+  echo "Creating dotfile symlinks..."
+  for name in ${DOT_LINKS}; do
+    local target="${HOME}/.${name}"
+    local source="${SRC}/${name}"
+
+    if [[ -e "$target" || -L "$target" ]]; then
+      echo "  skip: ${target} already exists"
+    else
+      run ln -s "$source" "$target"
+    fi
+  done
+}
+
+remove_dot_links() {
+  echo "Removing dotfile symlinks..."
+  for name in ${DOT_LINKS}; do
+    local target="${HOME}/.${name}"
+
+    if [[ -L "$target" ]]; then
+      run rm "$target"
+    else
+      echo "  skip: ${target} is not a symlink"
+    fi
+  done
+}
+
+create_dir_links() {
+  echo "Creating directory symlinks..."
+  for entry in ${DIR_LINKS}; do
+    local src_name="${entry%%::*}"
+    local parent_dir="${entry##*::}"
+    local target="${HOME}/.${parent_dir}/${src_name}"
+    local source="${SRC}/${src_name}"
+
+    if [[ ! -d "${HOME}/.${parent_dir}" ]]; then
+      run mkdir -p "${HOME}/.${parent_dir}"
+    fi
+
+    if [[ -e "$target" || -L "$target" ]]; then
+      echo "  skip: ${target} already exists"
+    else
+      run ln -s "$source" "$target"
+    fi
+  done
+}
+
+remove_dir_links() {
+  echo "Removing directory symlinks..."
+  for entry in ${DIR_LINKS}; do
+    local src_name="${entry%%::*}"
+    local parent_dir="${entry##*::}"
+    local target="${HOME}/.${parent_dir}/${src_name}"
+
+    if [[ -L "$target" ]]; then
+      run rm "$target"
+    else
+      echo "  skip: ${target} is not a symlink"
+    fi
+  done
+}
+
+install_zshrc() {
+  echo "Installing zshrc..."
+  local target="${HOME}/.zshrc"
+  local source="${SRC}/zbase"
+
+  if [[ -e "$target" ]]; then
+    echo "  skip: ${target} already exists"
+  else
+    run cp "$source" "$target"
+  fi
+}
+
+remove_zshrc() {
+  echo "Removing zshrc..."
+  local target="${HOME}/.zshrc"
+
+  if [[ -f "$target" ]]; then
+    run rm "$target"
+  else
+    echo "  skip: ${target} not found"
+  fi
+}
+
+clone_repos() {
+  echo "Cloning Oh-My-Zsh plugin repos..."
+  for entry in "${GIT_REPOS[@]}"; do
+    local repo="${entry%%::*}"
+    local dest="${entry##*::}"
+
+    if [[ -d "$dest" ]]; then
+      echo "  skip: ${dest} already exists"
+    else
+      run git clone "$repo" "$dest"
+    fi
+  done
+}
+
+remove_repos() {
+  echo "Removing Oh-My-Zsh plugin repos..."
+  for entry in "${GIT_REPOS[@]}"; do
+    local dest="${entry##*::}"
+
+    if [[ -d "$dest" ]]; then
+      run rm -rf "$dest"
+    else
+      echo "  skip: ${dest} not found"
+    fi
+  done
+}
+
+setup_macos() {
+  echo "Setting up macOS key bindings..."
+  local source="${SRC}/Library/KeyBindings"
+  local target="${HOME}/Library/KeyBindings"
+
+  if [[ ! -d "$source" ]]; then
+    echo "  skip: ${source} not found"
+    return
+  fi
+
+  if [[ -d "$target" ]]; then
+    echo "  skip: ${target} already exists"
+  else
+    run mkdir -p "${HOME}/Library"
+    run cp -a "$source" "$target"
+  fi
+}
+
+remove_macos() {
+  echo "Removing macOS key bindings..."
+  local target="${HOME}/Library/KeyBindings"
+
+  if [[ -d "$target" ]]; then
+    run rm -rf "$target"
+  else
+    echo "  skip: ${target} not found"
+  fi
+}
+
+install_hooks() {
+  if [[ ! -d "${SRC}/hooks" || ! -d "${SRC}/.git/hooks" ]]; then
+    return
+  fi
+
+  echo "Installing git hooks..."
+  for hook in "${SRC}"/hooks/*; do
+    local hook_name
+    hook_name="$(basename "$hook")"
+    run cp "$hook" "${SRC}/.git/hooks/${hook_name}"
+    run chmod +x "${SRC}/.git/hooks/${hook_name}"
+  done
+}
+
+# --- Parse args ---
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)   DRY_RUN=true; shift ;;
+    --uninstall) UNINSTALL=true; shift ;;
+    --help)      usage; exit 0 ;;
+    *)           echo "Unknown option: $1"; usage; exit 1 ;;
+  esac
+done
+
+# --- Main ---
+
+OS=$(detect_os)
+echo "OS: ${OS}"
+echo "Source: ${SRC}"
+echo ""
+
+if [[ "$UNINSTALL" == true ]]; then
+  [[ "$DRY_RUN" == true ]] && echo "=== DRY RUN (uninstall) ==="
+
+  remove_dot_links
+  remove_dir_links
+  remove_zshrc
+  remove_repos
+  [[ "$OS" == "MacOS" ]] && remove_macos
+
+  if [[ "$DRY_RUN" == false ]]; then
+    rm -f "${SRC}/.configured"
+  fi
+
+  echo ""
+  echo "Uninstall complete."
+else
+  if [[ -f "${SRC}/.configured" ]]; then
+    echo "Already configured (${SRC}/.configured exists)."
+    echo "Run with --uninstall first to reconfigure."
+    exit 1
+  fi
+
+  [[ "$DRY_RUN" == true ]] && echo "=== DRY RUN (install) ==="
+
+  create_dot_links
+  create_dir_links
+  install_zshrc
+  clone_repos
+  [[ "$OS" == "MacOS" ]] && setup_macos
+
+  install_hooks
+
+  if [[ "$DRY_RUN" == false ]]; then
+    touch "${SRC}/.configured"
+    echo ""
+    if [[ -f "${SRC}/.ssh.vault" || -f "${SRC}/.env.vault" ]]; then
+      echo "Encrypted vaults detected. Run: ./vault unlock"
+    fi
+    echo "Setup complete. Restart your shell or run: source ~/.zshrc"
+  else
+    echo ""
+    echo "Dry run complete. No changes were made."
+  fi
+fi
+
+# Fin

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# pre-commit — warn if vault secrets have changed since last lock
+#
+
+REPO_DIR="$(git rev-parse --show-toplevel)"
+
+STALE=()
+
+for entry in "ssh:.ssh.vault" "env:.env.vault" "aws:.aws.vault"; do
+  source="${entry%%:*}"
+  vault="${entry##*:}"
+  source_path="${REPO_DIR}/${source}"
+  vault_path="${REPO_DIR}/${vault}"
+
+  # skip if source doesn't exist (locked)
+  [ -e "$source_path" ] || continue
+
+  # no vault file yet — definitely needs locking
+  if [ ! -f "$vault_path" ]; then
+    STALE+=("$source")
+    continue
+  fi
+
+  # check if any source file is newer than the vault
+  if [ -d "$source_path" ]; then
+    newer=$(find "$source_path" -newer "$vault_path" -type f \
+      ! -name "known_hosts" ! -name "known_hosts.old" 2>/dev/null | head -1)
+  else
+    newer=$([ "$source_path" -nt "$vault_path" ] && echo "$source_path" || true)
+  fi
+
+  if [ -n "$newer" ]; then
+    STALE+=("$source")
+  fi
+done
+
+if [ ${#STALE[@]} -gt 0 ]; then
+  echo ""
+  echo "WARNING: vault may be stale for: ${STALE[*]}"
+  echo "  Run './vault lock' to re-encrypt before pushing."
+  echo ""
+fi
+
+exit 0

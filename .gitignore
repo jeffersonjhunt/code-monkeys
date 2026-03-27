@@ -1,0 +1,9 @@
+ssh/
+env
+aws/
+*.vault
+openvpn/logs/
+**/*.DS_Store
+.DS_Store
+.configured
+.claude/
