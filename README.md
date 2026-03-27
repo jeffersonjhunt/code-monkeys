@@ -2,42 +2,48 @@
 
 Personal development environment: dotfiles, shell configuration, and the **primates** containerized dev environment system.
 
-## Repo Structure
+## Public / Private Split
 
-This project is split across two repositories:
+This project supports a two-repo setup: a **public** repo with dotfiles, Dockerfiles, and scripts, and a **private** repo that adds encrypted vault files (`.ssh.vault`, `.env.vault`, `.aws.vault`).
 
-| Repo | Visibility | Contents |
-|---|---|---|
-| [code-monkeys](https://github.com/jeffersonjhunt/code-monkeys) (GitHub) | Public | Dotfiles, Dockerfiles, scripts — everything except secrets |
-| user-jhunt (CodeCommit) | Private | Adds encrypted vault files (`.ssh.vault`, `.env.vault`, `.aws.vault`) |
+### Setting up the split
 
-The private repo tracks the public one via the `github` remote. Non-secret changes flow upstream to `code-monkeys`; vault files stay private.
-
-### Remotes
-
-```
-codecommit  → ssh://git-codecommit.us-east-1.amazonaws.com/v1/repos/user-jhunt  (private)
-github      → git@github.com:jeffersonjhunt/code-monkeys.git                    (public)
-```
-
-### Workflow
-
-Day-to-day work happens on the `master` branch, pushed to `codecommit`:
+1. Create a public repo (e.g., on GitHub) and a private repo (e.g., on GitHub, CodeCommit, GitLab, etc.)
+2. Add both as remotes — one for public, one for private:
 
 ```bash
-git push codecommit master
+git remote add public <public-repo-url>
+git remote add private <private-repo-url>
 ```
 
-To sync non-secret changes to the public repo:
+3. Create an orphan `public` branch with `*.vault` in `.gitignore`:
+
+```bash
+git checkout --orphan public
+git reset
+# add *.vault and any other personal files to .gitignore
+git add -A
+git commit -m "initial public release"
+git push public public:master
+git checkout master
+```
+
+4. Day-to-day work happens on `master`, pushed to the private remote:
+
+```bash
+git push private master
+```
+
+5. To sync non-secret changes to the public repo:
 
 ```bash
 git checkout public
 git merge master
-git push github public:master
+git push public public:master
 git checkout master
 ```
 
-The `public` branch has `*.vault` in its `.gitignore`, so vault files are excluded even after merging from `master`.
+The `public` branch's `.gitignore` excludes `*.vault` files, so they are never included even after merging from `master`.
 
 ## Quick Start
 
