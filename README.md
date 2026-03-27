@@ -2,6 +2,43 @@
 
 Personal development environment: dotfiles, shell configuration, and the **primates** containerized dev environment system.
 
+## Repo Structure
+
+This project is split across two repositories:
+
+| Repo | Visibility | Contents |
+|---|---|---|
+| [code-monkeys](https://github.com/jeffersonjhunt/code-monkeys) (GitHub) | Public | Dotfiles, Dockerfiles, scripts — everything except secrets |
+| user-jhunt (CodeCommit) | Private | Adds encrypted vault files (`.ssh.vault`, `.env.vault`, `.aws.vault`) |
+
+The private repo tracks the public one via the `github` remote. Non-secret changes flow upstream to `code-monkeys`; vault files stay private.
+
+### Remotes
+
+```
+codecommit  → ssh://git-codecommit.us-east-1.amazonaws.com/v1/repos/user-jhunt  (private)
+github      → git@github.com:jeffersonjhunt/code-monkeys.git                    (public)
+```
+
+### Workflow
+
+Day-to-day work happens on the `master` branch, pushed to `codecommit`:
+
+```bash
+git push codecommit master
+```
+
+To sync non-secret changes to the public repo:
+
+```bash
+git checkout public
+git merge master
+git push github public:master
+git checkout master
+```
+
+The `public` branch has `*.vault` in its `.gitignore`, so vault files are excluded even after merging from `master`.
+
 ## Quick Start
 
 ```bash
