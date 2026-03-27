@@ -2,6 +2,7 @@ ssh/
 env
 aws/
 *.vault
+face
 openvpn/logs/
 **/*.DS_Store
 .DS_Store
