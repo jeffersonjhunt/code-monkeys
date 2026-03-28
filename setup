@@ -203,17 +203,19 @@ remove_macos() {
   fi
 }
 
-install_zsh() {
-  echo "Checking zsh..."
-  if ! command -v zsh >/dev/null 2>&1; then
-    echo "  zsh not found, installing..."
-    case "$OS" in
-      MacOS) run brew install zsh ;;
-      Linux|WSL) run sudo apt-get install -y zsh ;;
-      *) echo "  skip: unsupported OS, install zsh manually"; return ;;
-    esac
+install_ohmyzsh() {
+  echo "Checking Oh-My-Zsh..."
+  if [[ -d "${HOME}/.oh-my-zsh" ]]; then
+    echo "  skip: ${HOME}/.oh-my-zsh already exists"
   else
-    echo "  skip: zsh already installed"
+    if ! command -v zsh >/dev/null 2>&1; then
+      echo "  ERROR: zsh is not installed. Install zsh first, then re-run setup."
+      exit 1
+    fi
+    echo "  installing Oh-My-Zsh..."
+    run sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+    # remove the default .zshrc that oh-my-zsh creates — ours replaces it
+    rm -f "${HOME}/.zshrc"
   fi
 
   local current_shell
@@ -223,20 +225,6 @@ install_zsh() {
     zsh_path=$(command -v zsh)
     echo "  setting default shell to zsh..."
     run chsh -s "$zsh_path"
-  else
-    echo "  skip: zsh is already the default shell"
-  fi
-}
-
-install_ohmyzsh() {
-  echo "Checking Oh-My-Zsh..."
-  if [[ -d "${HOME}/.oh-my-zsh" ]]; then
-    echo "  skip: ${HOME}/.oh-my-zsh already exists"
-  else
-    echo "  installing Oh-My-Zsh..."
-    run sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-    # remove the default .zshrc that oh-my-zsh creates — ours replaces it
-    rm -f "${HOME}/.zshrc"
   fi
 }
 
@@ -296,7 +284,6 @@ else
 
   [[ "$DRY_RUN" == true ]] && echo "=== DRY RUN (install) ==="
 
-  install_zsh
   install_ohmyzsh
   create_dot_links
   create_dir_links
