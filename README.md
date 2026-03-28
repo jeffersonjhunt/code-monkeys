@@ -11,7 +11,7 @@ cd primates
 make all
 ```
 
-This gives you a working shell environment and Docker images — no secrets required. If you have encrypted vault files from a private repo, see [Vault](#vault) below.
+This gives you a working shell environment and Docker images. If you have vault files, copy them into the repo root and run `./vault unlock` before `./setup`.
 
 ## Setup
 
@@ -133,7 +133,7 @@ The `vault` script encrypts secrets at rest using AES-256-CBC with PBKDF2. It ma
 | `env` | `.env.vault` | file |
 | `aws/` | `.aws.vault` | directory |
 
-The plaintext files are gitignored. The encrypted vault files are not included in this repo — they live in a separate private repo (see below).
+Both the plaintext files and the encrypted `.vault` files are gitignored. Vault files should be backed up separately (e.g., rsync, S3, USB drive).
 
 ```bash
 ./vault unlock       # decrypt all vaults (prompts for password)
@@ -148,61 +148,7 @@ To create your own vaults from scratch:
 
 1. Create `ssh/`, `aws/`, and/or `env` with your credentials
 2. Run `./vault lock` to encrypt them (you'll set a password)
-3. The `.vault` files are ready to store in a private repo
-
-## Private Repo (optional)
-
-To keep your vault files in version control without publishing them, use a two-repo setup: this public repo for code, and a private repo for secrets.
-
-### Initial setup
-
-1. Create a private repo (GitHub, CodeCommit, GitLab, etc.)
-2. Add it as a remote:
-
-```bash
-git remote add private <private-repo-url>
-```
-
-3. Push your vault files to the private repo:
-
-```bash
-git checkout --orphan private
-git reset
-# create a .gitignore that ignores everything except vault files:
-#   *
-#   !.gitignore
-#   !.ssh.vault
-#   !.env.vault
-#   !.aws.vault
-git add .gitignore .ssh.vault .env.vault .aws.vault
-git commit -m "initial vault files"
-git push private private:master
-git checkout master
-```
-
-### Cloning on a new machine
-
-```bash
-git clone <public-repo-url> && cd code-monkeys
-git remote add private <private-repo-url>
-git fetch private
-git restore --source private/master -- .ssh.vault .env.vault .aws.vault
-git reset HEAD .ssh.vault .env.vault .aws.vault
-./vault unlock
-./setup
-```
-
-### Updating vault files
-
-After changing secrets (`./vault lock`), push to the private remote:
-
-```bash
-git checkout private
-git add .ssh.vault .env.vault .aws.vault
-git commit -m "update vaults"
-git push private private:master
-git checkout master
-```
+3. Back up the resulting `.vault` files somewhere safe
 
 ## Repository Layout
 
