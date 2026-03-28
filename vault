@@ -187,8 +187,18 @@ do_status() {
       [[ -f "$source_path" ]] && has_source=true
     fi
 
+    local stale=""
     if $has_source && $has_vault; then
-      printf "  %-8s UNLOCKED\n" "${source}"
+      # check if any source file is newer than the vault
+      if [[ "$type" == "dir" ]]; then
+        local newer
+        newer=$(find "$source_path" -newer "$vault_path" -type f \
+          ! -name "known_hosts" ! -name "known_hosts.old" 2>/dev/null | head -1)
+        [[ -n "$newer" ]] && stale=" (STALE — source changed since last lock)"
+      else
+        [[ "$source_path" -nt "$vault_path" ]] && stale=" (STALE — source changed since last lock)"
+      fi
+      printf "  %-8s UNLOCKED%s\n" "${source}" "$stale"
     elif $has_source; then
       printf "  %-8s UNLOCKED (no vault file — run 'vault lock' to create)\n" "${source}"
     elif $has_vault; then
