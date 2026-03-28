@@ -212,12 +212,50 @@ do_status() {
     fi
   done
 
+  # sync status
   local sync_file="${SCRIPT_DIR}/.vault-synced"
   echo ""
   if [[ -f "$sync_file" ]]; then
-    echo "  last synced: $(cat "$sync_file")"
+    echo "  last synced: $(head -1 "$sync_file")"
   else
     echo "  last synced: never"
+  fi
+
+  # remote comparison
+  if [[ -n "${VAULT_BUCKET:-}" ]]; then
+    local profile_arg=()
+    if [[ -n "${VAULT_PROFILE:-}" ]]; then
+      profile_arg=(--profile "$VAULT_PROFILE")
+    fi
+
+    local listing
+    if listing=$(aws "${profile_arg[@]}" s3 ls "s3://${VAULT_BUCKET}/" 2>/dev/null); then
+      echo ""
+      for vf in "${VAULT_FILES[@]}"; do
+        local remote_md5
+        remote_md5=$(echo "$listing" | grep -oP "[a-f0-9]{32}(?=\.${vf//./\\.})" | head -1)
+        local vf_path="${SCRIPT_DIR}/${vf}"
+
+        if [[ -z "$remote_md5" ]]; then
+          printf "  %-16s not in bucket\n" "${vf}"
+          continue
+        fi
+
+        if [[ ! -f "$vf_path" ]]; then
+          printf "  %-16s remote only (%s)\n" "${vf}" "${remote_md5:0:8}…"
+          continue
+        fi
+
+        local local_md5
+        local_md5=$(md5sum "$vf_path" | awk '{print $1}')
+
+        if [[ "$local_md5" == "$remote_md5" ]]; then
+          printf "  %-16s in sync (%s)\n" "${vf}" "${local_md5:0:8}…"
+        else
+          printf "  %-16s OUT OF SYNC (local: %s… remote: %s…)\n" "${vf}" "${local_md5:0:8}" "${remote_md5:0:8}"
+        fi
+      done
+    fi
   fi
 }
 
@@ -246,22 +284,36 @@ do_sync() {
     push)
       for vf in "${VAULT_FILES[@]}"; do
         local vf_path="${SCRIPT_DIR}/${vf}"
-        if [[ -f "$vf_path" ]]; then
-          aws "${profile_arg[@]}" s3 cp "$vf_path" "${s3_prefix}/${vf}"
-          echo "  pushed: ${vf}"
-        else
+        if [[ ! -f "$vf_path" ]]; then
           echo "  skip: ${vf} not found"
+          continue
         fi
+        local md5
+        md5=$(md5sum "$vf_path" | awk '{print $1}')
+        # remove old versions
+        local old_files
+        old_files=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null | grep -oP "[a-f0-9]{32}\.${vf//./\\.}" || true)
+        for old in $old_files; do
+          aws "${profile_arg[@]}" s3 rm "${s3_prefix}/${old}" >/dev/null 2>&1
+        done
+        aws "${profile_arg[@]}" s3 cp "$vf_path" "${s3_prefix}/${md5}.${vf}"
+        echo "  pushed: ${vf} (${md5:0:8}…)"
       done
       ;;
     pull)
+      local listing
+      listing=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null || true)
       for vf in "${VAULT_FILES[@]}"; do
-        local vf_path="${SCRIPT_DIR}/${vf}"
-        if aws "${profile_arg[@]}" s3 cp "${s3_prefix}/${vf}" "$vf_path" 2>/dev/null; then
-          echo "  pulled: ${vf}"
-        else
+        local remote_file
+        remote_file=$(echo "$listing" | grep -oP "[a-f0-9]{32}\.${vf//./\\.}" | head -1)
+        if [[ -z "$remote_file" ]]; then
           echo "  skip: ${vf} not found in bucket"
+          continue
         fi
+        local vf_path="${SCRIPT_DIR}/${vf}"
+        aws "${profile_arg[@]}" s3 cp "${s3_prefix}/${remote_file}" "$vf_path"
+        local md5="${remote_file%%.*}"
+        echo "  pulled: ${vf} (${md5:0:8}…)"
       done
       ;;
     both)
