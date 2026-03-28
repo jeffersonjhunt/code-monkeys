@@ -302,7 +302,7 @@ VAULT_FILES=()
 VAULT_S3KEYS=()
 for entry in "${VAULTS[@]}"; do
   local_rest="${entry#*:}"
-  local vf="${local_rest%%:*}"
+  vf="${local_rest%%:*}"
   VAULT_FILES+=("$vf")
   VAULT_S3KEYS+=("${vf#.}")
 done
