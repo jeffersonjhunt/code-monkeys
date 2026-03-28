@@ -198,7 +198,11 @@ do_status() {
       else
         [[ "$source_path" -nt "$vault_path" ]] && stale=" (STALE — source changed since last lock)"
       fi
-      printf "  %-8s UNLOCKED%s\n" "${source}" "$stale"
+      if [[ -n "$stale" ]]; then
+        printf "  %-8s UNLOCKED%s\n" "${source}" "$stale"
+      else
+        printf "  %-8s UNLOCKED (up to date)\n" "${source}"
+      fi
     elif $has_source; then
       printf "  %-8s UNLOCKED (no vault file — run 'vault lock' to create)\n" "${source}"
     elif $has_vault; then
@@ -207,6 +211,12 @@ do_status() {
       printf "  %-8s NO VAULT\n" "${source}"
     fi
   done
+
+  local sync_file="${SCRIPT_DIR}/.vault-synced"
+  if [[ -f "$sync_file" ]]; then
+    echo ""
+    echo "  last synced: $(cat "$sync_file")"
+  fi
 }
 
 VAULT_FILES=()
@@ -257,12 +267,15 @@ do_sync() {
       do_sync push
       echo "Pulling..."
       do_sync pull
+      return
       ;;
     *)
       echo "Usage: vault sync [push|pull]"
       exit 1
       ;;
   esac
+
+  date "+%Y-%m-%d %H:%M:%S %Z" > "${SCRIPT_DIR}/.vault-synced"
 }
 
 if [[ $# -lt 1 ]]; then

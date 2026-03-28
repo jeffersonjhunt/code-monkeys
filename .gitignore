@@ -2,6 +2,7 @@ ssh/
 env
 aws/
 *.vault
+.vault-synced
 face
 openvpn/logs/
 **/*.DS_Store
