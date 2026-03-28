@@ -146,7 +146,7 @@ Both the plaintext files and the encrypted `.vault` files are gitignored.
 ./vault unlock       # decrypt all vaults (prompts for password)
 ./vault lock         # encrypt all vaults and remove plaintext
 ./vault rekey        # re-encrypt with a new password
-./vault status       # show lock/unlock state
+./vault status       # show lock/unlock state, staleness, and sync status
 ```
 
 Once unlocked, `setup` symlinks `ssh` → `~/.ssh` and `aws` → `~/.aws`. The `env` file is loaded by `primate` via `--env-file`.
@@ -168,7 +168,21 @@ Then use `vault sync`:
 ./vault sync         # push then pull (bidirectional)
 ```
 
-This requires the AWS CLI and credentials with read/write access to the bucket.
+Vault files are stored in the bucket with an md5 prefix (e.g., `8e28d715.aws.vault`) so that `vault status` can detect out-of-sync files with a lightweight bucket listing — no downloads needed.
+
+This requires the AWS CLI and credentials with read/write access to the bucket. When `VAULT_BUCKET` is set, `vault status` automatically compares local and remote vault files:
+
+```
+  ssh      UNLOCKED (up to date)
+  env      UNLOCKED (STALE — source changed since last lock)
+  aws      LOCKED
+
+  .ssh.vault       in sync (3e6e2081…)
+  .env.vault       OUT OF SYNC (local: a1b2c3d4… remote: 9f8e7d6c…)
+  .aws.vault       in sync (8e28d715…)
+
+  last synced: 2026-03-28 14:53:03 CDT
+```
 
 ### Creating vaults from scratch
 
