@@ -21,6 +21,15 @@ VAULTS=(
 
 OPENSSL_ARGS=(-aes-256-cbc -salt -pbkdf2 -iter 600000)
 
+# aws cli wrapper that adds --profile if VAULT_PROFILE is set
+_aws() {
+  if [[ -n "${VAULT_PROFILE:-}" ]]; then
+    aws --profile "$VAULT_PROFILE" "$@"
+  else
+    aws "$@"
+  fi
+}
+
 md5_file() {
   if command -v md5sum >/dev/null 2>&1; then
     md5sum "$1" | awk '{print $1}'
@@ -250,13 +259,8 @@ do_status() {
 
   # remote comparison
   if [[ -n "${VAULT_BUCKET:-}" ]]; then
-    local profile_arg=()
-    if [[ -n "${VAULT_PROFILE:-}" ]]; then
-      profile_arg=(--profile "$VAULT_PROFILE")
-    fi
-
     local listing
-    if listing=$(aws "${profile_arg[@]}" s3 ls "s3://${VAULT_BUCKET}/" 2>/dev/null); then
+    if listing=$(_aws s3 ls "s3://${VAULT_BUCKET}/" 2>/dev/null); then
       echo ""
       for i in "${!VAULT_FILES[@]}"; do
         local vf="${VAULT_FILES[$i]}"
@@ -328,15 +332,11 @@ do_sync() {
   fi
 
   local s3_prefix="s3://${VAULT_BUCKET}"
-  local profile_arg=()
-  if [[ -n "${VAULT_PROFILE:-}" ]]; then
-    profile_arg=(--profile "$VAULT_PROFILE")
-  fi
 
   case "$direction" in
     push)
       local listing
-      listing=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null || true)
+      listing=$(_aws s3 ls "${s3_prefix}/" 2>/dev/null || true)
 
       # check if remote has changed since last sync
       if ! $force; then
@@ -349,7 +349,7 @@ do_sync() {
             remote_md5=$(extract_md5 "$listing" "$s3key")
             [[ -z "$remote_md5" ]] && continue
             local saved_md5
-            saved_md5=$(grep "^${s3key}:" "$sync_file" 2>/dev/null | cut -d: -f2)
+            saved_md5=$(grep "^${s3key}:" "$sync_file" 2>/dev/null | cut -d: -f2 || true)
             if [[ -n "$saved_md5" && "$remote_md5" != "$saved_md5" ]]; then
               changed+=("${VAULT_FILES[$i]}")
             fi
@@ -380,17 +380,17 @@ do_sync() {
         local old_files
         old_files=$(extract_old_files "$listing" "$s3key")
         for old in $old_files; do
-          aws "${profile_arg[@]}" s3 rm "${s3_prefix}/${old}" >/dev/null 2>&1
+          _aws s3 rm "${s3_prefix}/${old}" >/dev/null 2>&1
         done
         # also remove bare vault file (legacy, no md5 prefix)
-        aws "${profile_arg[@]}" s3 rm "${s3_prefix}/${vf}" >/dev/null 2>&1 || true
-        aws "${profile_arg[@]}" s3 cp "$vf_path" "${s3_prefix}/${md5}.${s3key}"
+        _aws s3 rm "${s3_prefix}/${vf}" >/dev/null 2>&1 || true
+        _aws s3 cp "$vf_path" "${s3_prefix}/${md5}.${s3key}"
         echo "  pushed: ${vf} (${md5:0:8}…)"
       done
       ;;
     pull)
       local listing
-      listing=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null || true)
+      listing=$(_aws s3 ls "${s3_prefix}/" 2>/dev/null || true)
       for i in "${!VAULT_FILES[@]}"; do
         local vf="${VAULT_FILES[$i]}"
         local s3key="${VAULT_S3KEYS[$i]}"
@@ -401,7 +401,7 @@ do_sync() {
           continue
         fi
         local vf_path="${SCRIPT_DIR}/${vf}"
-        aws "${profile_arg[@]}" s3 cp "${s3_prefix}/${remote_md5}.${s3key}" "$vf_path"
+        _aws s3 cp "${s3_prefix}/${remote_md5}.${s3key}" "$vf_path"
         echo "  pulled: ${vf} (${remote_md5:0:8}…)"
       done
       ;;
@@ -415,7 +415,7 @@ do_sync() {
   local sync_file="${SCRIPT_DIR}/.vault-synced"
   date "+%Y-%m-%d %H:%M:%S %Z" > "$sync_file"
   local current_listing
-  current_listing=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null || true)
+  current_listing=$(_aws s3 ls "${s3_prefix}/" 2>/dev/null || true)
   for i in "${!VAULT_FILES[@]}"; do
     local s3key="${VAULT_S3KEYS[$i]}"
     local rmd5
