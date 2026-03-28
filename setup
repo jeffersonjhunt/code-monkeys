@@ -53,6 +53,26 @@ detect_os() {
   esac
 }
 
+preflight() {
+  echo "Preflight check..."
+  local missing=()
+  for cmd in zsh curl git chsh; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      printf "  %-8s ok\n" "$cmd"
+    else
+      printf "  %-8s MISSING\n" "$cmd"
+      missing+=("$cmd")
+    fi
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo ""
+    echo "ERROR: missing required commands: ${missing[*]}"
+    echo "Install them and re-run setup."
+    exit 1
+  fi
+  echo ""
+}
+
 run() {
   if [[ "$DRY_RUN" == true ]]; then
     echo "  [dry-run] $*"
@@ -208,10 +228,6 @@ install_ohmyzsh() {
   if [[ -f "${HOME}/.oh-my-zsh/oh-my-zsh.sh" ]]; then
     echo "  skip: Oh-My-Zsh already installed"
   else
-    if ! command -v zsh >/dev/null 2>&1; then
-      echo "  ERROR: zsh is not installed. Install zsh first, then re-run setup."
-      exit 1
-    fi
     echo "  installing Oh-My-Zsh..."
     if [[ "$DRY_RUN" == true ]]; then
       echo "  [dry-run] install oh-my-zsh"
@@ -292,6 +308,7 @@ else
 
   [[ "$DRY_RUN" == true ]] && echo "=== DRY RUN (install) ==="
 
+  preflight
   install_ohmyzsh
   create_dot_links
   create_dir_links
