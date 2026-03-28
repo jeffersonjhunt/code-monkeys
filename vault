@@ -66,7 +66,7 @@ Commands:
   lock      Encrypt all vaults and remove plaintext
   rekey     Re-encrypt all vaults with a new password
   status    Show lock/unlock state of each vault
-  sync      Sync vault files with S3 (push or pull)
+  sync      Sync vault files with S3 (push or pull, --force to overwrite)
 
 Environment:
   VAULT_BUCKET   S3 bucket name for sync (required for sync command)
@@ -308,7 +308,14 @@ for entry in "${VAULTS[@]}"; do
 done
 
 do_sync() {
-  local direction="${1:-both}"
+  local direction="$1"
+  local force=false
+  if [[ "$direction" == "--force" ]]; then
+    force=true
+    direction="$2"
+  elif [[ "${2:-}" == "--force" ]]; then
+    force=true
+  fi
 
   if [[ -z "${VAULT_BUCKET:-}" ]]; then
     echo "Error: VAULT_BUCKET environment variable is not set."
@@ -326,6 +333,35 @@ do_sync() {
     push)
       local listing
       listing=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null || true)
+
+      # check if remote has changed since last sync
+      if ! $force; then
+        local sync_file="${SCRIPT_DIR}/.vault-synced"
+        if [[ -f "$sync_file" ]]; then
+          local changed=()
+          for i in "${!VAULT_FILES[@]}"; do
+            local s3key="${VAULT_S3KEYS[$i]}"
+            local remote_md5
+            remote_md5=$(extract_md5 "$listing" "$s3key")
+            [[ -z "$remote_md5" ]] && continue
+            local saved_md5
+            saved_md5=$(grep "^${s3key}:" "$sync_file" 2>/dev/null | cut -d: -f2)
+            if [[ -n "$saved_md5" && "$remote_md5" != "$saved_md5" ]]; then
+              changed+=("${VAULT_FILES[$i]}")
+            fi
+          done
+          if [[ ${#changed[@]} -gt 0 ]]; then
+            echo "FATAL: remote vault files have changed since last sync:"
+            for f in "${changed[@]}"; do
+              echo "  ${f}"
+            done
+            echo ""
+            echo "Run './vault sync pull' to get the latest, or './vault sync --force push' to overwrite."
+            exit 1
+          fi
+        fi
+      fi
+
       for i in "${!VAULT_FILES[@]}"; do
         local vf="${VAULT_FILES[$i]}"
         local s3key="${VAULT_S3KEYS[$i]}"
@@ -371,7 +407,17 @@ do_sync() {
       ;;
   esac
 
-  date "+%Y-%m-%d %H:%M:%S %Z" > "${SCRIPT_DIR}/.vault-synced"
+  # record sync timestamp and remote md5s
+  local sync_file="${SCRIPT_DIR}/.vault-synced"
+  date "+%Y-%m-%d %H:%M:%S %Z" > "$sync_file"
+  local current_listing
+  current_listing=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null || true)
+  for i in "${!VAULT_FILES[@]}"; do
+    local s3key="${VAULT_S3KEYS[$i]}"
+    local rmd5
+    rmd5=$(extract_md5 "$current_listing" "$s3key")
+    [[ -n "$rmd5" ]] && echo "${s3key}:${rmd5}" >> "$sync_file"
+  done
 }
 
 if [[ $# -lt 1 ]]; then
@@ -385,11 +431,12 @@ case "$1" in
   rekey)  do_rekey ;;
   status) do_status ;;
   sync)
-    if [[ -z "${2:-}" ]]; then
-      echo "Usage: vault sync <push|pull>"
+    shift
+    if [[ -z "${1:-}" ]]; then
+      echo "Usage: vault sync [--force] <push|pull>"
       exit 1
     fi
-    do_sync "$2"
+    do_sync "$@"
     ;;
   *)      usage; exit 1 ;;
 esac
