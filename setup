@@ -205,8 +205,8 @@ remove_macos() {
 
 install_ohmyzsh() {
   echo "Checking Oh-My-Zsh..."
-  if [[ -d "${HOME}/.oh-my-zsh" ]]; then
-    echo "  skip: ${HOME}/.oh-my-zsh already exists"
+  if [[ -f "${HOME}/.oh-my-zsh/oh-my-zsh.sh" ]]; then
+    echo "  skip: Oh-My-Zsh already installed"
   else
     if ! command -v zsh >/dev/null 2>&1; then
       echo "  ERROR: zsh is not installed. Install zsh first, then re-run setup."
