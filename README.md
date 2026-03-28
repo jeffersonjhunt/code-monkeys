@@ -14,7 +14,8 @@ make all
 This gives you a working shell environment and Docker images. To pull in secrets from a previous setup:
 
 ```bash
-export VAULT_BUCKET=my-vault-bucket
+export VAULT_BUCKET=my-vault-bucket   # required
+export VAULT_PROFILE=my-aws-profile   # optional
 ./vault sync pull
 ./vault unlock
 ```
@@ -156,6 +157,7 @@ Vault files can be backed up and shared across machines using an S3 bucket. Set 
 
 ```bash
 export VAULT_BUCKET=my-vault-bucket
+export VAULT_PROFILE=my-aws-profile  # optional, defaults to 'default'
 ```
 
 Then use `vault sync`:

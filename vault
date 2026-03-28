@@ -33,7 +33,8 @@ Commands:
   sync      Sync vault files with S3 (push, pull, or both if no arg)
 
 Environment:
-  VAULT_BUCKET  S3 bucket name for sync (required for sync command)
+  VAULT_BUCKET   S3 bucket name for sync (required for sync command)
+  VAULT_PROFILE  AWS CLI profile to use for sync (optional, defaults to 'default')
 EOF
 }
 
@@ -214,13 +215,17 @@ do_sync() {
   fi
 
   local s3_prefix="s3://${VAULT_BUCKET}"
+  local profile_arg=()
+  if [[ -n "${VAULT_PROFILE:-}" ]]; then
+    profile_arg=(--profile "$VAULT_PROFILE")
+  fi
 
   case "$direction" in
     push)
       for vf in "${VAULT_FILES[@]}"; do
         local vf_path="${SCRIPT_DIR}/${vf}"
         if [[ -f "$vf_path" ]]; then
-          aws s3 cp "$vf_path" "${s3_prefix}/${vf}"
+          aws "${profile_arg[@]}" s3 cp "$vf_path" "${s3_prefix}/${vf}"
           echo "  pushed: ${vf}"
         else
           echo "  skip: ${vf} not found"
@@ -230,7 +235,7 @@ do_sync() {
     pull)
       for vf in "${VAULT_FILES[@]}"; do
         local vf_path="${SCRIPT_DIR}/${vf}"
-        if aws s3 cp "${s3_prefix}/${vf}" "$vf_path" 2>/dev/null; then
+        if aws "${profile_arg[@]}" s3 cp "${s3_prefix}/${vf}" "$vf_path" 2>/dev/null; then
           echo "  pulled: ${vf}"
         else
           echo "  skip: ${vf} not found in bucket"
