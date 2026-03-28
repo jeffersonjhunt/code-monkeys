@@ -66,7 +66,7 @@ Commands:
   lock      Encrypt all vaults and remove plaintext
   rekey     Re-encrypt all vaults with a new password
   status    Show lock/unlock state of each vault
-  sync      Sync vault files with S3 (push, pull, or both if no arg)
+  sync      Sync vault files with S3 (push or pull)
 
 Environment:
   VAULT_BUCKET   S3 bucket name for sync (required for sync command)
@@ -365,15 +365,8 @@ do_sync() {
         echo "  pulled: ${vf} (${remote_md5:0:8}…)"
       done
       ;;
-    both)
-      echo "Pushing..."
-      do_sync push
-      echo "Pulling..."
-      do_sync pull
-      return
-      ;;
     *)
-      echo "Usage: vault sync [push|pull]"
+      echo "Usage: vault sync <push|pull>"
       exit 1
       ;;
   esac
@@ -391,6 +384,12 @@ case "$1" in
   lock)   do_lock ;;
   rekey)  do_rekey ;;
   status) do_status ;;
-  sync)   do_sync "${2:-both}" ;;
+  sync)
+    if [[ -z "${2:-}" ]]; then
+      echo "Usage: vault sync <push|pull>"
+      exit 1
+    fi
+    do_sync "$2"
+    ;;
   *)      usage; exit 1 ;;
 esac

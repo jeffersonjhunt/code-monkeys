@@ -165,7 +165,6 @@ Then use `vault sync`:
 ```bash
 ./vault sync push    # upload vault files to S3
 ./vault sync pull    # download vault files from S3
-./vault sync         # push then pull (bidirectional)
 ```
 
 Vault files are stored in the bucket with an md5 prefix (e.g., `8e28d715.aws.vault`) so that `vault status` can detect out-of-sync files with a lightweight bucket listing — no downloads needed.
