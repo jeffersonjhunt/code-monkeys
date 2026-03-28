@@ -12,7 +12,7 @@ This is a personal development environment repository (dotfiles + containerized 
 - **`codemonkey.dockerfile`**: Base Docker image (debian:13-slim) that all primates inherit from
 - **`primates/`**: Specialized Docker images built on top of codemonkey (see `primates/CLAUDE.md` for details)
 - **`setup`**: Host machine setup script that symlinks dotfiles into `$HOME`
-- **`zfuncs`**: Shell functions for launching containers (`claude()`, `opencode()`, `msh()`, `clamscan()`, etc.)
+- **`zfuncs`**: Shell functions for launching containers (`primate()`, `primate-upgrade()`, `clamscan()`, etc.)
 - **`env`**: Environment variable definitions (tokens, API keys) — never commit secrets here
 - **`aws/`**: AWS CLI config and credentials — managed by vault, never commit plaintext
 - **`claude/`**: Claude Code settings and custom slash commands (symlinked to `~/.claude` by setup, copied into claude primate image)
@@ -53,4 +53,5 @@ Miniforge3-derived images each get a conda environment (`<image>-env`) that is a
 - APT cleanup pattern in Dockerfiles: `apt-get autoclean -y && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*`
 - Standard images target aarch64 (ARM64); CUDA images target sm_121 (Blackwell/DGX Spark)
 - Shell config is layered: `zshrc.template` sources `~/.zbase` and `~/.zaliases`; functions live in `zfuncs`
-- Git remote is AWS CodeCommit; main branch is `master`
+- Git remote is GitHub; main branch is `master`
+- Vault files (`*.vault`) and personal assets (`face`) are gitignored — secrets are never committed
