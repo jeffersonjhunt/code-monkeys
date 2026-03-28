@@ -248,15 +248,6 @@ do_status() {
     fi
   done
 
-  # sync status
-  local sync_file="${SCRIPT_DIR}/.vault-synced"
-  echo ""
-  if [[ -f "$sync_file" ]]; then
-    echo "  last synced: $(head -1 "$sync_file")"
-  else
-    echo "  last synced: never"
-  fi
-
   # remote comparison
   if [[ -n "${VAULT_BUCKET:-}" ]]; then
     local profile_arg=()
@@ -294,6 +285,15 @@ do_status() {
         fi
       done
     fi
+  fi
+
+  # sync status
+  local sync_file="${SCRIPT_DIR}/.vault-synced"
+  echo ""
+  if [[ -f "$sync_file" ]]; then
+    echo "  last synced: $(head -1 "$sync_file")"
+  else
+    echo "  last synced: never"
   fi
 }
 
