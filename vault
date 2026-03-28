@@ -213,9 +213,11 @@ do_status() {
   done
 
   local sync_file="${SCRIPT_DIR}/.vault-synced"
+  echo ""
   if [[ -f "$sync_file" ]]; then
-    echo ""
     echo "  last synced: $(cat "$sync_file")"
+  else
+    echo "  last synced: never"
   fi
 }
 
