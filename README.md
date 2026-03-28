@@ -11,7 +11,13 @@ cd primates
 make all
 ```
 
-This gives you a working shell environment and Docker images. If you have vault files, copy them into the repo root and run `./vault unlock` before `./setup`.
+This gives you a working shell environment and Docker images. To pull in secrets from a previous setup:
+
+```bash
+export VAULT_BUCKET=my-vault-bucket
+./vault sync pull
+./vault unlock
+```
 
 ## Setup
 
@@ -133,7 +139,7 @@ The `vault` script encrypts secrets at rest using AES-256-CBC with PBKDF2. It ma
 | `env` | `.env.vault` | file |
 | `aws/` | `.aws.vault` | directory |
 
-Both the plaintext files and the encrypted `.vault` files are gitignored. Vault files should be backed up separately (e.g., rsync, S3, USB drive).
+Both the plaintext files and the encrypted `.vault` files are gitignored.
 
 ```bash
 ./vault unlock       # decrypt all vaults (prompts for password)
@@ -144,11 +150,29 @@ Both the plaintext files and the encrypted `.vault` files are gitignored. Vault 
 
 Once unlocked, `setup` symlinks `ssh` → `~/.ssh` and `aws` → `~/.aws`. The `env` file is loaded by `primate` via `--env-file`.
 
-To create your own vaults from scratch:
+### Syncing vault files with S3
+
+Vault files can be backed up and shared across machines using an S3 bucket. Set the `VAULT_BUCKET` environment variable (e.g., in your `env` file or shell profile):
+
+```bash
+export VAULT_BUCKET=my-vault-bucket
+```
+
+Then use `vault sync`:
+
+```bash
+./vault sync push    # upload vault files to S3
+./vault sync pull    # download vault files from S3
+./vault sync         # push then pull (bidirectional)
+```
+
+This requires the AWS CLI and credentials with read/write access to the bucket.
+
+### Creating vaults from scratch
 
 1. Create `ssh/`, `aws/`, and/or `env` with your credentials
 2. Run `./vault lock` to encrypt them (you'll set a password)
-3. Back up the resulting `.vault` files somewhere safe
+3. Run `./vault sync push` to back them up to S3 (optional)
 
 ## Repository Layout
 

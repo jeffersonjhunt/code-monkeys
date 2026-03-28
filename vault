@@ -2,7 +2,7 @@
 #
 # vault — encrypt/decrypt secrets at rest
 #
-# Usage: vault lock | unlock | rekey | status
+# Usage: vault lock | unlock | rekey | status | sync [push|pull]
 #
 # Manages: ssh/ (directory), env (file), aws/ (directory)
 # Encrypted to: .ssh.vault, .env.vault, and .aws.vault
@@ -30,6 +30,10 @@ Commands:
   lock      Encrypt all vaults and remove plaintext
   rekey     Re-encrypt all vaults with a new password
   status    Show lock/unlock state of each vault
+  sync      Sync vault files with S3 (push, pull, or both if no arg)
+
+Environment:
+  VAULT_BUCKET  S3 bucket name for sync (required for sync command)
 EOF
 }
 
@@ -194,6 +198,58 @@ do_status() {
   done
 }
 
+VAULT_FILES=()
+for entry in "${VAULTS[@]}"; do
+  local_rest="${entry#*:}"
+  VAULT_FILES+=("${local_rest%%:*}")
+done
+
+do_sync() {
+  local direction="${1:-both}"
+
+  if [[ -z "${VAULT_BUCKET:-}" ]]; then
+    echo "Error: VAULT_BUCKET environment variable is not set."
+    echo "  export VAULT_BUCKET=<your-s3-bucket-name>"
+    exit 1
+  fi
+
+  local s3_prefix="s3://${VAULT_BUCKET}"
+
+  case "$direction" in
+    push)
+      for vf in "${VAULT_FILES[@]}"; do
+        local vf_path="${SCRIPT_DIR}/${vf}"
+        if [[ -f "$vf_path" ]]; then
+          aws s3 cp "$vf_path" "${s3_prefix}/${vf}"
+          echo "  pushed: ${vf}"
+        else
+          echo "  skip: ${vf} not found"
+        fi
+      done
+      ;;
+    pull)
+      for vf in "${VAULT_FILES[@]}"; do
+        local vf_path="${SCRIPT_DIR}/${vf}"
+        if aws s3 cp "${s3_prefix}/${vf}" "$vf_path" 2>/dev/null; then
+          echo "  pulled: ${vf}"
+        else
+          echo "  skip: ${vf} not found in bucket"
+        fi
+      done
+      ;;
+    both)
+      echo "Pushing..."
+      do_sync push
+      echo "Pulling..."
+      do_sync pull
+      ;;
+    *)
+      echo "Usage: vault sync [push|pull]"
+      exit 1
+      ;;
+  esac
+}
+
 if [[ $# -lt 1 ]]; then
   usage
   exit 1
@@ -204,5 +260,6 @@ case "$1" in
   lock)   do_lock ;;
   rekey)  do_rekey ;;
   status) do_status ;;
+  sync)   do_sync "${2:-both}" ;;
   *)      usage; exit 1 ;;
 esac
