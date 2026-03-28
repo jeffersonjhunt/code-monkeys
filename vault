@@ -2,7 +2,7 @@
 #
 # vault — encrypt/decrypt secrets at rest
 #
-# Usage: vault lock | unlock | rekey | status | sync [push|pull]
+# Usage: vault lock | unlock | rekey | status | sync <push|pull>
 #
 # Manages: ssh/ (directory), env (file), aws/ (directory)
 # Encrypted to: .ssh.vault, .env.vault, and .aws.vault
@@ -30,41 +30,7 @@ _aws() {
   fi
 }
 
-md5_file() {
-  if command -v md5sum >/dev/null 2>&1; then
-    md5sum "$1" | awk '{print $1}'
-  else
-    md5 -q "$1"
-  fi
-}
-
-# extract md5 prefix from a bucket listing for a given vault file
-# usage: extract_md5 "$listing" "aws.vault"
-extract_md5() {
-  echo "$1" | awk -v vf="$2" '{
-    for (i=1; i<=NF; i++) {
-      n = length($i)
-      vl = length(vf)
-      if (n == 32 + 1 + vl && substr($i, 34) == vf && substr($i, 33, 1) == ".") {
-        print substr($i, 1, 32)
-        exit
-      }
-    }
-  }'
-}
-
-# extract all md5-prefixed filenames from a bucket listing for a given vault file
-extract_old_files() {
-  echo "$1" | awk -v vf="$2" '{
-    for (i=1; i<=NF; i++) {
-      n = length($i)
-      vl = length(vf)
-      if (n == 32 + 1 + vl && substr($i, 34) == vf && substr($i, 33, 1) == ".") {
-        print $i
-      }
-    }
-  }'
-}
+SYNC_INCLUDES=(--exclude "*" --include "*.vault" --include "face")
 
 usage() {
   cat <<EOF
@@ -75,7 +41,7 @@ Commands:
   lock      Encrypt all vaults and remove plaintext
   rekey     Re-encrypt all vaults with a new password
   status    Show lock/unlock state of each vault
-  sync      Sync vault files with S3 (push or pull, --force to overwrite)
+  sync      Sync vault files with S3 (push or pull)
 
 Environment:
   VAULT_BUCKET   S3 bucket name for sync (required for sync command)
@@ -257,46 +223,12 @@ do_status() {
     fi
   done
 
-  # remote comparison
-  if [[ -n "${VAULT_BUCKET:-}" ]]; then
-    local listing
-    if listing=$(_aws s3 ls "s3://${VAULT_BUCKET}/" 2>/dev/null); then
-      echo ""
-      for i in "${!VAULT_FILES[@]}"; do
-        local vf="${VAULT_FILES[$i]}"
-        local s3key="${VAULT_S3KEYS[$i]}"
-        local remote_md5
-        remote_md5=$(extract_md5 "$listing" "$s3key")
-        local vf_path="${SCRIPT_DIR}/${vf}"
-
-        if [[ -z "$remote_md5" ]]; then
-          printf "  %-16s not in bucket\n" "${vf}"
-          continue
-        fi
-
-        if [[ ! -f "$vf_path" ]]; then
-          printf "  %-16s remote only (%s)\n" "${vf}" "${remote_md5:0:8}…"
-          continue
-        fi
-
-        local local_md5
-        local_md5=$(md5_file "$vf_path")
-
-        if [[ "$local_md5" == "$remote_md5" ]]; then
-          printf "  %-16s in sync (%s)\n" "${vf}" "${local_md5:0:8}…"
-        else
-          printf "  %-16s OUT OF SYNC (local: %s… remote: %s…)\n" "${vf}" "${local_md5:0:8}" "${remote_md5:0:8}"
-        fi
-      done
-    fi
-  fi
-
   # sync status
   echo ""
   if [[ -n "${VAULT_BUCKET:-}" ]]; then
     local sync_file="${SCRIPT_DIR}/.vault-synced"
     if [[ -f "$sync_file" ]]; then
-      echo "  last synced: $(head -1 "$sync_file")"
+      echo "  last synced: $(cat "$sync_file")"
     else
       echo "  last synced: never"
     fi
@@ -305,25 +237,8 @@ do_status() {
   fi
 }
 
-# vault file names without leading dot (for S3 key construction)
-VAULT_FILES=()
-VAULT_S3KEYS=()
-for entry in "${VAULTS[@]}"; do
-  local_rest="${entry#*:}"
-  vf="${local_rest%%:*}"
-  VAULT_FILES+=("$vf")
-  VAULT_S3KEYS+=("${vf#.}")
-done
-
 do_sync() {
   local direction="$1"
-  local force=false
-  if [[ "$direction" == "--force" ]]; then
-    force=true
-    direction="$2"
-  elif [[ "${2:-}" == "--force" ]]; then
-    force=true
-  fi
 
   if [[ -z "${VAULT_BUCKET:-}" ]]; then
     echo "Error: VAULT_BUCKET environment variable is not set."
@@ -331,79 +246,14 @@ do_sync() {
     exit 1
   fi
 
-  local s3_prefix="s3://${VAULT_BUCKET}"
+  local s3_uri="s3://${VAULT_BUCKET}"
 
   case "$direction" in
     push)
-      local listing
-      listing=$(_aws s3 ls "${s3_prefix}/" 2>/dev/null || true)
-
-      # check if remote has changed since last sync
-      if ! $force; then
-        local sync_file="${SCRIPT_DIR}/.vault-synced"
-        if [[ -f "$sync_file" ]]; then
-          local changed=()
-          for i in "${!VAULT_FILES[@]}"; do
-            local s3key="${VAULT_S3KEYS[$i]}"
-            local remote_md5
-            remote_md5=$(extract_md5 "$listing" "$s3key")
-            [[ -z "$remote_md5" ]] && continue
-            local saved_md5
-            saved_md5=$(grep "^${s3key}:" "$sync_file" 2>/dev/null | cut -d: -f2 || true)
-            if [[ -n "$saved_md5" && "$remote_md5" != "$saved_md5" ]]; then
-              changed+=("${VAULT_FILES[$i]}")
-            fi
-          done
-          if [[ ${#changed[@]} -gt 0 ]]; then
-            echo "FATAL: remote vault files have changed since last sync:"
-            for f in "${changed[@]}"; do
-              echo "  ${f}"
-            done
-            echo ""
-            echo "Run './vault sync pull' to get the latest, or './vault sync --force push' to overwrite."
-            exit 1
-          fi
-        fi
-      fi
-
-      for i in "${!VAULT_FILES[@]}"; do
-        local vf="${VAULT_FILES[$i]}"
-        local s3key="${VAULT_S3KEYS[$i]}"
-        local vf_path="${SCRIPT_DIR}/${vf}"
-        if [[ ! -f "$vf_path" ]]; then
-          echo "  skip: ${vf} not found"
-          continue
-        fi
-        local md5
-        md5=$(md5_file "$vf_path")
-        # remove old versions
-        local old_files
-        old_files=$(extract_old_files "$listing" "$s3key")
-        for old in $old_files; do
-          _aws s3 rm "${s3_prefix}/${old}" >/dev/null 2>&1
-        done
-        # also remove bare vault file (legacy, no md5 prefix)
-        _aws s3 rm "${s3_prefix}/${vf}" >/dev/null 2>&1 || true
-        _aws s3 cp "$vf_path" "${s3_prefix}/${md5}.${s3key}"
-        echo "  pushed: ${vf} (${md5:0:8}…)"
-      done
+      _aws s3 sync "$SCRIPT_DIR" "$s3_uri" "${SYNC_INCLUDES[@]}"
       ;;
     pull)
-      local listing
-      listing=$(_aws s3 ls "${s3_prefix}/" 2>/dev/null || true)
-      for i in "${!VAULT_FILES[@]}"; do
-        local vf="${VAULT_FILES[$i]}"
-        local s3key="${VAULT_S3KEYS[$i]}"
-        local remote_md5
-        remote_md5=$(extract_md5 "$listing" "$s3key")
-        if [[ -z "$remote_md5" ]]; then
-          echo "  skip: ${vf} not found in bucket"
-          continue
-        fi
-        local vf_path="${SCRIPT_DIR}/${vf}"
-        _aws s3 cp "${s3_prefix}/${remote_md5}.${s3key}" "$vf_path"
-        echo "  pulled: ${vf} (${remote_md5:0:8}…)"
-      done
+      _aws s3 sync "$s3_uri" "$SCRIPT_DIR" "${SYNC_INCLUDES[@]}"
       ;;
     *)
       echo "Usage: vault sync <push|pull>"
@@ -411,17 +261,7 @@ do_sync() {
       ;;
   esac
 
-  # record sync timestamp and remote md5s
-  local sync_file="${SCRIPT_DIR}/.vault-synced"
-  date "+%Y-%m-%d %H:%M:%S %Z" > "$sync_file"
-  local current_listing
-  current_listing=$(_aws s3 ls "${s3_prefix}/" 2>/dev/null || true)
-  for i in "${!VAULT_FILES[@]}"; do
-    local s3key="${VAULT_S3KEYS[$i]}"
-    local rmd5
-    rmd5=$(extract_md5 "$current_listing" "$s3key")
-    [[ -n "$rmd5" ]] && echo "${s3key}:${rmd5}" >> "$sync_file"
-  done
+  date "+%Y-%m-%d %H:%M:%S %Z" > "${SCRIPT_DIR}/.vault-synced"
 }
 
 if [[ $# -lt 1 ]]; then
@@ -435,12 +275,11 @@ case "$1" in
   rekey)  do_rekey ;;
   status) do_status ;;
   sync)
-    shift
-    if [[ -z "${1:-}" ]]; then
-      echo "Usage: vault sync [--force] <push|pull>"
+    if [[ -z "${2:-}" ]]; then
+      echo "Usage: vault sync <push|pull>"
       exit 1
     fi
-    do_sync "$@"
+    do_sync "$2"
     ;;
   *)      usage; exit 1 ;;
 esac
