@@ -94,13 +94,23 @@ function primate() {
     __PORT_OPTS+=(-p "${__PORT%/*}:${__PORT%/*}")
   done
 
+  local __SSH_MOUNT=""
+  if [[ -d ~/.ssh ]]; then
+    __SSH_MOUNT="$(cd -P ~/.ssh && pwd)"
+  fi
+
+  local __AWS_MOUNT=""
+  if [[ -d ~/.aws ]]; then
+    __AWS_MOUNT="$(cd -P ~/.aws && pwd)"
+  fi
+
   docker run --rm -it \
     --hostname "${__IMAGE}" \
     "${__ENV_FILE_MOUNT[@]}" \
     "${__GPU_OPTS[@]}" \
     "${__PORT_OPTS[@]}" \
-    --volume ~/.ssh:/home/codemonkey/.ssh \
-    --volume ~/.aws:/home/codemonkey/.aws \
+    ${__SSH_MOUNT:+--volume "${__SSH_MOUNT}:/home/codemonkey/.ssh"} \
+    ${__AWS_MOUNT:+--volume "${__AWS_MOUNT}:/home/codemonkey/.aws"} \
     "${__WORKSPACE_MOUNT[@]}" \
     --volume ${__IMAGE}-home:/home/codemonkey \
     --user=codemonkey:codemonkey \
