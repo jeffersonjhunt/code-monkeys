@@ -213,9 +213,17 @@ install_ohmyzsh() {
       exit 1
     fi
     echo "  installing Oh-My-Zsh..."
-    run sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-    # remove the default .zshrc that oh-my-zsh creates — ours replaces it
-    rm -f "${HOME}/.zshrc"
+    if [[ "$DRY_RUN" == true ]]; then
+      echo "  [dry-run] install oh-my-zsh"
+    else
+      sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+      if [[ ! -f "${HOME}/.oh-my-zsh/oh-my-zsh.sh" ]]; then
+        echo "  ERROR: Oh-My-Zsh installation failed."
+        exit 1
+      fi
+      # remove the default .zshrc that oh-my-zsh creates — ours replaces it
+      rm -f "${HOME}/.zshrc"
+    fi
   fi
 
   local current_shell
