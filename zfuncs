@@ -29,6 +29,19 @@ function() {
 # Functions
 #
 
+# load env file into current shell as exported variables
+function setenv() {
+  local __ENV_FILE="${1:-$(dirname $(readlink -f ${(%):-%x}))/env}"
+  if [[ ! -f "$__ENV_FILE" ]]; then
+    echo "env file not found: ${__ENV_FILE}"
+    return 1
+  fi
+  set -a
+  source "$__ENV_FILE"
+  set +a
+  echo "loaded: ${__ENV_FILE}"
+}
+
 # starts a primate container with a persistent home volume
 function primate() {
 
