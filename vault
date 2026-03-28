@@ -21,6 +21,42 @@ VAULTS=(
 
 OPENSSL_ARGS=(-aes-256-cbc -salt -pbkdf2 -iter 600000)
 
+md5_file() {
+  if command -v md5sum >/dev/null 2>&1; then
+    md5sum "$1" | awk '{print $1}'
+  else
+    md5 -q "$1"
+  fi
+}
+
+# extract md5 prefix from a bucket listing for a given vault file
+# usage: extract_md5 "$listing" "aws.vault"
+extract_md5() {
+  echo "$1" | awk -v vf="$2" '{
+    for (i=1; i<=NF; i++) {
+      n = length($i)
+      vl = length(vf)
+      if (n == 32 + 1 + vl && substr($i, 34) == vf && substr($i, 33, 1) == ".") {
+        print substr($i, 1, 32)
+        exit
+      }
+    }
+  }'
+}
+
+# extract all md5-prefixed filenames from a bucket listing for a given vault file
+extract_old_files() {
+  echo "$1" | awk -v vf="$2" '{
+    for (i=1; i<=NF; i++) {
+      n = length($i)
+      vl = length(vf)
+      if (n == 32 + 1 + vl && substr($i, 34) == vf && substr($i, 33, 1) == ".") {
+        print $i
+      }
+    }
+  }'
+}
+
 usage() {
   cat <<EOF
 Usage: vault <command>
@@ -231,9 +267,11 @@ do_status() {
     local listing
     if listing=$(aws "${profile_arg[@]}" s3 ls "s3://${VAULT_BUCKET}/" 2>/dev/null); then
       echo ""
-      for vf in "${VAULT_FILES[@]}"; do
+      for i in "${!VAULT_FILES[@]}"; do
+        local vf="${VAULT_FILES[$i]}"
+        local s3key="${VAULT_S3KEYS[$i]}"
         local remote_md5
-        remote_md5=$(echo "$listing" | grep -oP "[a-f0-9]{32}(?=\.${vf//./\\.})" | head -1)
+        remote_md5=$(extract_md5 "$listing" "$s3key")
         local vf_path="${SCRIPT_DIR}/${vf}"
 
         if [[ -z "$remote_md5" ]]; then
@@ -247,7 +285,7 @@ do_status() {
         fi
 
         local local_md5
-        local_md5=$(md5sum "$vf_path" | awk '{print $1}')
+        local_md5=$(md5_file "$vf_path")
 
         if [[ "$local_md5" == "$remote_md5" ]]; then
           printf "  %-16s in sync (%s)\n" "${vf}" "${local_md5:0:8}…"
@@ -259,10 +297,14 @@ do_status() {
   fi
 }
 
+# vault file names without leading dot (for S3 key construction)
 VAULT_FILES=()
+VAULT_S3KEYS=()
 for entry in "${VAULTS[@]}"; do
   local_rest="${entry#*:}"
-  VAULT_FILES+=("${local_rest%%:*}")
+  local vf="${local_rest%%:*}"
+  VAULT_FILES+=("$vf")
+  VAULT_S3KEYS+=("${vf#.}")
 done
 
 do_sync() {
@@ -282,38 +324,45 @@ do_sync() {
 
   case "$direction" in
     push)
-      for vf in "${VAULT_FILES[@]}"; do
+      local listing
+      listing=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null || true)
+      for i in "${!VAULT_FILES[@]}"; do
+        local vf="${VAULT_FILES[$i]}"
+        local s3key="${VAULT_S3KEYS[$i]}"
         local vf_path="${SCRIPT_DIR}/${vf}"
         if [[ ! -f "$vf_path" ]]; then
           echo "  skip: ${vf} not found"
           continue
         fi
         local md5
-        md5=$(md5sum "$vf_path" | awk '{print $1}')
+        md5=$(md5_file "$vf_path")
         # remove old versions
         local old_files
-        old_files=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null | grep -oP "[a-f0-9]{32}\.${vf//./\\.}" || true)
+        old_files=$(extract_old_files "$listing" "$s3key")
         for old in $old_files; do
           aws "${profile_arg[@]}" s3 rm "${s3_prefix}/${old}" >/dev/null 2>&1
         done
-        aws "${profile_arg[@]}" s3 cp "$vf_path" "${s3_prefix}/${md5}.${vf}"
+        # also remove bare vault file (legacy, no md5 prefix)
+        aws "${profile_arg[@]}" s3 rm "${s3_prefix}/${vf}" >/dev/null 2>&1 || true
+        aws "${profile_arg[@]}" s3 cp "$vf_path" "${s3_prefix}/${md5}.${s3key}"
         echo "  pushed: ${vf} (${md5:0:8}…)"
       done
       ;;
     pull)
       local listing
       listing=$(aws "${profile_arg[@]}" s3 ls "${s3_prefix}/" 2>/dev/null || true)
-      for vf in "${VAULT_FILES[@]}"; do
-        local remote_file
-        remote_file=$(echo "$listing" | grep -oP "[a-f0-9]{32}\.${vf//./\\.}" | head -1)
-        if [[ -z "$remote_file" ]]; then
+      for i in "${!VAULT_FILES[@]}"; do
+        local vf="${VAULT_FILES[$i]}"
+        local s3key="${VAULT_S3KEYS[$i]}"
+        local remote_md5
+        remote_md5=$(extract_md5 "$listing" "$s3key")
+        if [[ -z "$remote_md5" ]]; then
           echo "  skip: ${vf} not found in bucket"
           continue
         fi
         local vf_path="${SCRIPT_DIR}/${vf}"
-        aws "${profile_arg[@]}" s3 cp "${s3_prefix}/${remote_file}" "$vf_path"
-        local md5="${remote_file%%.*}"
-        echo "  pulled: ${vf} (${md5:0:8}…)"
+        aws "${profile_arg[@]}" s3 cp "${s3_prefix}/${remote_md5}.${s3key}" "$vf_path"
+        echo "  pulled: ${vf} (${remote_md5:0:8}…)"
       done
       ;;
     both)
