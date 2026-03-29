@@ -31,7 +31,7 @@ function() {
 
 # load env file into current shell as exported variables
 function setenv() {
-  local __ENV_FILE="${1:-$(dirname $(readlink -f ${(%):-%x}))/env}"
+  local __ENV_FILE="${1:-${${(%):-%x}:A:h}/env}"
   if [[ ! -f "$__ENV_FILE" ]]; then
     echo "env file not found: ${__ENV_FILE}"
     return 1
@@ -69,7 +69,8 @@ function primate() {
     __WORKSPACE_MOUNT=(--volume "$(pwd):/home/codemonkey/workspace")
   fi
 
-  local __ENV_FILE="$(dirname $(readlink -f ${(%):-%x}))/env"
+  local __ZFUNCS_DIR="${${(%):-%x}:A:h}"
+  local __ENV_FILE="${__ZFUNCS_DIR}/env"
   local __ENV_FILE_MOUNT=()
   if [[ -f "$__ENV_FILE" ]]; then
     __ENV_FILE_MOUNT=(--env-file "$__ENV_FILE")
@@ -94,14 +95,14 @@ function primate() {
     __PORT_OPTS+=(-p "${__PORT%/*}:${__PORT%/*}")
   done
 
-  local __SSH_MOUNT=""
+  local __SSH_MOUNT=()
   if [[ -d ~/.ssh ]]; then
-    __SSH_MOUNT="$(cd -P ~/.ssh && pwd)"
+    __SSH_MOUNT=(--volume "$(cd -P ~/.ssh && pwd):/home/codemonkey/.ssh")
   fi
 
-  local __AWS_MOUNT=""
+  local __AWS_MOUNT=()
   if [[ -d ~/.aws ]]; then
-    __AWS_MOUNT="$(cd -P ~/.aws && pwd)"
+    __AWS_MOUNT=(--volume "$(cd -P ~/.aws && pwd):/home/codemonkey/.aws")
   fi
 
   docker run --rm -it \
@@ -109,8 +110,8 @@ function primate() {
     "${__ENV_FILE_MOUNT[@]}" \
     "${__GPU_OPTS[@]}" \
     "${__PORT_OPTS[@]}" \
-    ${__SSH_MOUNT:+--volume "${__SSH_MOUNT}:/home/codemonkey/.ssh"} \
-    ${__AWS_MOUNT:+--volume "${__AWS_MOUNT}:/home/codemonkey/.aws"} \
+    "${__SSH_MOUNT[@]}" \
+    "${__AWS_MOUNT[@]}" \
     "${__WORKSPACE_MOUNT[@]}" \
     --volume ${__IMAGE}-home:/home/codemonkey \
     --user=codemonkey:codemonkey \
@@ -142,7 +143,7 @@ function primate-upgrade() {
     return 1
   fi
 
-  local __REPO="$(dirname $(readlink -f ${(%):-%x}))"
+  local __REPO="${${(%):-%x}:A:h}"
   local __IMAGES=("$@")
 
   if [[ "$1" == "--all" ]]; then
