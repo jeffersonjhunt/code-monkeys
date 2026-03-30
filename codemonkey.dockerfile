@@ -65,7 +65,15 @@ RUN apt-get -y install \
       tree \
       unzip \
       p7zip-full \
-      zsh 
+      zsh \
+      nodejs \
+      npm
+
+# AWS CLI v2
+RUN curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip \
+  && unzip -q /tmp/awscliv2.zip -d /tmp \
+  && /tmp/aws/install \
+  && rm -rf /tmp/aws /tmp/awscliv2.zip
 
 # make clams fresh
 RUN if [ "${FRESH}" != "false" ]; then \
