@@ -1,6 +1,6 @@
 # Makefile for primates project
 
-TARGETS := minion embedded miniforge3 claude opencode lamp huggingface
+TARGETS := minion embedded miniforge3 claude opencode kiro lamp huggingface
 
 MAKEFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 DIR := $(notdir $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))
@@ -22,6 +22,7 @@ help:
 	@echo "  miniforge3.build       Build Miniforge3 (conda for aarch64)"
 	@echo "  claude.build           Build claude-code environment"
 	@echo "  opencode.build         Build opencode-ai environment"
+	@echo "  kiro.build             Build Amazon Kiro CLI environment"
 	@echo "  embedded.build         Build embedded development environment (cc65, vasm, libfmt, libboost)"
 	@echo "  lamp.build             Build LAMP stack (Apache, MariaDB, PHP)"
 	@echo "  huggingface.build      Build Hugging Face environment (python3 venv, hf cli)"

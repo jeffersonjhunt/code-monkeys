@@ -57,6 +57,7 @@ Primates are purpose-built Docker images for different development domains. They
 ```
 debian:13-slim → codemonkey → miniforge3 → claude
                              │            → opencode
+                             │            → kiro
                              → embedded
                              → lamp
                              → huggingface
@@ -72,6 +73,7 @@ nvidia/cuda:13.1.1 → llama-cpp-spark  (multi-stage: full/light/server)
 | **miniforge3** | Adds Miniforge3 (conda for aarch64 and x86_64), creates `miniforge3-env` |
 | **claude** | Adds Claude Code via native installer, creates `claude-env` |
 | **opencode** | Adds npm and opencode-ai, creates `opencode-env` |
+| **kiro** | Adds Amazon Kiro CLI via native installer, creates `kiro-env` |
 | **embedded** | Adds libfmt, libboost, cc65, vasm 6502 assembler |
 | **lamp** | Adds Apache, MariaDB, PHP |
 | **huggingface** | Adds python3 venv and huggingface-cli |

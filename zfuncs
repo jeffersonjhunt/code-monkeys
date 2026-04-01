@@ -120,7 +120,7 @@ function primate() {
 }
 
 function _primate() {
-  local known_primates=(codemonkey minion embedded miniforge3 claude opencode llama-cpp-spark comfy-ui-spark lamp huggingface)
+  local known_primates=(codemonkey minion embedded miniforge3 claude opencode kiro llama-cpp-spark comfy-ui-spark lamp huggingface)
   local local_images=(${(f)"$(docker images --format '{{.Repository}}' 2>/dev/null)"})
   local available=()
   for name in "${known_primates[@]}"; do
@@ -148,7 +148,7 @@ function primate-upgrade() {
 
   if [[ "$1" == "--all" ]]; then
     __IMAGES=()
-    local known=(codemonkey minion embedded miniforge3 claude opencode lamp huggingface)
+    local known=(codemonkey minion embedded miniforge3 claude opencode kiro lamp huggingface)
     for name in "${known[@]}"; do
       if docker volume inspect "${name}-home" &>/dev/null; then
         __IMAGES+=("$name")

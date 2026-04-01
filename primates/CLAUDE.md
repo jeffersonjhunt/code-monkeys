@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-make all                    # Build codemonkey base + all targets (minion, embedded, miniforge3, claude, opencode, lamp, huggingface)
+make all                    # Build codemonkey base + all targets (minion, embedded, miniforge3, claude, opencode, kiro, lamp, huggingface)
 make codemonkey.build       # Build the codemonkey base image (from parent directory)
 make <name>.build           # Build a specific image, e.g. make claude.build
 make llama-cpp-spark.build  # Build llama.cpp for DGX Spark (requires NVIDIA kernel)
@@ -25,7 +25,8 @@ All builds use `docker buildx build` except llama-cpp-spark which uses `docker b
 codemonkey (base, dockerfile in parent dir)
 ├── miniforge3       (adds Miniforge3 for aarch64, conda init for zsh)
 │   ├── claude       (adds claude-code via native installer, claude-env conda env)
-│   └── opencode     (adds npm, opencode-ai, opencode-env conda env)
+│   ├── opencode     (adds npm, opencode-ai, opencode-env conda env)
+│   └── kiro         (adds Amazon Kiro CLI via native installer, kiro-env conda env)
 ├── embedded         (adds libfmt, libboost, cc65, vasm 6502 assembler)
 ├── lamp             (adds Apache, MariaDB, PHP)
 ├── huggingface      (adds python3 venv, huggingface-cli)

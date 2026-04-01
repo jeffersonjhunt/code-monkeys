@@ -34,7 +34,7 @@ make clean                  # Remove all built images
 ## Image Hierarchy
 
 ```
-debian:13-slim → codemonkey → miniforge3 (miniforge3-env) → claude (claude-env) | opencode (opencode-env)
+debian:13-slim → codemonkey → miniforge3 (miniforge3-env) → claude (claude-env) | opencode (opencode-env) | kiro (kiro-env)
                             → embedded
                             → lamp
                             → huggingface
