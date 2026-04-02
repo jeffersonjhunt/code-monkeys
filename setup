@@ -70,6 +70,16 @@ preflight() {
     echo "Install them and re-run setup."
     exit 1
   fi
+
+  local optional=()
+  for cmd in aws fastfetch; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      printf "  %-8s ok\n" "$cmd"
+    else
+      printf "  %-8s WARNING: not found — some features will be unavailable\n" "$cmd"
+      optional+=("$cmd")
+    fi
+  done
   echo ""
 }
 

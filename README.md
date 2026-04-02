@@ -38,6 +38,7 @@ What it does:
 - Clones oh-my-zsh plugins: `zsh-autosuggestions`, `zsh-completions`, `zsh-syntax-highlighting`
 - Installs git hooks from `hooks/` into `.git/hooks/`
 - On macOS: installs custom key bindings to `~/Library/KeyBindings`
+- Warns (non-fatal) if optional tools `aws` or `fastfetch` are not installed
 
 ## Shell Configuration
 
