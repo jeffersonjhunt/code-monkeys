@@ -8,8 +8,11 @@ FROM ${BASE_CUDA_RUN_CONTAINER}
 # CUDA architecture for DGX Spark Blackwell GPUs (sm_121)
 ARG CUDA_DOCKER_ARCH=121
 
-# Create codemonkey user for primate launcher compatibility
-RUN useradd \
+# Replace the default ubuntu user (UID 1000) with codemonkey so bind
+# mounts from the host (workspace, .ssh, .aws) have matching ownership
+RUN userdel -r ubuntu 2>/dev/null || true \
+    && useradd \
+    --uid 1000 \
     --home-dir /home/codemonkey \
     --create-home \
     --shell /bin/zsh \
