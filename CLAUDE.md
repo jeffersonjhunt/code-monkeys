@@ -8,7 +8,7 @@ This is a personal development environment repository (dotfiles + containerized 
 
 ## Repository Structure
 
-- **Root directory**: Dotfiles and shell configuration (zshrc.template, zbase, zaliases, zfuncs, vimrc, gitconfig, etc.)
+- **Root directory**: Dotfiles and shell configuration (zshrc.template, zbase, zaliases, zfuncs, vimrc, etc.)
 - **`codemonkey.dockerfile`**: Base Docker image (debian:13-slim) that all primates inherit from
 - **`primates/`**: Specialized Docker images built on top of codemonkey (see `primates/CLAUDE.md` for details)
 - **`setup`**: Host machine setup script that symlinks dotfiles into `$HOME`
@@ -54,4 +54,4 @@ Miniforge3-derived images each get a conda environment (`<image>-env`) that is a
 - Standard images target aarch64 (ARM64); CUDA images target sm_121 (Blackwell/DGX Spark)
 - Shell config is layered: `zshrc.template` sources `~/.zbase` and `~/.zaliases`; functions live in `zfuncs`
 - Git remote is GitHub; main branch is `master`
-- Vault files (`*.vault`) and personal assets (`face`) are gitignored — secrets are never committed
+- Vault files (`*.vault`) and personal assets (`face`, `gitconfig`) are gitignored — secrets are never committed

@@ -30,7 +30,7 @@ _aws() {
   fi
 }
 
-SYNC_INCLUDES=(--exclude "*" --include "*.vault" --include "face")
+SYNC_INCLUDES=(--exclude "*" --include "*.vault" --include "face" --include "gitconfig")
 
 usage() {
   cat <<EOF

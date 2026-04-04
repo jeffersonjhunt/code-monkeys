@@ -98,6 +98,11 @@ create_dot_links() {
     local target="${HOME}/.${name}"
     local source="${SRC}/${name}"
 
+    if [[ ! -e "$source" && ! -L "$source" ]]; then
+      echo "  skip: ${source} not found (available after vault sync pull)"
+      continue
+    fi
+
     if [[ -e "$target" || -L "$target" ]]; then
       echo "  skip: ${target} already exists"
     else

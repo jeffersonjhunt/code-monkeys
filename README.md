@@ -31,7 +31,7 @@ The `setup` script symlinks dotfiles from this repo into `$HOME`:
 ```
 
 What it does:
-- Symlinks `gitconfig`, `gitignore`, `vimrc`, `toprc`, `zaliases`, `zbase`, `zfuncs`, `zprofile` as dotfiles in `$HOME`
+- Symlinks `gitconfig` (if present), `gitignore`, `vimrc`, `toprc`, `zaliases`, `zbase`, `zfuncs`, `zprofile` as dotfiles in `$HOME`
 - Symlinks `ssh` and `aws` if present (created by `vault unlock`)
 - Symlinks `fastfetch` into `~/.config/`, `jjh.zsh-theme` into `~/.oh-my-zsh/custom/themes/`, and `claude` into `~/.claude`
 - Installs `zbase` as `~/.zshrc` (copy, not symlink)
@@ -193,7 +193,7 @@ Uses `aws s3 sync` under the hood — only transfers files that have changed. Re
 ├── zaliases               # shell aliases
 ├── zfuncs                 # shell functions (primate launcher, utilities)
 ├── zprofile               # zsh profile
-├── gitconfig              # global git config
+├── gitconfig              # global git config (gitignored, managed via vault sync)
 ├── gitignore              # global gitignore
 ├── vimrc                  # vim config
 ├── toprc                  # top config

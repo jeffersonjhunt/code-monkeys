@@ -79,7 +79,7 @@ HOME=/home/codemonkey
 cp "$$SRC/zaliases"  "$$HOME/.zaliases"
 cp "$$SRC/zbase"     "$$HOME/.zbase"
 cp "$$SRC/zprofile"  "$$HOME/.zprofile"
-cp "$$SRC/gitconfig" "$$HOME/.gitconfig"
+[ -f "$$SRC/gitconfig" ] && cp "$$SRC/gitconfig" "$$HOME/.gitconfig"
 cp "$$SRC/gitignore" "$$HOME/.gitignore"
 cp "$$SRC/vimrc"     "$$HOME/.vimrc"
 cp "$$SRC/toprc"     "$$HOME/.toprc"

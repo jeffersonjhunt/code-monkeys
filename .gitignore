@@ -4,6 +4,7 @@ aws/
 *.vault
 .vault-synced
 face
+gitconfig
 openvpn/logs/
 **/*.DS_Store
 .DS_Store

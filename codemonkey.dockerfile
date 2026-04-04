@@ -23,7 +23,6 @@ RUN useradd \
 COPY zaliases /home/codemonkey/.zaliases
 COPY zbase /home/codemonkey/.zbase
 COPY zprofile /home/codemonkey/.zprofile
-COPY gitconfig /home/codemonkey/.gitconfig
 COPY gitignore /home/codemonkey/.gitignore
 COPY vimrc /home/codemonkey/.vimrc
 COPY toprc /home/codemonkey/.toprc
