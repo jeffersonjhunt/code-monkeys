@@ -135,13 +135,15 @@ make upgrade                 # upgrade all
 
 ## Vault (optional)
 
-The `vault` script encrypts secrets at rest using AES-256-CBC with PBKDF2. It manages three items:
+The `vault` script encrypts secrets at rest using AES-256-CBC with PBKDF2. It manages five items:
 
 | Source | Encrypted to | Type |
 |---|---|---|
 | `ssh/` | `.ssh.vault` | directory |
 | `env` | `.env.vault` | file |
 | `aws/` | `.aws.vault` | directory |
+| `face` | `.face.vault` | file |
+| `gitconfig` | `.gitconfig.vault` | file |
 
 Both the plaintext files and the encrypted `.vault` files are gitignored.
 
@@ -152,7 +154,7 @@ Both the plaintext files and the encrypted `.vault` files are gitignored.
 ./vault status       # show lock/unlock state, staleness, and sync status
 ```
 
-Once unlocked, `setup` symlinks `ssh` → `~/.ssh` and `aws` → `~/.aws`. The `env` file is loaded by `primate` via `--env-file`.
+Once unlocked, `setup` symlinks `ssh` → `~/.ssh`, `aws` → `~/.aws`, and `gitconfig` → `~/.gitconfig`. The `env` file is loaded by `primate` via `--env-file`.
 
 ### Syncing vault files with S3
 

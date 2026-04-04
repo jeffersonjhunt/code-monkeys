@@ -4,8 +4,8 @@
 #
 # Usage: vault lock | unlock | rekey | status | sync <push|pull>
 #
-# Manages: ssh/ (directory), env (file), aws/ (directory)
-# Encrypted to: .ssh.vault, .env.vault, and .aws.vault
+# Manages: ssh/ (directory), env (file), aws/ (directory), face (file), gitconfig (file)
+# Encrypted to: .ssh.vault, .env.vault, .aws.vault, .face.vault, .gitconfig.vault
 #
 
 set -euo pipefail
@@ -17,6 +17,8 @@ VAULTS=(
   "ssh:.ssh.vault:dir"
   "env:.env.vault:file"
   "aws:.aws.vault:dir"
+  "face:.face.vault:file"
+  "gitconfig:.gitconfig.vault:file"
 )
 
 OPENSSL_ARGS=(-aes-256-cbc -salt -pbkdf2 -iter 600000)
@@ -30,7 +32,7 @@ _aws() {
   fi
 }
 
-SYNC_INCLUDES=(--exclude "*" --include "*.vault" --include "face" --include "gitconfig")
+SYNC_INCLUDES=(--exclude "*" --include "*.vault")
 
 usage() {
   cat <<EOF
