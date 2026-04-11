@@ -34,11 +34,12 @@ What it does:
 - Symlinks `gitconfig` (if present), `gitignore`, `vimrc`, `toprc`, `zaliases`, `zbase`, `zfuncs`, `zprofile` as dotfiles in `$HOME`
 - Symlinks `ssh` and `aws` if present (created by `vault unlock`)
 - Symlinks `fastfetch` into `~/.config/`, `jjh.zsh-theme` into `~/.oh-my-zsh/custom/themes/`, and `claude` into `~/.claude`
+- Symlinks each script in `bin/` individually into `~/.local/bin/` (creates the directory if missing — files from other installers are left alone)
 - Installs `zbase` as `~/.zshrc` (copy, not symlink)
 - Clones oh-my-zsh plugins: `zsh-autosuggestions`, `zsh-completions`, `zsh-syntax-highlighting`
 - Installs git hooks from `hooks/` into `.git/hooks/`
 - On macOS: installs custom key bindings to `~/Library/KeyBindings`
-- Warns (non-fatal) if optional tools `aws` or `fastfetch` are not installed
+- Warns (non-fatal) if optional tools `aws` or `fastfetch` are not installed (the `bin/aws` shim covers a missing AWS CLI by running it in the `minion` container)
 
 ## Shell Configuration
 
@@ -172,7 +173,7 @@ Then use `vault sync`:
 ./vault sync pull    # download vault files from S3
 ```
 
-Uses `aws s3 sync` under the hood — only transfers files that have changed. Requires the AWS CLI and credentials with read/write access to the bucket.
+Uses `aws s3 sync` under the hood — only transfers files that have changed. Requires credentials with read/write access to the bucket. The AWS CLI itself is optional: `vault` prepends the repo's `bin/` to `PATH`, so `bin/aws` (a local-first shim that falls back to running `aws` inside the `minion` container) handles invocations on hosts where the CLI isn't installed.
 
 ### Creating vaults from scratch
 
@@ -186,6 +187,8 @@ Uses `aws s3 sync` under the hood — only transfers files that have changed. Re
 .
 ├── setup                  # host machine setup script (symlinks dotfiles into $HOME)
 ├── vault                  # encrypt/decrypt secrets at rest
+├── bin/                   # host shim scripts symlinked into ~/.local/bin/
+│   └── aws                # local-first AWS CLI wrapper (falls back to minion container)
 ├── codemonkey.dockerfile  # base Docker image (debian:13-slim)
 ├── primates/              # specialized Docker images built on codemonkey
 │   ├── Makefile

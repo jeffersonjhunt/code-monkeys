@@ -11,7 +11,8 @@ This is a personal development environment repository (dotfiles + containerized 
 - **Root directory**: Dotfiles and shell configuration (zshrc.template, zbase, zaliases, zfuncs, vimrc, etc.)
 - **`codemonkey.dockerfile`**: Base Docker image (debian:13-slim) that all primates inherit from
 - **`primates/`**: Specialized Docker images built on top of codemonkey (see `primates/CLAUDE.md` for details)
-- **`setup`**: Host machine setup script that symlinks dotfiles into `$HOME`
+- **`setup`**: Host machine setup script that symlinks dotfiles into `$HOME` and `bin/` shims into `~/.local/bin/`
+- **`bin/`**: Host shim scripts symlinked individually into `~/.local/bin/` (e.g. `aws` — local-first wrapper that falls back to running in the `minion` container if no `aws` binary is on PATH)
 - **`zfuncs`**: Shell functions for launching containers (`primate()`, `primate-upgrade()`, `clamscan()`, etc.)
 - **`env`**: Environment variable definitions (tokens, API keys) — never commit secrets here
 - **`aws/`**: AWS CLI config and credentials — managed by vault, never commit plaintext
