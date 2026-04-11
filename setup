@@ -13,6 +13,7 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 
 DOT_LINKS="ssh aws gitconfig gitignore toprc vimrc zaliases zbase zfuncs zprofile"
 DIR_LINKS="fastfetch::config jjh.zsh-theme::oh-my-zsh/custom/themes claude::claude"
+BIN_DIR="${HOME}/.local/bin"
 GIT_REPOS=(
   "https://github.com/zsh-users/zsh-autosuggestions.git::${HOME}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
   "https://github.com/zsh-users/zsh-completions.git::${HOME}/.oh-my-zsh/custom/plugins/zsh-completions"
@@ -150,6 +151,51 @@ remove_dir_links() {
     local src_name="${entry%%::*}"
     local parent_dir="${entry##*::}"
     local target="${HOME}/.${parent_dir}/${src_name}"
+
+    if [[ -L "$target" ]]; then
+      run rm "$target"
+    else
+      echo "  skip: ${target} is not a symlink"
+    fi
+  done
+}
+
+create_bin_links() {
+  echo "Creating bin/ shim symlinks..."
+  if [[ ! -d "${SRC}/bin" ]]; then
+    echo "  skip: ${SRC}/bin not found"
+    return
+  fi
+
+  if [[ ! -d "$BIN_DIR" ]]; then
+    run mkdir -p "$BIN_DIR"
+  fi
+
+  for source in "${SRC}/bin/"*; do
+    [[ -e "$source" ]] || continue
+    local name
+    name="$(basename "$source")"
+    local target="${BIN_DIR}/${name}"
+
+    if [[ -e "$target" || -L "$target" ]]; then
+      echo "  skip: ${target} already exists"
+    else
+      run ln -s "$source" "$target"
+    fi
+  done
+}
+
+remove_bin_links() {
+  echo "Removing bin/ shim symlinks..."
+  if [[ ! -d "${SRC}/bin" ]]; then
+    return
+  fi
+
+  for source in "${SRC}/bin/"*; do
+    [[ -e "$source" ]] || continue
+    local name
+    name="$(basename "$source")"
+    local target="${BIN_DIR}/${name}"
 
     if [[ -L "$target" ]]; then
       run rm "$target"
@@ -304,6 +350,7 @@ if [[ "$UNINSTALL" == true ]]; then
 
   remove_dot_links
   remove_dir_links
+  remove_bin_links
   remove_zshrc
   remove_repos
   [[ "$OS" == "MacOS" ]] && remove_macos
@@ -327,6 +374,7 @@ else
   install_ohmyzsh
   create_dot_links
   create_dir_links
+  create_bin_links
   install_zshrc
   clone_repos
   [[ "$OS" == "MacOS" ]] && setup_macos

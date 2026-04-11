@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# aws — local-first wrapper around the AWS CLI
+#
+# Uses any real `aws` binary already on PATH if one exists. Otherwise runs
+# `aws` inside a `minion` container with:
+#   - ~/.aws mounted read-only for credentials
+#   - $(pwd) mounted at /work as the working directory
+#   - AWS_* env vars forwarded
+#
+# Force the container path with: _AWS_FORCE_CONTAINER=1 aws ...
+#
+
+set -e
+
+# Inode of this shim (follows symlinks). Used to skip ourselves on PATH.
+_inode() { ls -Lid "$1" 2>/dev/null | awk '{print $1}'; }
+_my_inode="$(_inode "$0")"
+
+_real_aws=""
+while IFS= read -r _candidate; do
+  if [[ "$(_inode "$_candidate")" != "$_my_inode" ]]; then
+    _real_aws="$_candidate"
+    break
+  fi
+done < <(type -aP aws 2>/dev/null)
+
+if [[ -z "$_AWS_FORCE_CONTAINER" && -n "$_real_aws" ]]; then
+  exec "$_real_aws" "$@"
+fi
+
+# Container fallback.
+_aws_mount=()
+if [[ -d "$HOME/.aws" ]]; then
+  _aws_mount=(--volume "$(cd -P "$HOME/.aws" && pwd):/home/codemonkey/.aws:ro")
+fi
+
+_tty=()
+if [[ -t 0 ]]; then
+  _tty=(-it)
+fi
+
+exec docker run --rm "${_tty[@]}" \
+  -e AWS_PAGER="" \
+  -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+  "${_aws_mount[@]}" \
+  --volume "$(pwd):/work" \
+  --workdir /work \
+  --user codemonkey:codemonkey \
+  minion aws "$@"
