@@ -5,7 +5,8 @@
 # Uses any real `aws` binary already on PATH if one exists. Otherwise runs
 # `aws` inside a `minion` container with:
 #   - ~/.aws mounted read-only for credentials
-#   - $(pwd) mounted at /work as the working directory
+#   - $(pwd) mounted at the same path inside the container (so host
+#     absolute paths under cwd work as-is, not just relative paths)
 #   - AWS_* env vars forwarded
 #
 # Force the container path with: _AWS_FORCE_CONTAINER=1 aws ...
@@ -40,12 +41,14 @@ if [[ -t 0 ]]; then
   _tty=(-it)
 fi
 
+_cwd="$(pwd)"
+
 exec docker run --rm "${_tty[@]}" \
   -e AWS_PAGER="" \
   -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
   -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
   "${_aws_mount[@]}" \
-  --volume "$(pwd):/work" \
-  --workdir /work \
+  --volume "${_cwd}:${_cwd}" \
+  --workdir "${_cwd}" \
   --user codemonkey:codemonkey \
   minion aws "$@"
