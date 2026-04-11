@@ -208,5 +208,7 @@ Uses `aws s3 sync` under the hood — only transfers files that have changed. Re
 ├── claude/                # Claude Code settings + custom commands
 │   ├── settings.json
 │   └── commands/
-└── fastfetch/             # fastfetch config
+├── fastfetch/             # fastfetch config
+└── Library/                # macOS-only assets
+    └── KeyBindings/        # custom key bindings (installed to ~/Library/KeyBindings)
 ```
