@@ -45,8 +45,8 @@ Commands:
   unlock    Decrypt all vaults
   lock      Encrypt all vaults and remove plaintext
   rekey     Re-encrypt all vaults with a new password
-  status    Show lock/unlock state of each vault
-  sync      Sync vault files with S3 (push or pull)
+  status    Show lock/unlock state of each vault and S3 sync state
+  sync      Sync vault files with S3 (push or pull, optional --force on pull)
 
 Environment:
   VAULT_BUCKET   S3 bucket name for sync (required for sync command)
@@ -186,6 +186,24 @@ do_rekey() {
 }
 
 do_status() {
+  # Pre-fetch S3 dryrun output once if a bucket is configured. The dryrun
+  # tells us per-file what `aws s3 sync` would do in each direction:
+  # a "download:" line in the pull dryrun means S3 has the file and local
+  # doesn't, or S3 is newer; an "upload:" line in the push dryrun means
+  # local has the file and S3 doesn't, or local is newer.
+  local s3_state="disabled"
+  local pull_dry="" push_dry="" s3_err=""
+  if [[ -n "${VAULT_BUCKET:-}" ]]; then
+    local s3_uri="s3://${VAULT_BUCKET}"
+    if pull_dry=$(_aws s3 sync "$s3_uri" "$SCRIPT_DIR" "${SYNC_INCLUDES[@]}" --dryrun 2>&1) \
+    && push_dry=$(_aws s3 sync "$SCRIPT_DIR" "$s3_uri" "${SYNC_INCLUDES[@]}" --dryrun 2>&1); then
+      s3_state="ok"
+    else
+      s3_state="error"
+      s3_err="$pull_dry"
+    fi
+  fi
+
   for entry in "${VAULTS[@]}"; do
     local source="${entry%%:*}"
     local rest="${entry#*:}"
@@ -203,47 +221,92 @@ do_status() {
       [[ -f "$source_path" ]] && has_source=true
     fi
 
-    local stale=""
+    # Local verdict.
+    local local_verdict=""
     if $has_source && $has_vault; then
-      # check if any source file is newer than the vault
+      local stale=""
       if [[ "$type" == "dir" ]]; then
         local newer
         newer=$(find "$source_path" -newer "$vault_path" -type f \
           ! -name "known_hosts" ! -name "known_hosts.old" 2>/dev/null | head -1)
-        [[ -n "$newer" ]] && stale=" (STALE — source changed since last lock)"
+        [[ -n "$newer" ]] && stale="STALE — source changed since last lock"
       else
-        [[ "$source_path" -nt "$vault_path" ]] && stale=" (STALE — source changed since last lock)"
+        [[ "$source_path" -nt "$vault_path" ]] && stale="STALE — source changed since last lock"
       fi
       if [[ -n "$stale" ]]; then
-        printf "  %-8s UNLOCKED%s\n" "${source}" "$stale"
+        local_verdict="UNLOCKED ($stale)"
       else
-        printf "  %-8s UNLOCKED (up to date)\n" "${source}"
+        local_verdict="UNLOCKED (up to date)"
       fi
     elif $has_source; then
-      printf "  %-8s UNLOCKED (no vault file — run 'vault lock' to create)\n" "${source}"
+      local_verdict="UNLOCKED (no vault file — run 'vault lock' to create)"
     elif $has_vault; then
-      printf "  %-8s LOCKED\n" "${source}"
+      local_verdict="LOCKED"
     else
-      printf "  %-8s NO VAULT\n" "${source}"
+      local_verdict="NO VAULT"
     fi
+
+    # S3 verdict.
+    local s3_verdict=""
+    case "$s3_state" in
+      ok)
+        local would_pull would_push
+        would_pull=$(echo "$pull_dry" | grep -F "$vault_file" || true)
+        would_push=$(echo "$push_dry" | grep -F "$vault_file" || true)
+        if [[ "$would_pull" == *"download:"* && "$would_push" == *"upload:"* ]]; then
+          s3_verdict="s3 DIVERGED — manual review needed"
+        elif [[ "$would_pull" == *"download:"* ]]; then
+          s3_verdict="s3 NEWER — run 'vault sync pull'"
+        elif [[ "$would_push" == *"upload:"* ]]; then
+          s3_verdict="s3 LOCAL NEWER — run 'vault sync push'"
+        else
+          s3_verdict="s3 in sync"
+        fi
+        ;;
+      error) s3_verdict="s3 unreachable" ;;
+    esac
+
+    # Combine: splice s3 verdict into existing parens, or add new parens.
+    if [[ -n "$s3_verdict" ]]; then
+      if [[ "$local_verdict" == *"("*")" ]]; then
+        local_verdict="${local_verdict%)}, ${s3_verdict})"
+      else
+        local_verdict="${local_verdict} (${s3_verdict})"
+      fi
+    fi
+
+    printf "  %-9s %s\n" "${source}" "$local_verdict"
   done
 
-  # sync status
+  # Trailer: bucket / sync errors / last-synced timestamp.
   echo ""
-  if [[ -n "${VAULT_BUCKET:-}" ]]; then
-    local sync_file="${SCRIPT_DIR}/.vault-synced"
-    if [[ -f "$sync_file" ]]; then
-      echo "  last synced: $(cat "$sync_file")"
-    else
-      echo "  last synced: never"
-    fi
-  else
+  if [[ "$s3_state" == "disabled" ]]; then
     echo "  S3 sync disabled (VAULT_BUCKET not set)"
+    return
+  fi
+  if [[ "$s3_state" == "error" ]]; then
+    echo "  S3 sync error (bucket: ${VAULT_BUCKET}) — check credentials/network:"
+    echo "$s3_err" | sed 's/^/    /' | head -3
+  fi
+  local sync_file="${SCRIPT_DIR}/.vault-synced"
+  if [[ -f "$sync_file" ]]; then
+    echo "  last synced: $(cat "$sync_file")"
+  else
+    echo "  last synced: never"
   fi
 }
 
 do_sync() {
   local direction="$1"
+  shift
+
+  local force=false
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=true ;;
+      *) echo "Unknown option for sync: $arg"; exit 1 ;;
+    esac
+  done
 
   if [[ -z "${VAULT_BUCKET:-}" ]]; then
     echo "Error: VAULT_BUCKET environment variable is not set."
@@ -255,13 +318,29 @@ do_sync() {
 
   case "$direction" in
     push)
+      if $force; then
+        echo "Note: --force is a no-op for push (push always uploads newer/missing files)."
+      fi
       _aws s3 sync "$SCRIPT_DIR" "$s3_uri" "${SYNC_INCLUDES[@]}"
       ;;
     pull)
+      if $force; then
+        echo "WARNING: --force will delete local *.vault files and re-download from S3."
+        echo "  Any local-only changes (locked but not yet pushed) will be lost."
+        if [[ -t 0 ]]; then
+          read -r -p "Continue? [y/N] " ans
+          [[ "$ans" =~ ^[Yy] ]] || { echo "Aborted."; exit 1; }
+        fi
+        for entry in "${VAULTS[@]}"; do
+          local rest="${entry#*:}"
+          local vault_file="${rest%%:*}"
+          rm -f "${SCRIPT_DIR}/${vault_file}"
+        done
+      fi
       _aws s3 sync "$s3_uri" "$SCRIPT_DIR" "${SYNC_INCLUDES[@]}"
       ;;
     *)
-      echo "Usage: vault sync <push|pull>"
+      echo "Usage: vault sync <push|pull> [--force]"
       exit 1
       ;;
   esac
@@ -281,10 +360,11 @@ case "$1" in
   status) do_status ;;
   sync)
     if [[ -z "${2:-}" ]]; then
-      echo "Usage: vault sync <push|pull>"
+      echo "Usage: vault sync <push|pull> [--force]"
       exit 1
     fi
-    do_sync "$2"
+    shift
+    do_sync "$@"
     ;;
   *)      usage; exit 1 ;;
 esac

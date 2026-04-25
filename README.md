@@ -152,7 +152,7 @@ Both the plaintext files and the encrypted `.vault` files are gitignored.
 ./vault unlock       # decrypt all vaults (prompts for password)
 ./vault lock         # encrypt all vaults and remove plaintext
 ./vault rekey        # re-encrypt with a new password
-./vault status       # show lock/unlock state, staleness, and sync status
+./vault status       # show per-vault lock/unlock + S3 sync state inline
 ```
 
 Once unlocked, `setup` symlinks `ssh` → `~/.ssh`, `aws` → `~/.aws`, and `gitconfig` → `~/.gitconfig`. The `env` file is loaded by `primate` via `--env-file`.
@@ -169,11 +169,14 @@ export VAULT_PROFILE=my-aws-profile  # optional, defaults to 'default'
 Then use `vault sync`:
 
 ```bash
-./vault sync push    # upload vault files to S3
-./vault sync pull    # download vault files from S3
+./vault sync push          # upload vault files to S3
+./vault sync pull          # download vault files from S3 (skip files where local is same/newer)
+./vault sync pull --force  # delete local *.vault files and re-download (prompts for confirmation)
 ```
 
 Uses `aws s3 sync` under the hood — only transfers files that have changed. Requires credentials with read/write access to the bucket. The AWS CLI itself is optional: `vault` prepends the repo's `bin/` to `PATH`, so `bin/aws` (a local-first shim that falls back to running `aws` inside the `minion` container) handles invocations on hosts where the CLI isn't installed.
+
+`vault status` queries S3 (one `aws s3 sync --dryrun` call per direction) and folds the remote state into the per-vault status line, e.g. `aws       UNLOCKED (up to date, s3 LOCAL NEWER — run 'vault sync push')`. Use `--force` on pull when you trust S3 over local — typical case: machine A pushed, machine B was idle, you want machine B to take S3's copy regardless of local mtimes.
 
 ### Creating vaults from scratch
 
