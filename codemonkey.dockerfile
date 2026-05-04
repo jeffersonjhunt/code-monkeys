@@ -11,6 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # if yours is not 1000. See https://aka.ms/vscode-remote/containers/non-root-user.
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
+ARG UNSAFE_SSL=false
 ARG FRESH=true
 
 # We are all just code monkeys at heart
@@ -69,13 +70,13 @@ RUN apt-get -y install \
       npm
 
 # AWS CLI v2
-RUN curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip \
+RUN curl $([ "$UNSAFE_SSL" = "true" ] && echo "--insecure") -sL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip \
   && unzip -q /tmp/awscliv2.zip -d /tmp \
   && /tmp/aws/install \
   && rm -rf /tmp/aws /tmp/awscliv2.zip
 
-# make clams fresh
-RUN if [ "${FRESH}" != "false" ]; then \
+# make clams fresh (skip if FRESH=false, or if UNSAFE_SSL=true since freshclam requires valid certs)
+RUN if [ "${FRESH}" != "false" ] && [ "${UNSAFE_SSL}" != "true" ]; then \
     freshclam; \
 fi;
 
@@ -88,11 +89,19 @@ RUN locale-gen && update-locale
 ENV LANG=en_US.UTF-8
 
 # Oh My ZSH
-RUN su -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" codemonkey \
+RUN if [ "$UNSAFE_SSL" = "true" ]; then \
+      git config --global http.sslVerify false; \
+      su -c "git config --global http.sslVerify false" codemonkey; \
+    fi \
+  && su -c "curl $([ "$UNSAFE_SSL" = "true" ] && echo "--insecure") -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh | sh" codemonkey \
   && rm -f /home/codemonkey/.zshrc \
   && git clone https://github.com/zsh-users/zsh-autosuggestions.git /home/codemonkey/.oh-my-zsh/custom/plugins/zsh-autosuggestions \
   && git clone https://github.com/zsh-users/zsh-completions.git /home/codemonkey/.oh-my-zsh/custom/plugins/zsh-completions \
-  && git clone https://github.com/zsh-users/zsh-syntax-highlighting /home/codemonkey/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting
+  && git clone https://github.com/zsh-users/zsh-syntax-highlighting /home/codemonkey/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting \
+  && if [ "$UNSAFE_SSL" = "true" ]; then \
+      git config --global --unset http.sslVerify; \
+      su -c "git config --global --unset http.sslVerify" codemonkey; \
+    fi
 COPY zshrc.template /home/codemonkey/.zshrc
 COPY jjh.zsh-theme /home/codemonkey/.oh-my-zsh/custom/themes/jjh.zsh-theme
 
@@ -103,5 +112,7 @@ RUN apt-get autoclean -y && \
 
 # Fix codemonkey perms
 RUN chown -R codemonkey:codemonkey /home/codemonkey 
+
+ENV TAINTED_BUILD=${UNSAFE_SSL}
 
 # Fin

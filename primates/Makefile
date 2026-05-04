@@ -10,10 +10,16 @@ BUILD_ARGS ?=
 ifdef FORCE
 BUILD_ARGS += --no-cache
 endif
+ifdef UNSAFE_SSL
+BUILD_ARGS += --build-arg UNSAFE_SSL=$(UNSAFE_SSL)
+endif
+ifdef FRESH
+BUILD_ARGS += --build-arg FRESH=$(FRESH)
+endif
 
 .PHONY:
 help:
-	@echo "Usage: make [target] [FORCE=1] [BUILD_ARGS='...']"
+	@echo "Usage: make [target] [FORCE=1] [UNSAFE_SSL=true] [FRESH=false] [BUILD_ARGS='...']"
 	@echo ""
 	@echo "Targets:"
 	@echo "  all                    Build codemonkey base + all standard images"
@@ -36,6 +42,8 @@ help:
 	@echo ""
 	@echo "Arguments:"
 	@echo "  FORCE=1                Rebuild images from scratch (--no-cache)"
+	@echo "  UNSAFE_SSL=true        Disable SSL verification during build (sets TAINTED_BUILD=true in image)"
+	@echo "  FRESH=false            Skip freshclam (ClamAV DB update) to speed up codemonkey build"
 	@echo "  BUILD_ARGS='...'       Pass additional arguments to docker buildx build"
 
 .PHONY:

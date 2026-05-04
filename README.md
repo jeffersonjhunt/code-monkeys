@@ -92,6 +92,8 @@ make all                    # build codemonkey + all standard images
 make spark                  # build all + GPU images (requires NVIDIA kernel)
 make claude.build           # build a single image
 make all FORCE=1            # rebuild from scratch (--no-cache)
+make all UNSAFE_SSL=true    # disable SSL verification during build (tainted build)
+make all FRESH=false        # skip freshclam (faster codemonkey build)
 make clean                  # remove all images
 ```
 
@@ -133,6 +135,7 @@ make upgrade                 # upgrade all
 - Home: `/home/codemonkey` (persisted via named Docker volume)
 - Workspace: `/home/codemonkey/workspace` (bind mount from host)
 - Standard images target aarch64 (ARM64); CUDA images target sm_121
+- `TAINTED_BUILD` env var: `true` if built with `UNSAFE_SSL=true` (login warning displayed), `false` otherwise. Note: `UNSAFE_SSL` only relaxes verification *during* image construction — conda/git/npm config changes are reverted before the RUN ends, so SSL verification is restored at runtime.
 
 ## Vault (optional)
 

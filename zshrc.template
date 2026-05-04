@@ -12,6 +12,11 @@ fi
 # End Perms Fixes
 #
 
+if [[ "$TAINTED_BUILD" = "true" ]]; then
+  printf '\n⚠️  WARNING: This image was built with UNSAFE_SSL=true (tainted build)\n'
+  printf '   SSL certificate verification was disabled during image construction.\n\n'
+fi
+
 #
 # Conda Init (for miniforge3-based images with persistent home volumes)
 #

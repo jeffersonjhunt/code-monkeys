@@ -28,6 +28,8 @@ cd primates
 make all                    # Build codemonkey base + all standard targets
 make codemonkey.build       # Build just the base image (builds from parent dir)
 make <name>.build           # Build a specific image (claude, miniforge3, embedded, etc.)
+make all UNSAFE_SSL=true    # Build with SSL verification disabled (tainted build)
+make all FRESH=false        # Skip freshclam during codemonkey build (faster, no ClamAV DB update)
 make llama-cpp-spark.build  # Requires NVIDIA kernel
 make comfy-ui-spark.build   # Requires NVIDIA kernel
 make clean                  # Remove all built images
@@ -57,3 +59,5 @@ Miniforge3-derived images each get a conda environment (`<image>-env`) that is a
 - Shell config is layered: `zshrc.template` sources `~/.zbase` and `~/.zaliases`; functions live in `zfuncs`
 - Git remote is GitHub; main branch is `master`
 - Vault files (`*.vault`) and personal assets (`face`, `gitconfig`) are gitignored — secrets are never committed
+- `UNSAFE_SSL=true` build arg disables SSL verification for curl, wget, git, conda, and npm during build; skips freshclam; sets `TAINTED_BUILD=true` env var in the image (login warning displayed to user). Conda/git/npm config changes are reverted at the end of each install RUN so verification is restored at runtime.
+- `FRESH=false` build arg skips `freshclam` (ClamAV signature DB update) on `codemonkey.dockerfile` to speed up builds. Independent of `UNSAFE_SSL` — either knob will skip freshclam.

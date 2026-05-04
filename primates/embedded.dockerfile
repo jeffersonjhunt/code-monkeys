@@ -10,7 +10,7 @@ RUN  apt-get update \
         cc65 \
         cc65-doc
 
-# vasm support
+# vasm support (URL is plain HTTP — UNSAFE_SSL doesn't apply)
 RUN curl -v http://sun.hasenbraten.de/vasm/release/vasm.tar.gz -o /tmp/vasm.tar.gz \
   && cd /tmp \
   && tar zxvf vasm.tar.gz \
