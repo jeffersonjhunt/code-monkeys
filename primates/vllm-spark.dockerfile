@@ -2,7 +2,10 @@ ARG UBUNTU_VERSION=24.04
 ARG CUDA_VERSION=13.1.1
 
 ARG BASE_CUDA_DEV_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
-ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
+# Runtime uses the devel image (not runtime) because Triton JIT needs a host
+# C compiler and FlashInfer's py3-none-any wheel JITs CUDA kernels via nvcc
+# at first use. The runtime base lacks both. Image size cost is ~4-5 GB.
+ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
 
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
@@ -99,9 +102,12 @@ RUN apt-get update \
         sudo \
         zsh \
         python3 \
+        python3-dev \
         python3-venv \
         ca-certificates \
         libgomp1 \
+        gcc \
+        g++ \
     && echo "codemonkey ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/codemonkey \
     && chmod 0440 /etc/sudoers.d/codemonkey \
     && apt autoremove -y \
