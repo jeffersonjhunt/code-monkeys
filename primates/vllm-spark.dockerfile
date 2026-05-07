@@ -16,8 +16,13 @@ ARG TORCH_INDEX=https://download.pytorch.org/whl/cu130
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
+# vLLM's setup.py divides MAX_JOBS by NVCC_THREADS to compute the ninja -j
+# value (see compute_num_jobs in v0.20.1 setup.py:191). With NVCC_THREADS=4
+# we need MAX_JOBS=32 to get 8 parallel ninja jobs × 4 nvcc threads = 32
+# active compile threads — matches a 20-core Spark with comfortable nvcc
+# I/O overcommit. Setting MAX_JOBS=4 here means ninja -j 1.
 ENV NVCC_THREADS=4
-ENV MAX_JOBS=4
+ENV MAX_JOBS=32
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=/opt/venv/bin:${CUDA_HOME}/bin:${PATH}
 
