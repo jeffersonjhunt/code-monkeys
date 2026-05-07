@@ -40,12 +40,21 @@ RUN python3 -m venv /opt/venv \
 
 # PyTorch must be present before building vLLM extensions. cu131 wheels do
 # not exist for aarch64; cu130 wheel runs fine on a cu131.x runtime base
-# (same pattern as primates/comfy-ui-spark.dockerfile).
+# (same pattern as primates/comfy-ui-spark.dockerfile). PEP 440 makes
+# torch==2.11.0+cu130 satisfy any subsequent torch==2.11.0 requirement.
 RUN pip install torch==${TORCH_VERSION} --index-url ${TORCH_INDEX}
 
-# vLLM's [build-system].requires from pyproject.toml. With --no-build-isolation
-# pip skips the automatic build env, so these must be pre-installed. setuptools
-# is pinned <81 by upstream.
+WORKDIR /opt/build
+RUN git clone --depth 1 --branch ${VLLM_VERSION} https://github.com/vllm-project/vllm.git
+
+# Pre-install vLLM's runtime deps with default per-package build isolation —
+# transitive sdists like fastsafetensors need pybind11 etc. at metadata-prep
+# time, which --no-build-isolation would block. --extra-index-url ensures
+# any torch reinstall resolves to the cu130 wheel.
+RUN pip install --extra-index-url ${TORCH_INDEX} -r vllm/requirements/cuda.txt
+
+# vLLM's [build-system].requires from pyproject.toml — must be present for
+# the no-build-isolation install of vllm itself. setuptools pinned <81.
 RUN pip install \
         "cmake>=3.26.1" \
         ninja \
@@ -55,12 +64,7 @@ RUN pip install \
         wheel \
         jinja2
 
-WORKDIR /opt/build
-
 # Build vLLM with the explicit arch list so cutlass blobs come out as sm_121.
-# requirements/cuda.txt pins flashinfer-python (pure Python wheel, JITs at
-# runtime) and other CUDA-side deps; pip install . resolves them.
-RUN git clone --depth 1 --branch ${VLLM_VERSION} https://github.com/vllm-project/vllm.git
 RUN cd vllm && pip install . --no-build-isolation
 
 RUN python3 -c 'import vllm; print("vllm", vllm.__version__)' \
