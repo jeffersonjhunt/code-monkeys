@@ -35,6 +35,7 @@ help:
 	@echo "  minion.build           Build minion (bare codemonkey extension)"
 	@echo "  llama-cpp-spark.build  Build llama.cpp for DGX Spark (requires NVIDIA kernel)"
 	@echo "  comfy-ui-spark.build   Build ComfyUI for DGX Spark (requires NVIDIA kernel)"
+	@echo "  vllm-spark.build       Build vLLM with native sm_121 kernels (requires NVIDIA kernel)"
 	@echo "  upgrade                Upgrade all existing primate home volumes with latest dotfiles"
 	@echo "  <name>.upgrade         Upgrade a specific primate home volume"
 	@echo "  clean                  Remove all built images"
@@ -63,10 +64,15 @@ comfy-ui-spark.build: _nv_check
 	docker buildx build $(BUILD_ARGS) -t comfy-ui-spark:latest -f comfy-ui-spark.dockerfile .
 
 .PHONY:
+vllm-spark.build: _nv_check
+	echo "Building vllm-spark image..."
+	docker buildx build $(BUILD_ARGS) -t vllm-spark:latest -f vllm-spark.dockerfile .
+
+.PHONY:
 all: codemonkey.build $(addsuffix .build,$(TARGETS))
 
 .PHONY:
-spark: all llama-cpp-spark.build comfy-ui-spark.build
+spark: all llama-cpp-spark.build comfy-ui-spark.build vllm-spark.build
 
 .PHONY:
 claude.build:
