@@ -15,14 +15,6 @@ ARG TORCH_VERSION=2.11.0
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu130
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
-# vLLM's setup.py divides MAX_JOBS by NVCC_THREADS to compute the ninja -j
-# value (see compute_num_jobs in v0.20.1 setup.py:191). With NVCC_THREADS=4
-# we need MAX_JOBS=32 to get 8 parallel ninja jobs × 4 nvcc threads = 32
-# active compile threads — matches a 20-core Spark with comfortable nvcc
-# I/O overcommit. Setting MAX_JOBS=4 here means ninja -j 1.
-ENV NVCC_THREADS=4
-ENV MAX_JOBS=32
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=/opt/venv/bin:${CUDA_HOME}/bin:${PATH}
 
@@ -68,6 +60,18 @@ RUN pip install \
         "setuptools-scm>=8.0" \
         wheel \
         jinja2
+
+# Compile-tunables placed AFTER the multi-minute cached install steps so
+# future tweaks don't invalidate apt/torch/cuda.txt layers.
+#
+# vLLM's setup.py:191 computes ninja -j as (MAX_JOBS // NVCC_THREADS).
+# Heavy cutlass templates (NVFP4, MLA, machete, qutlass) want 10–15 GB each;
+# 8 in flight OOMs a 121 GB Spark. MAX_JOBS=16 / NVCC_THREADS=4 gives 4
+# parallel ninja jobs × 4 nvcc threads = 16 active compile threads,
+# ~48–60 GB peak with comfortable margin.
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
+ENV NVCC_THREADS=4
+ENV MAX_JOBS=16
 
 # Build vLLM with the explicit arch list so cutlass blobs come out as sm_121.
 RUN cd vllm && pip install . --no-build-isolation
