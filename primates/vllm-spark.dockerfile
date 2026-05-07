@@ -43,15 +43,25 @@ RUN python3 -m venv /opt/venv \
 # (same pattern as primates/comfy-ui-spark.dockerfile).
 RUN pip install torch==${TORCH_VERSION} --index-url ${TORCH_INDEX}
 
+# vLLM's [build-system].requires from pyproject.toml. With --no-build-isolation
+# pip skips the automatic build env, so these must be pre-installed. setuptools
+# is pinned <81 by upstream.
+RUN pip install \
+        "cmake>=3.26.1" \
+        ninja \
+        "packaging>=24.2" \
+        "setuptools>=77.0.3,<81.0.0" \
+        "setuptools-scm>=8.0" \
+        wheel \
+        jinja2
+
 WORKDIR /opt/build
 
 # Build vLLM with the explicit arch list so cutlass blobs come out as sm_121.
+# requirements/cuda.txt pins flashinfer-python (pure Python wheel, JITs at
+# runtime) and other CUDA-side deps; pip install . resolves them.
 RUN git clone --depth 1 --branch ${VLLM_VERSION} https://github.com/vllm-project/vllm.git
 RUN cd vllm && pip install . --no-build-isolation
-
-# FlashInfer is pure-Python with runtime JIT (py3-none-any wheel) — kernels
-# get compiled against the live GPU at first use, so no source build needed.
-RUN pip install flashinfer-python
 
 RUN python3 -c 'import vllm; print("vllm", vllm.__version__)' \
  && python3 -c 'import torch; print("torch", torch.__version__, "cuda:", torch.version.cuda)'
