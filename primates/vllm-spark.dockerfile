@@ -120,17 +120,13 @@ COPY --from=build /opt/venv /opt/venv
 
 # Slim the runtime image. The cu131-devel base ships nvcc + headers (kept for
 # Triton/FlashInfer JIT) plus link-time-only static archives and CUDA samples
-# we'll never use. The venv similarly carries build-only Python packages from
-# the vLLM compile that have no runtime role.
+# we'll never use.
+#
+# DO NOT pip-uninstall cmake/ninja from the venv — FlashInfer's NVFP4 cutlass
+# GEMM JIT path shells out to ninja at first NVFP4 forward pass.
 RUN find /usr/local/cuda* -name "*_static.a" -delete 2>/dev/null \
     && rm -rf /usr/local/cuda*/extras /usr/local/cuda*/samples /usr/local/cuda*/tools 2>/dev/null \
-    && /opt/venv/bin/pip uninstall -y \
-         cmake \
-         setuptools-scm \
-         vcs-versioning \
-         ninja \
-         wheel \
-         2>/dev/null || true
+    || true
 
 ENV PATH=/opt/venv/bin:${PATH}
 ENV PYTHONUNBUFFERED=1
