@@ -4,6 +4,8 @@ Items intentionally deferred. Each entry has a clear retry trigger so we know wh
 
 ## Try `Qwen/Qwen3.6-27B-FP8` (dense, native FP8) once vLLM ships sm_121-native cutlass kernels
 
+**Resolved 2026-05-08:** `vllm-spark:latest` (locally-built, sm_121 native cutlass via `compute_120f` family-flag forward-compat — see `~/workspace/code-monkeys/primates/vllm-spark.dockerfile`) serves `Qwen/Qwen3.6-27B-FP8` cleanly. CUDA graph capture and the FP8 GEMM path (`cutlass_scaled_mm`) both go through without `Error Internal`. Smoke-tested via `/v1/chat/completions` against the canary model. Historical context below preserved for future kernel debugging.
+
 **Status:** blocked by the upstream `vllm-openai` images being built with `TORCH_CUDA_ARCH_LIST=...12.0` (sm_120) max — DGX Spark / GB10 is **sm_121**, not sm_120. Pre-compiled cutlass `.so` blobs use sm_120-specific instructions and fail on sm_121 hardware with `Error Internal`. Triton-JIT paths (Marlin) work because Triton compiles from `compute_120` PTX → sm_121 native at runtime; pre-compiled cutlass blobs don't get the same JIT recompile and crash.
 
 **What we tried (2026-05-07):**
@@ -65,6 +67,8 @@ Possible paths forward:
 5. If clean, deploy hutch, run `./src/scripts/bench-sweep.sh starsky:8080`. Expect ~10 tok/s/stream peak (vs 38 on the AWQ MoE) — dense 27B reads ~5× more weights per token.
 
 ## Switching the cluster to NIM serving the original `RedHatAI/Qwen3-Coder-Next-NVFP4`
+
+**Resolved 2026-05-08 (via `vllm-spark`, not NIM):** `vllm-spark:latest` serves `RedHatAI/Qwen3-Coder-Next-NVFP4` cleanly. FlashInfer's `get_gemm_sm120_module_cutlass_fp4` JIT-compiles the FP4 GEMM module against sm_121 at first NVFP4 forward pass (the venv has `ninja` for this); FlashInfer fused-MoE cutlass kernels then load and capture into CUDA graphs without `Error Internal`. Verified end-to-end via `/v1/chat/completions`. The NIM path below was the alternative we no longer need to chase. Historical context preserved below.
 
 **Status:** blocked by upstream kernel work — neither vLLM nor NIM can serve this model on DGX Spark today. Hardware is sm_121 (GB10); the upstream `vllm-openai` images ship sm_120 native binaries plus `compute_120` PTX, so cutlass blobs targeted at sm_120 fail on sm_121. The `vllm-spark` primate (`docs/vllm-spark-build-plan.md`) would address this.
 

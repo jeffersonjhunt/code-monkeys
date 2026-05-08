@@ -1,6 +1,6 @@
 # spark-cluster
 
-vLLM replica cluster on two NVIDIA DGX Spark nodes (Blackwell GB10, 128 GB UMA each) serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` behind HAProxy. The original target `RedHatAI/Qwen3-Coder-Next-NVFP4` is parked pending an upstream FlashInfer fix — see `docs/parking-lot.md`.
+vLLM replica cluster on two NVIDIA DGX Spark nodes (Blackwell GB10, 128 GB UMA each) serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` behind HAProxy. Runs the locally-built `vllm-spark` image (sm_121-native cutlass — built from `~/workspace/code-monkeys/primates/vllm-spark.dockerfile`) which unblocks both FP8 dense and NVFP4 MoE paths that crash on upstream `vllm/vllm-openai`. See `docs/parking-lot.md` for the resolved-canary write-ups.
 
 ## Hardware
 
@@ -47,6 +47,15 @@ Deploy:
 
 `deploy.sh` rsyncs the relevant `src/compose/<stack>/` directory to `/home/jhunt/spark-deploy/<stack>/` on the host and runs `docker compose up -d`.
 
+When the `vllm-spark` image is rebuilt in `~/workspace/code-monkeys/primates/`, ship it from the box that built it to the others:
+
+```bash
+./src/scripts/ship-image.sh starsky hutch vllm-spark:latest   # one dest
+./src/scripts/ship-image.sh starsky all   vllm-spark:latest   # every other host
+```
+
+It streams `docker save | zstd -3 | ssh | docker load` end-to-end (~3.5 min for 6.7 GB compressed over LAN). Then `deploy.sh` to pick up the new image.
+
 ## Status
 
 Both replicas healthy on AWQ. Tool calling works in `auto` mode via the `qwen3_coder` parser. HAProxy round-robins; failover drill validated. Cluster peak ~752 tok/s aggregate at c=32. Current phase and history live in `TASKS.md` and `CHANGELOG.md`.
@@ -68,6 +77,7 @@ spark-cluster/
         ├── preflight.sh    read-only host discovery
         ├── bootstrap.sh    one-time host prep
         ├── deploy.sh       sync + docker compose up -d
+        ├── ship-image.sh   stream a docker image src->dst via save | zstd | ssh | load
         ├── smoke-test.sh   /health + /v1/models + /v1/chat/completions probe
         ├── bench.py        concurrent-client throughput probe
         └── bench-sweep.sh  c=1..32 sweep wrapper
