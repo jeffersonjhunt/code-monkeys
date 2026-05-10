@@ -9,10 +9,12 @@ ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VER
 
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
-# sm_121 native + compute_120 PTX fallback. The native sm_121 build of vLLM's
-# cutlass extensions is the whole point of this image — upstream vllm-openai
-# stops at sm_120 native and crashes on FP8 dense / NVFP4 MoE on DGX Spark.
-ARG TORCH_CUDA_ARCH_LIST="8.0 8.7 8.9 9.0 10.0 12.0 12.1+PTX"
+# Spark-only: sm_121 native + sm_120 PTX fallback. Drops sm_80/87/89/90/100
+# cubins from _C.so / _moe_C.so — image is no longer portable to other GPUs
+# but shrinks ~1.5 GB. The native sm_121 build of vLLM's cutlass extensions
+# is the whole point of this image — upstream vllm-openai stops at sm_120
+# native and crashes on FP8 dense / NVFP4 MoE on DGX Spark.
+ARG TORCH_CUDA_ARCH_LIST="12.0 12.1+PTX"
 ARG VLLM_VERSION=v0.20.1
 ARG TORCH_VERSION=2.11.0
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu130
