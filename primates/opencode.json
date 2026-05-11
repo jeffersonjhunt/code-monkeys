@@ -11,7 +11,11 @@
       },
       "models": {
         "qwen3-coder-next": {
-          "name": "Qwen3 Coder (vLLM)"
+          "name": "Qwen3 Coder (vLLM)",
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
         }
       }
     }
