@@ -67,6 +67,7 @@ debian:13-slim → codemonkey → miniforge3 → claude
 
 nvidia/cuda:13.1.1 → llama-cpp-spark  (multi-stage: full/light/server)
                    → comfy-ui-spark
+                   → vllm-spark      (vLLM with sm_121 native cutlass)
 ```
 
 | Image | Purpose |
@@ -82,6 +83,7 @@ nvidia/cuda:13.1.1 → llama-cpp-spark  (multi-stage: full/light/server)
 | **minion** | Bare codemonkey extension (general-purpose runner) |
 | **llama-cpp-spark** | llama.cpp for NVIDIA DGX Spark (sm_121 Blackwell GPUs) |
 | **comfy-ui-spark** | ComfyUI for NVIDIA DGX Spark (sm_121 Blackwell GPUs) |
+| **vllm-spark** | vLLM v0.20.1 source build with sm_121 native cutlass — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE that crashes on upstream `vllm/vllm-openai` |
 
 ### Building
 
