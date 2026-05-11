@@ -18,6 +18,13 @@ RUN if [ "$UNSAFE_SSL" = "true" ]; then npm config set strict-ssl false; fi \
   && npm install -g opencode-ai \
   && if [ "$UNSAFE_SSL" = "true" ]; then npm config delete strict-ssl; fi
 
+# Point opencode at the spark-cluster vLLM (HAProxy on starsky:8080).
+# vLLM ignores the API key but the OpenAI-compatible SDK requires a
+# non-empty one — overridable at runtime via `-e OPENAI_API_KEY=...`.
+COPY opencode.json /home/codemonkey/.config/opencode/opencode.json
+RUN chown -R codemonkey:codemonkey /home/codemonkey/.config
+ENV OPENAI_API_KEY=sk-local
+
 # Clean up APT when done.
 RUN  apt-get autoclean -y \
   && apt-get autoremove -y \

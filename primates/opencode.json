@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "starsky/qwen3-coder-next",
+  "provider": {
+    "starsky": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Starsky vLLM",
+      "options": {
+        "baseURL": "http://starsky.tworivers:8080/v1",
+        "apiKey": "{env:OPENAI_API_KEY}"
+      },
+      "models": {
+        "qwen3-coder-next": {
+          "name": "Qwen3 Coder (vLLM)"
+        }
+      }
+    }
+  }
+}
