@@ -2,7 +2,12 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-05-11 (latest)
+## 2026-05-12 (latest)
+
+- **Removed `src/compose/nim/` and the `nvcr.io/nim/nvidia/model-free-nim:2.0.3` image** from both nodes. The NIM exploration was parked after Track A round 3 confirmed FlashInfer fused-MoE NVFP4 fails on sm_120 inside NIM 2.0.3 the same way it fails in stock vLLM; `vllm-spark` (sm_121-native cutlass) resolved the path 2026-05-08, making the parked NIM stack obsolete. Stack reconstructable from `git show 4cf2a3a:src/compose/nim/...` if a future retry is wanted. Freed ~24 GB on starsky.
+- **Dropped obsolete upstream vLLM images** from both nodes: `vllm/vllm-openai:v0.20.1-cu129-ubuntu2404` (both), plus `cu129-nightly-aarch64` and `v0.20.0-aarch64-cu130-ubuntu2404` on starsky. `vllm-spark:latest` has been the default since 2026-05-08; `.env.example` still documents the upstream override syntax for re-pull. Freed ~108 GB cluster-wide (plus a large pile of orphaned buildx layers on starsky — total disk usage dropped from 2.1 T to ~302 G).
+
+## 2026-05-11
 
 - **Model storage moved from `/srv/models` (HF auto-cache layout) to `~/Models/<org>/<name>` (flat HF org/name layout).** Each box now stores weights as `/home/jhunt/Models/RedHatAI/Qwen3-Coder-Next-NVFP4/`, `/home/jhunt/Models/QuantTrio/Qwen3.6-35B-A3B-AWQ/`, `/home/jhunt/Models/Qwen/Qwen3.6-27B-FP8/` — real files in place, no `models--*/snapshots/<sha>/`/blobs indirection. Matches the user's existing convention for other model stores on these hosts. See `decisions.md` for the trade-off discussion.
 - **vLLM no longer auto-downloads.** `compose.yml` was changed from `--model ${HF_MODEL_ID} --download-dir /models` to `--model /models/${HF_MODEL_ID}` (local path inside the read-only mount). Mount is now `${MODEL_DIR:-/home/jhunt/Models}:/models:ro`.

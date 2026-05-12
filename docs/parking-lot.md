@@ -96,7 +96,7 @@ Possible paths forward:
 
 **How to retry:**
 
-1. `cd src/compose/nim` — the stack is preserved.
+1. Reconstruct the NIM compose stack — `git show 4cf2a3a:src/compose/nim/compose.yml > src/compose/nim/compose.yml` (same for `.env.example`, `README.md`). The stack was removed 2026-05-12; previous commit is `4cf2a3a`.
 2. Bump the image tag in `compose.yml` to whatever's new.
 3. From the repo root: `ssh jhunt@starsky 'cd ~/spark-deploy/vllm && docker compose stop'` (free the GPU)
 4. `./src/scripts/deploy.sh starsky nim` — same pattern as before.
@@ -111,6 +111,6 @@ Possible paths forward:
 
 **How to retry:**
 
-1. Edit `src/compose/nim/compose.yml`: change `image:` to `nvcr.io/nim/qwen/qwen3-32b-dgx-spark:latest`, drop `NIM_MODEL_PATH` (per-model NIMs come pre-configured with their model), bump `NIM_SERVED_MODEL_NAME` if desired.
+1. Reconstruct `src/compose/nim/compose.yml` from git (`git show 4cf2a3a:src/compose/nim/compose.yml > src/compose/nim/compose.yml`), then change `image:` to `nvcr.io/nim/qwen/qwen3-32b-dgx-spark:latest`, drop `NIM_MODEL_PATH` (per-model NIMs come pre-configured with their model), bump `NIM_SERVED_MODEL_NAME` if desired.
 2. Stop starsky vllm to free the GPU; deploy NIM to starsky.
 3. If healthy, deploy to hutch, then update `haproxy.cfg` backends to port 8001 and redeploy haproxy.

@@ -38,7 +38,7 @@ vLLM downloads the model on first start using `HUGGING_FACE_HUB_TOKEN` from `.en
 
 ## Track A — NIM (parked, see `docs/parking-lot.md`)
 
-Parked. Two-round investigation showed: (a) `llm-nim:latest` was the wrong image, (b) `model-free-nim:2.0.3` is right but `Qwen3-Coder-Next-NVFP4` triggers an upstream cutlass sm_120 grouped-GEMM bug (the kernels are present but every TRT-LLM autotuner tactic fails at runtime). Same root-cause class as stock vLLM. Retry triggers + how-to-retry steps are in `docs/parking-lot.md`. NIM compose stack preserved at `src/compose/nim/`.
+Parked. Two-round investigation showed: (a) `llm-nim:latest` was the wrong image, (b) `model-free-nim:2.0.3` is right but `Qwen3-Coder-Next-NVFP4` triggers an upstream cutlass sm_120 grouped-GEMM bug (the kernels are present but every TRT-LLM autotuner tactic fails at runtime). Same root-cause class as stock vLLM. Retry triggers + how-to-retry steps are in `docs/parking-lot.md`. NIM compose stack removed 2026-05-12 after `vllm-spark` resolved the NVFP4 path; reconstruct from `git show 4cf2a3a:src/compose/nim/...` if a retry is ever needed.
 
 ## Phase 5 — vLLM bring-up
 
