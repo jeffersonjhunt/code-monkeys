@@ -7,7 +7,7 @@
       "name": "Starsky vLLM",
       "options": {
         "baseURL": "http://starsky.tworivers:8080/v1",
-        "apiKey": "{env:OPENAI_API_KEY}"
+        "apiKey": "sk-local"
       },
       "models": {
         "qwen3-coder-next": {
