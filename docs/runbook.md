@@ -83,12 +83,18 @@ After stopping a replica, HAProxy will mark it DOWN within 30 s (3 × 10 s healt
 
 1. Edit `src/compose/vllm/.env` — change `HF_MODEL_ID` and `VLLM_SERVED_NAME`.
 2. Redeploy on each box: `./src/scripts/deploy.sh starsky vllm` and `./src/scripts/deploy.sh hutch vllm`.
-3. First start of a new model triggers HuggingFace download (~10–30 min for tens of GB). Cached in `/srv/models`; subsequent starts of that model are fast.
-4. **Cross-box transfer** — once one box has the weights cached, the other can be primed faster than a re-download:
+3. Pre-stage weights on both boxes (vLLM no longer auto-downloads):
 
    ```bash
-   ssh jhunt@starsky 'tar -C /srv/models -cf - models--<HF--Slug>' | \
-     ssh jhunt@hutch  'tar -C /srv/models -xpf -'
+   ./src/scripts/model-pull.sh all <org>/<repo>
+   ```
+
+   First fetch takes ~10–30 min for tens of GB; subsequent vLLM starts mmap-load from `~/Models/<org>/<name>` in ~2 min.
+4. **Cross-box transfer** — alternative to pulling on both boxes (saves bandwidth and HF rate-limit headroom):
+
+   ```bash
+   ssh jhunt@starsky 'tar -C ~/Models -cf - <org>/<repo>' | \
+     ssh jhunt@hutch  'tar -C ~/Models -xpf -'
    ```
 
 5. Smoke test each box, then re-test through `starsky:8080`.
@@ -125,7 +131,7 @@ ssh jhunt@hutch 'docker start vllm'
 
 ## Reboot survival
 
-Both stacks use `restart: unless-stopped`. After a host reboot, Docker auto-starts the containers. vLLM containers reload the model from `/srv/models` cache (~2 min); HAProxy comes up immediately and marks backends DOWN until vLLM healthchecks pass.
+Both stacks use `restart: unless-stopped`. After a host reboot, Docker auto-starts the containers. vLLM containers reload the model from `~/Models/<org>/<name>` (~2 min); HAProxy comes up immediately and marks backends DOWN until vLLM healthchecks pass.
 
 ## Logs
 
@@ -147,7 +153,7 @@ ssh jhunt@starsky 'cd ~/spark-deploy/vllm    && docker compose down'
 ssh jhunt@starsky 'cd ~/spark-deploy/haproxy && docker compose down'
 
 # remove model weights cache (frees disk)
-ssh jhunt@<host> 'sudo rm -rf /srv/models/*'
+ssh jhunt@<host> 'rm -rf ~/Models/<org>/<name>'
 
 # remove images
 ssh jhunt@<host> 'docker image prune -a -f'

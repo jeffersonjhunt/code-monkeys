@@ -29,7 +29,7 @@ Known SPOF: starsky losing power takes the API endpoint down. Accepted for curre
 - `vllm/vllm-openai` images bundle the right CUDA + Python + vLLM stack, including ARM64/Blackwell support
 - Image rollback is just a container restart with a different tag
 - Pinned tags make environment drift impossible
-- Weights live outside the image at `/srv/models`, so model changes don't trigger image rebuilds
+- Weights live outside the image at `~/Models/<org>/<name>`, so model changes don't trigger image rebuilds
 
 ## Why plain Docker Compose (no Ansible, no Kubernetes)
 
@@ -44,7 +44,7 @@ We'd revisit if any of these change: fleet grows past ~5 boxes, hosts diverge in
 
 ## Data paths
 
-- Model weights: `/srv/models/<model-name>` on each node, owned by `jhunt`, mounted read-only into the vLLM container
+- Model weights: `~/Models/<org>/<name>` on each node, owned by `jhunt`, mounted read-only into the vLLM container at `/models`. Flat HF org/name layout, pre-staged by `model-pull.sh` — not the auto-managed HF cache layout.
 - Container logs: Docker JSON-file driver with rotation; aggregated by future log shipper if needed
 - HAProxy logs: stdout, captured by Docker
 

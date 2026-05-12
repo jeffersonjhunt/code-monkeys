@@ -56,6 +56,22 @@ LB co-located on starsky. Accepted SPOF for simplicity; no third host wanted. Up
 
 Avoids 50+ GB image rebuilds when iterating, and the cache survives container restarts. Mount read-only into the container.
 
+**Superseded 2026-05-11** by the move to `~/Models/<org>/<name>` (see below).
+
+## 2026-05-11 — Flat `~/Models/<org>/<name>` layout, pre-staged downloads
+
+Replaced `/srv/models` (HF auto-cache layout, `models--<org>--<name>/snapshots/<sha>/` with hardlink-to-`blobs/`) with `/home/jhunt/Models/<org>/<name>/` (flat HuggingFace org/name layout, real files in place).
+
+**Why:**
+- Matches the user's existing convention for other model stores on these boxes (e.g. `~/Models/nvidia/Gemma-4-31B-IT-NVFP4`).
+- Human-readable layout — `ls ~/Models` shows what's deployed; no parsing of snapshots/blobs/refs.
+- Cleaner deletion: `rm -rf ~/Models/<org>/<name>` vs hunting for the right `models--*` dir and its blob backreferences.
+- Eliminates an entire class of permission/cache-state foot-guns we hit earlier (`/srv/models/.locks/` owned by root, HF cache layout assuming a specific user).
+
+**Trade-off:** no auto-download from inside the container. vLLM is now invoked with `--model /models/${HF_MODEL_ID}` (local path), and weights must be pre-staged via `src/scripts/model-pull.sh <host>|all <repo>`. This is arguably a feature: no surprise 30 min downloads on container start, explicit step in the runbook.
+
+Also lose HF cache's blob dedup across snapshots — irrelevant in practice since we keep one revision per repo.
+
 ## 2026-05-05 — Reverted: plain Docker Compose, no Ansible
 
 Replaced an earlier Ansible-based plan after user pushback. At 2 hosts, Ansible was indirection without leverage:

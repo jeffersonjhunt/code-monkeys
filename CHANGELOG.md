@@ -2,7 +2,15 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-05-08 (latest)
+## 2026-05-11 (latest)
+
+- **Model storage moved from `/srv/models` (HF auto-cache layout) to `~/Models/<org>/<name>` (flat HF org/name layout).** Each box now stores weights as `/home/jhunt/Models/RedHatAI/Qwen3-Coder-Next-NVFP4/`, `/home/jhunt/Models/QuantTrio/Qwen3.6-35B-A3B-AWQ/`, `/home/jhunt/Models/Qwen/Qwen3.6-27B-FP8/` — real files in place, no `models--*/snapshots/<sha>/`/blobs indirection. Matches the user's existing convention for other model stores on these hosts. See `decisions.md` for the trade-off discussion.
+- **vLLM no longer auto-downloads.** `compose.yml` was changed from `--model ${HF_MODEL_ID} --download-dir /models` to `--model /models/${HF_MODEL_ID}` (local path inside the read-only mount). Mount is now `${MODEL_DIR:-/home/jhunt/Models}:/models:ro`.
+- **New `src/scripts/model-pull.sh`** — wraps `docker run --entrypoint hf vllm-spark:latest download <repo> --local-dir /models/<repo>` for one host or `all`. Pulls HF_TOKEN from the deployed `~/spark-deploy/vllm/.env`.
+- **Migration done in-place:** staged all three models (NVFP4 45G, AWQ 24G, FP8 29G) on starsky via `hf download`, then `rsync -a --exclude=.cache` to hutch (~98 GB over LAN). Old `/srv/models` left in place for now; will be removed after cluster validation.
+- Updated `bootstrap.sh`, `.env.example`, `CLAUDE.md`, `README.md`, `architecture.md`, `runbook.md`, `parking-lot.md`, `inventory-summary.md`, `decisions.md` to reflect the new layout.
+
+## 2026-05-08
 
 - **`vllm-spark` primate built and validated end-to-end on starsky.** `~/workspace/code-monkeys/primates/vllm-spark.dockerfile` produces a drop-in replacement for `vllm/vllm-openai` with sm_121-native cutlass kernels (via `compute_120f` family-flag forward-compat). Build path: CUDA 13.1.1 devel base + `torch==2.11.0+cu130` (cu131 wheels don't exist for aarch64) + vLLM v0.20.1 source build with `TORCH_CUDA_ARCH_LIST="8.0 8.7 8.9 9.0 10.0 12.0 12.1+PTX"` and `MAX_JOBS=16/NVCC_THREADS=4` (= ninja -j 4, ~48 GB peak; -j 8 OOMed the 121 GB box on heavy cutlass templates). Wheel build: ~92 min. Total image: 15.7 GB (6.7 GB compressed for transfer). Runtime stage uses the cu131-devel base (not -runtime-) because Triton JIT and FlashInfer's NVFP4 cutlass FP4 GEMM JIT both shell out to a host C compiler + nvcc + ninja at first forward pass.
 - **Both crash signatures cleared.** Validated against the two parked canaries:

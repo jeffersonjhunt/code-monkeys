@@ -47,7 +47,7 @@ Implication: the high-speed direct link is up at L1 on `enp1s0f1np1` but not con
 
 1. **CUDA 13.0 driver** — bleeding edge. vLLM container images need to support it. The `nvidia-container-toolkit` handles forward-compat with older CUDA runtimes, but Blackwell (`sm_120`) kernels must be present in the chosen vLLM build. We'll prefer NVIDIA's NGC vLLM image (`nvcr.io/nvidia/vllm`) over Docker Hub for ARM64+Blackwell support, falling back to `vllm/vllm-openai` ARM tags if NGC isn't suitable. Pin tag in Phase 2.
 2. **GUI desktop running** — Xorg + gnome-shell consume a tiny amount of GPU memory (~24 MB) on each box. Negligible for vLLM headroom; consider disabling for production later.
-3. **No `/srv` mount** — `/srv/models` will live on the root partition. Both boxes have ample headroom for a ~50 GB NVFP4 model. starsky has more disk used; investigate before model pull if it tightens.
+3. **No `/srv` mount** — weights live under `~/Models` on the root partition. Both boxes have ample headroom for a ~50 GB NVFP4 model. starsky has more disk used; investigate before model pull if it tightens.
 4. **`docker` group membership** — no sudo needed for `docker`/`docker compose`; Ansible should not assume `become: yes` for container ops.
 5. **`docker compose` v5.0.2** — Docker's new plugin numbering. Use the `docker compose ...` (subcommand) syntax, not the legacy `docker-compose` binary.
 6. **Listening ports already free** — neither box is listening on 80, 443, or 8000.

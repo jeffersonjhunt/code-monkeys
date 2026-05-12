@@ -52,7 +52,7 @@ Possible paths forward:
 
 **How to retry:**
 
-1. Weights still cached at `/srv/models/models--Qwen--Qwen3.6-27B-FP8` on both boxes (~29 GB each). No re-download needed.
+1. Weights staged at `~/Models/Qwen/Qwen3.6-27B-FP8` on both boxes (~29 GB each). No re-download needed.
 2. Bump the vLLM image tag in `src/compose/vllm/compose.yml` (e.g. `v0.20.2-cu129-ubuntu2404` if available).
 3. Edit `src/compose/vllm/.env`:
    ```

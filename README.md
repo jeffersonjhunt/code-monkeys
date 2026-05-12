@@ -18,7 +18,7 @@ client ──► starsky:8080 (HAProxy) ──► starsky:8000 (vLLM replica A)
                                   └─► hutch:8000   (vLLM replica B)
 ```
 
-Each replica is independent: same compose, same model, full copy of weights at `/srv/models`. Why replicas (not sharded)? See `docs/architecture.md`.
+Each replica is independent: same compose, same model, full copy of weights at `~/Models/<org>/<name>` (flat HF org/name layout, pre-staged via `src/scripts/model-pull.sh`). Why replicas (not sharded)? See `docs/architecture.md`.
 
 ## Deploy
 

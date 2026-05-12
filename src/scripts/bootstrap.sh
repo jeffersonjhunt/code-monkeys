@@ -8,10 +8,10 @@
 
 set -euo pipefail
 
-MODEL_DIR=/srv/models
+MODEL_DIR="$HOME/Models"
 
 echo ">> create $MODEL_DIR (owned by $USER)"
-sudo install -d -o "$USER" -g "$USER" -m 0755 "$MODEL_DIR"
+mkdir -p "$MODEL_DIR"
 
 # Defensive cleanup: an earlier version of this script wrote a managed block to
 # /etc/hosts. DNS handles resolution; we don't shadow it here. Remove the block

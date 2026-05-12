@@ -16,7 +16,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ${MODEL_DIR:-/srv/models}:/models
+      - ${MODEL_DIR:-/home/jhunt/Models}:/models:ro
     ports:
       - "${VLLM_PORT:-8000}:8000"
     deploy:
@@ -27,16 +27,17 @@ services:
               count: all
               capabilities: [gpu]
     command:
+      # Weights are pre-staged at /models/<org>/<name> by `model-pull.sh`; we
+      # no longer let vLLM auto-download via HF Hub. HF_MODEL_ID doubles as
+      # the relative path inside the mount (org/name HF convention).
       - --model
-      - ${HF_MODEL_ID:-RedHatAI/Qwen3-Coder-Next-NVFP4}
+      - /models/${HF_MODEL_ID:-RedHatAI/Qwen3-Coder-Next-NVFP4}
       - --served-model-name
       - ${VLLM_SERVED_NAME:-qwen3-coder-next}
       - --host
       - "0.0.0.0"
       - --port
       - "8000"
-      - --download-dir
-      - /models
       - --tensor-parallel-size
       - "${VLLM_TP_SIZE:-1}"
       - --gpu-memory-utilization
