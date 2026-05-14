@@ -111,11 +111,30 @@ primate embedded --no-workspace  # start without mounting current directory
 What `primate` does:
 - Creates a persistent Docker volume `<image>-home` for the home directory
 - Mounts `~/.ssh` and `~/.aws` into the container if present
+- Mounts `/var/run/docker.sock` into the container if present (Docker-out-of-Docker)
 - Mounts the current directory as `/home/codemonkey/workspace`
 - Loads environment variables from the `env` file if present
 - Auto-publishes any exposed ports
 - Enables `--gpus all` on NVIDIA kernel hosts
 - Runs as user `codemonkey` with zsh
+
+### Docker-out-of-Docker
+
+Primate containers can build and manage sibling containers via the host Docker daemon. This lets AI agents (claude, opencode, kiro) run `docker build`, `make all`, etc. directly.
+
+**How it works:**
+- The `codemonkey` base image includes `docker-ce-cli` and `docker-buildx-plugin`
+- `primate()` bind-mounts `/var/run/docker.sock` when the socket exists on the host
+- On first login, `zshrc.template` detects the socket's GID and adds `codemonkey` to a matching group
+
+**Usage from inside a primate container:**
+```bash
+cd workspace                # if code-monkeys repo is your workspace
+cd primates && make all     # build all images from inside the container
+docker ps                   # manage sibling containers
+```
+
+**Security note:** Mounting the Docker socket grants root-equivalent access to the host. This is standard for personal dev environments but should not be used in multi-tenant or production contexts.
 
 ### Upgrading
 

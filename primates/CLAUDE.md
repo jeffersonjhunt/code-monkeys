@@ -70,6 +70,17 @@ RUN /opt/miniforge3/bin/conda create -y -n ${IMAGE_NAME}-env python \
 - Architecture target is aarch64 (ARM64) for miniforge3
 - APT cleanup pattern: `apt-get autoclean && autoremove && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*`
 - llama-cpp-spark and comfy-ui-spark target CUDA architecture sm_121 (DGX Spark Blackwell GPUs) and require the host to be running an NVIDIA kernel
-- **`UNSAFE_SSL` build arg** — when `true`, disables SSL verification for curl (`--insecure`), wget (`--no-check-certificate`), git (`http.sslVerify false`), conda (`ssl_verify false`), and npm (`strict-ssl false`) **during the install RUN steps only**; the config changes are reverted at the end of each RUN so the resulting image still verifies SSL at runtime. Also skips `freshclam` (ClamAV DB update). Sets `TAINTED_BUILD=true` env var in the resulting image.
+- **`UNSAFE_SSL` build arg** — when `true`, disables SSL verification for curl (`--insecure`), wget (`--no-check-certificate`), git (`http.sslVerify false`), conda (`ssl_verify false`), npm (`strict-ssl false`), and apt HTTPS (`Acquire::https::Verify-Peer false`) **during the install RUN steps only**; the config changes are reverted at the end of each RUN so the resulting image still verifies SSL at runtime. Also skips `freshclam` (ClamAV DB update). Sets `TAINTED_BUILD=true` env var in the resulting image.
 - **`FRESH` build arg** (codemonkey.dockerfile only) — when `false`, skips `freshclam` to speed up the base build. Independent of `UNSAFE_SSL`; either knob will skip freshclam.
 - **`TAINTED_BUILD` env var** — baked into every image; `true` if built with `UNSAFE_SSL=true`, `false` otherwise. A login warning is displayed to the user when `TAINTED_BUILD=true`.
+
+## Docker-out-of-Docker
+
+All codemonkey-based containers include `docker-ce-cli` and `docker-buildx-plugin`. When launched via `primate()`, the host's `/var/run/docker.sock` is bind-mounted automatically (if present). The container's `zshrc.template` fixes up the socket GID on first login so `codemonkey` can use docker without sudo.
+
+This means you can build primate images from inside a running container:
+
+```bash
+cd workspace/primates   # assuming code-monkeys repo is the workspace
+make all                # builds all images via the host daemon
+```

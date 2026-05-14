@@ -6,6 +6,15 @@ source ${HOME}/.zbase
 
 if [[ -f /.dockerenv ]]; then
   find "${HOME}" -maxdepth 1 -not -user codemonkey -exec sudo chown -R codemonkey:codemonkey {} +
+
+  # Docker socket GID fixup — match host socket group so codemonkey can use docker
+  if [[ -S /var/run/docker.sock ]]; then
+    SOCK_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null)
+    if [[ -n "$SOCK_GID" ]] && ! id -G codemonkey | grep -qw "$SOCK_GID"; then
+      sudo groupadd -g "$SOCK_GID" -o docker-host 2>/dev/null || true
+      sudo usermod -aG docker-host codemonkey 2>/dev/null || true
+    fi
+  fi
 fi
 
 #
