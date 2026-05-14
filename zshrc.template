@@ -11,8 +11,13 @@ if [[ -f /.dockerenv ]]; then
   if [[ -S /var/run/docker.sock ]]; then
     SOCK_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null)
     if [[ -n "$SOCK_GID" ]] && ! id -G codemonkey | grep -qw "$SOCK_GID"; then
-      sudo groupadd -g "$SOCK_GID" -o docker-host 2>/dev/null || true
-      sudo usermod -aG docker-host codemonkey 2>/dev/null || true
+      SOCK_GROUP=$(getent group "$SOCK_GID" | cut -d: -f1)
+      if [[ -z "$SOCK_GROUP" ]]; then
+        sudo groupadd -g "$SOCK_GID" docker-host 2>/dev/null && SOCK_GROUP=docker-host
+      fi
+      if [[ -n "$SOCK_GROUP" ]]; then
+        sudo usermod -aG "$SOCK_GROUP" codemonkey 2>/dev/null || true
+      fi
     fi
   fi
 fi
