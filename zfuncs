@@ -105,6 +105,11 @@ function primate() {
     __AWS_MOUNT=(--volume "$(cd -P ~/.aws && pwd):/home/codemonkey/.aws")
   fi
 
+  local __DOCKER_MOUNT=()
+  if [[ -S /var/run/docker.sock ]]; then
+    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock)
+  fi
+
   docker run --rm -it \
     --hostname "${__IMAGE}" \
     "${__ENV_FILE_MOUNT[@]}" \
@@ -112,6 +117,7 @@ function primate() {
     "${__PORT_OPTS[@]}" \
     "${__SSH_MOUNT[@]}" \
     "${__AWS_MOUNT[@]}" \
+    "${__DOCKER_MOUNT[@]}" \
     "${__WORKSPACE_MOUNT[@]}" \
     --volume ${__IMAGE}-home:/home/codemonkey \
     --user=codemonkey:codemonkey \

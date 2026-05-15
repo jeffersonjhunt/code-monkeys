@@ -75,6 +75,17 @@ RUN curl $([ "$UNSAFE_SSL" = "true" ] && echo "--insecure") -sL "https://awscli.
   && /tmp/aws/install \
   && rm -rf /tmp/aws /tmp/awscliv2.zip
 
+# Docker CLI + Buildx (for Docker-out-of-Docker via socket mount)
+RUN install -m 0755 -d /etc/apt/keyrings \
+  && curl $([ "$UNSAFE_SSL" = "true" ] && echo "--insecure") -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+  && chmod a+r /etc/apt/keyrings/docker.asc \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list \
+  && if [ "$UNSAFE_SSL" = "true" ]; then echo 'Acquire::https::Verify-Peer "false";' > /etc/apt/apt.conf.d/99no-ssl-verify; fi \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin \
+  && rm -f /etc/apt/apt.conf.d/99no-ssl-verify \
+  && rm -rf /var/lib/apt/lists/*
+
 # make clams fresh (skip if FRESH=false, or if UNSAFE_SSL=true since freshclam requires valid certs)
 RUN if [ "${FRESH}" != "false" ] && [ "${UNSAFE_SSL}" != "true" ]; then \
     freshclam; \
