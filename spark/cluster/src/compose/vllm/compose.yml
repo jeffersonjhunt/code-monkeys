@@ -1,0 +1,77 @@
+# vLLM replica — runs unchanged on both starsky and hutch.
+# Variables come from .env in this directory (gitignored; see .env.example).
+# Source of truth: edit this file directly.
+
+services:
+  vllm:
+    # Default is the locally-built vllm-spark image (sm_121 native cutlass —
+    # see ~/workspace/code-monkeys/primates/vllm-spark.dockerfile). Override
+    # in .env to fall back to upstream vllm/vllm-openai:v0.20.1-cu129-ubuntu2404
+    # (AWQ paths work on upstream; NVFP4 / FP8 dense crash on sm_120).
+    image: ${VLLM_IMAGE:-vllm-spark:latest}
+    container_name: vllm
+    restart: unless-stopped
+    ipc: host
+    shm_size: '8gb'
+    env_file:
+      - .env
+    volumes:
+      - ${MODEL_DIR:-/home/jhunt/Models}:/models:ro
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      # Weights are pre-staged at /models/<org>/<name> by `model-pull.sh`; we
+      # no longer let vLLM auto-download via HF Hub. HF_MODEL_ID doubles as
+      # the relative path inside the mount (org/name HF convention).
+      - --model
+      - /models/${HF_MODEL_ID:-RedHatAI/Qwen3-Coder-Next-NVFP4}
+      - --served-model-name
+      - ${VLLM_SERVED_NAME:-qwen3-coder-next}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --tensor-parallel-size
+      - "${VLLM_TP_SIZE:-1}"
+      - --gpu-memory-utilization
+      - "${VLLM_GPU_MEM_UTIL:-0.90}"
+      - --max-model-len
+      - "${VLLM_MAX_MODEL_LEN:-32768}"
+      - --max-num-seqs
+      - "${VLLM_MAX_NUM_SEQS:-32}"
+      # --trust-remote-code lets vLLM load model code shipped with the weights
+      # (Qwen3.6-A3B has custom DeltaNet code). Acceptable for our use case
+      # since we control the served model id.
+      - --trust-remote-code
+      # Prefix caching — hashes prompt prefixes and reuses KV pages across requests.
+      # Big TTFT win for agent workloads with repeated system prompts / multi-turn chat.
+      - --enable-prefix-caching
+      # Tool / reasoning parsers — pick parser via env var to match the model:
+      #   qwen3_coder   → Qwen3-Coder / Qwen3.6 family (current; uses <tool_call> XML; auto mode reliable)
+      #   hermes        → Qwen2.5 family (caveat: auto mode unreliable, see runbook)
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - "${VLLM_TOOL_PARSER:-qwen3_coder}"
+      - --reasoning-parser
+      - "${VLLM_REASONING_PARSER:-qwen3}"
+    # Python-based healthcheck — vllm-openai image doesn't ship wget, but
+    # python3 is always present. start_period generous since model load can
+    # take 5–10 min on first start and ~2 min from disk cache.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"

@@ -1,0 +1,12 @@
+# Secrets — real .env files (per-stack), keep .env.example committed
+src/compose/*/.env
+!src/compose/*/.env.example
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Claude Code local config / session state
+.claude/
