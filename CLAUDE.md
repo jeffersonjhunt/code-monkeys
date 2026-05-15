@@ -18,6 +18,7 @@ This is a personal development environment repository (dotfiles + containerized 
 - **`aws/`**: AWS CLI config and credentials — managed by vault, never commit plaintext
 - **`claude/`**: Claude Code settings and custom slash commands (symlinked to `~/.claude` by setup, copied into claude primate image)
 - **`Library/`**: macOS-only assets (`KeyBindings/DefaultKeyBinding.dict` is copied to `~/Library/KeyBindings` by setup)
+- **`spark/`**: DGX Spark cluster ops. `spark/cluster/` is the two-node vLLM replica cluster (compose stacks, scripts, runbook) that consumes the `vllm-spark` primate. See `spark/cluster/CLAUDE.md`.
 
 ## Build Commands
 

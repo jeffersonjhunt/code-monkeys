@@ -1,6 +1,6 @@
 # spark-cluster
 
-vLLM replica cluster on two NVIDIA DGX Spark nodes (Blackwell GB10, 128 GB UMA each) serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` behind HAProxy. Runs the locally-built `vllm-spark` image (sm_121-native cutlass — built from `~/workspace/code-monkeys/primates/vllm-spark.dockerfile`) which unblocks both FP8 dense and NVFP4 MoE paths that crash on upstream `vllm/vllm-openai`. See `docs/parking-lot.md` for the resolved-canary write-ups.
+vLLM replica cluster on two NVIDIA DGX Spark nodes (Blackwell GB10, 128 GB UMA each) serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` behind HAProxy. Runs the locally-built `vllm-spark` image (sm_121-native cutlass — built from `../../primates/vllm-spark.dockerfile`) which unblocks both FP8 dense and NVFP4 MoE paths that crash on upstream `vllm/vllm-openai`. See `docs/parking-lot.md` for the resolved-canary write-ups.
 
 ## Hardware
 
@@ -47,7 +47,7 @@ Deploy:
 
 `deploy.sh` rsyncs the relevant `src/compose/<stack>/` directory to `/home/jhunt/spark-deploy/<stack>/` on the host and runs `docker compose up -d`.
 
-When the `vllm-spark` image is rebuilt in `~/workspace/code-monkeys/primates/`, ship it from the box that built it to the others:
+When the `vllm-spark` image is rebuilt in `../../primates/`, ship it from the box that built it to the others:
 
 ```bash
 ./src/scripts/ship-image.sh starsky hutch vllm-spark:latest   # one dest

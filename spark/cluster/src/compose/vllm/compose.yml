@@ -5,9 +5,10 @@
 services:
   vllm:
     # Default is the locally-built vllm-spark image (sm_121 native cutlass —
-    # see ~/workspace/code-monkeys/primates/vllm-spark.dockerfile). Override
-    # in .env to fall back to upstream vllm/vllm-openai:v0.20.1-cu129-ubuntu2404
-    # (AWQ paths work on upstream; NVFP4 / FP8 dense crash on sm_120).
+    # see primates/vllm-spark.dockerfile in the code-monkeys repo root).
+    # Override in .env to fall back to upstream
+    # vllm/vllm-openai:v0.20.1-cu129-ubuntu2404 (AWQ paths work on upstream;
+    # NVFP4 / FP8 dense crash on sm_120).
     image: ${VLLM_IMAGE:-vllm-spark:latest}
     container_name: vllm
     restart: unless-stopped

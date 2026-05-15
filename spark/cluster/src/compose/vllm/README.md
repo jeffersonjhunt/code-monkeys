@@ -18,8 +18,9 @@ All compose variables have sensible defaults; override by uncommenting lines in 
 - `VLLM_MAX_MODEL_LEN` — context window. Lower frees memory for KV cache.
 - `VLLM_GPU_MEM_UTIL` — fraction of GPU memory vLLM may use. Default 0.90.
 - `VLLM_IMAGE` — defaults to the locally-built `vllm-spark:latest` (sm_121
-  native cutlass, built from `~/workspace/code-monkeys/primates/vllm-spark.dockerfile`
-  and shipped to both Sparks via `docker save | zstd | ssh hutch | docker load`).
+  native cutlass; the `vllm-spark` primate lives at `primates/vllm-spark.dockerfile`
+  in the repo root and is shipped to both Sparks via
+  `docker save | zstd | ssh hutch | docker load`).
   Override to upstream `vllm/vllm-openai:vX.Y.Z-cu129-ubuntu2404` if needed.
 
 ## Smoke test
