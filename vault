@@ -24,6 +24,14 @@ VAULTS=(
   "gitconfig:.gitconfig.vault:file"
 )
 
+# Subdirectories to exclude from tar and staleness checks (per source dir)
+_excludes_for() {
+  case "$1" in
+    aws) echo "amazonq sso" ;;
+    *)   echo "" ;;
+  esac
+}
+
 OPENSSL_ARGS=(-aes-256-cbc -salt -pbkdf2 -iter 600000)
 
 # aws cli wrapper that adds --profile if VAULT_PROFILE is set
@@ -135,7 +143,15 @@ do_lock() {
     fi
 
     found=true
-    tar cf - -C "$SCRIPT_DIR" "$source" | openssl enc "${OPENSSL_ARGS[@]}" -pass pass:"$password" -out "$vault_path"
+    local tar_excludes=()
+    local _excl_list
+    _excl_list=$(_excludes_for "$source")
+    if [[ "$type" == "dir" && -n "$_excl_list" ]]; then
+      for excl in $_excl_list; do
+        tar_excludes+=(--exclude="${source}/${excl}")
+      done
+    fi
+    tar cf - "${tar_excludes[@]}" -C "$SCRIPT_DIR" "$source" | openssl enc "${OPENSSL_ARGS[@]}" -pass pass:"$password" -out "$vault_path"
 
     if [[ "$type" == "dir" ]]; then
       rm -rf "$source_path"
@@ -195,12 +211,13 @@ do_status() {
   local pull_dry="" push_dry="" s3_err=""
   if [[ -n "${VAULT_BUCKET:-}" ]]; then
     local s3_uri="s3://${VAULT_BUCKET}"
-    if pull_dry=$(_aws s3 sync "$s3_uri" "$SCRIPT_DIR" "${SYNC_INCLUDES[@]}" --dryrun 2>&1) \
-    && push_dry=$(_aws s3 sync "$SCRIPT_DIR" "$s3_uri" "${SYNC_INCLUDES[@]}" --dryrun 2>&1); then
-      s3_state="ok"
-    else
+    pull_dry=$(_aws s3 sync "$s3_uri" "$SCRIPT_DIR" "${SYNC_INCLUDES[@]}" --dryrun 2>&1) || true
+    push_dry=$(_aws s3 sync "$SCRIPT_DIR" "$s3_uri" "${SYNC_INCLUDES[@]}" --dryrun 2>&1) || true
+    if echo "$pull_dry" | grep -qiE "^(fatal|An error occurred)"; then
       s3_state="error"
       s3_err="$pull_dry"
+    else
+      s3_state="ok"
     fi
   fi
 
@@ -227,8 +244,16 @@ do_status() {
       local stale=""
       if [[ "$type" == "dir" ]]; then
         local newer
-        newer=$(find "$source_path" -newer "$vault_path" -type f \
-          ! -name "known_hosts" ! -name "known_hosts.old" 2>/dev/null | head -1)
+        local _excl_list
+        _excl_list=$(_excludes_for "$source")
+        local find_cmd=(find "$source_path")
+        if [[ -n "$_excl_list" ]]; then
+          for excl in $_excl_list; do
+            find_cmd+=(-path "${source_path}/${excl}" -prune -o)
+          done
+        fi
+        find_cmd+=(-newer "$vault_path" -type f ! -name "known_hosts" ! -name "known_hosts.old" -print)
+        newer=$("${find_cmd[@]}" 2>/dev/null | head -1)
         [[ -n "$newer" ]] && stale="STALE — source changed since last lock"
       else
         [[ "$source_path" -nt "$vault_path" ]] && stale="STALE — source changed since last lock"

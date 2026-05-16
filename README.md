@@ -166,7 +166,7 @@ The `vault` script encrypts secrets at rest using AES-256-CBC with PBKDF2. It ma
 |---|---|---|
 | `ssh/` | `.ssh.vault` | directory |
 | `env` | `.env.vault` | file |
-| `aws/` | `.aws.vault` | directory |
+| `aws/` | `.aws.vault` | directory (excludes `amazonq/`, `sso/`) |
 | `face` | `.face.vault` | file |
 | `gitconfig` | `.gitconfig.vault` | file |
 
