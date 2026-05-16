@@ -10,3 +10,6 @@ openvpn/logs/
 .DS_Store
 .configured
 .claude/
+007/skills/skills-ref/.venv
+__pycache__/
+.pytest_cache/

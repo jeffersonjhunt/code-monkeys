@@ -327,6 +327,25 @@ install_hooks() {
   done
 }
 
+install_skills() {
+  if [[ ! -f "${SRC}/007/skills/Makefile" ]]; then
+    echo "  skip: 007/skills not found"
+    return
+  fi
+
+  echo "Installing agent skills..."
+  run make -C "${SRC}/007/skills" install
+}
+
+remove_skills() {
+  if [[ ! -f "${SRC}/007/skills/Makefile" ]]; then
+    return
+  fi
+
+  echo "Removing agent skills..."
+  run make -C "${SRC}/007/skills" uninstall
+}
+
 # --- Parse args ---
 
 while [[ $# -gt 0 ]]; do
@@ -353,6 +372,7 @@ if [[ "$UNINSTALL" == true ]]; then
   remove_bin_links
   remove_zshrc
   remove_repos
+  remove_skills
   [[ "$OS" == "MacOS" ]] && remove_macos
 
   if [[ "$DRY_RUN" == false ]]; then
@@ -380,6 +400,8 @@ else
   [[ "$OS" == "MacOS" ]] && setup_macos
 
   install_hooks
+
+  install_skills
 
   if [[ "$DRY_RUN" == false ]]; then
     touch "${SRC}/.configured"
