@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
 # ship-image.sh — stream a docker image from one host to one or more others.
 #
+# Hosts come from cluster.env ($REPLICAS, $SSH_USER).
+#
 # Usage:
+#   ./ship-image.sh <src-host> <dst-host>|all <image:tag>
+#
+# Examples:
 #   ./ship-image.sh starsky hutch vllm-spark:latest
-#   ./ship-image.sh starsky all   vllm-spark:latest    # all known hosts except src
+#   ./ship-image.sh starsky all   vllm-spark:latest    # every replica except src
 #
 # Streams `docker save | zstd` through ssh to `zstd -d | docker load` on the
 # destination — no intermediate disk file on either side. zstd -3 is a sweet
 # spot for ~10G LANs (compression keeps up with the wire, decompression is
 # free on the receiving CPU).
 #
-# Requires: ssh keys to jhunt@<host> on both sides; docker on both;
+# Requires: ssh keys to $SSH_USER@<host> on both sides; docker on both;
 # zstd on both (apt install zstd).
 
 set -euo pipefail
 
-REMOTE_USER=jhunt
-ALL_HOSTS="starsky hutch"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/load-config.sh
+. "$script_dir/lib/load-config.sh"
+
+REMOTE_USER="$SSH_USER"
 
 usage() {
   cat >&2 <<EOF
@@ -49,7 +57,7 @@ ship_one() {
 }
 
 if [[ "$DST" == "all" ]]; then
-  for host in $ALL_HOSTS; do
+  for host in $REPLICAS; do
     ship_one "$host"
   done
 else

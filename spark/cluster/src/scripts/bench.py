@@ -9,12 +9,14 @@ deployed. stdlib only — no external deps.
 Usage:
   python3 bench.py [--target HOST:PORT] [--concurrency N] [--requests R] [--max-tokens T]
 
-Defaults: target=starsky:8080, concurrency=8, requests=32, max-tokens=256.
+Defaults: target from $CLUSTER_TARGET env var (set by bench-sweep.sh from
+cluster.env) or "localhost:8080"; concurrency=8, requests=32, max-tokens=256.
 """
 
 import argparse
 import concurrent.futures
 import json
+import os
 import statistics
 import sys
 import time
@@ -67,7 +69,7 @@ def percentile(sorted_xs: list, p: float) -> float:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--target", default="starsky:8080")
+    ap.add_argument("--target", default=os.environ.get("CLUSTER_TARGET", "localhost:8080"))
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--requests", type=int, default=32)
     ap.add_argument("--max-tokens", type=int, default=256)

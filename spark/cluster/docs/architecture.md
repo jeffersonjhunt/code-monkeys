@@ -2,7 +2,7 @@
 
 ## Topology decision: replicas, not shards
 
-Two DGX Spark nodes, each running an independent vLLM instance with a full copy of the model weights, fronted by HAProxy on starsky.
+Two GPU nodes (DGX Sparks in the maintainer's deployment), each running an independent vLLM instance with a full copy of the model weights, fronted by HAProxy on `$LB_HOST`. Hosts and the LB role come from `cluster.env` — examples below use the maintainer's names (`starsky`, `hutch`) but the orchestration is name-agnostic.
 
 Reasoning:
 
@@ -15,14 +15,14 @@ ConnectX-7 direct link between the two boxes is left in place but unused. If we 
 
 ## Load balancing
 
-HAProxy on starsky:
+HAProxy on `$LB_HOST`:
 
-- Front: HTTP on `0.0.0.0:8080`
-- Back: `starsky:8000`, `hutch:8000` (resolved via DNS at HAProxy startup)
+- Front: HTTP on `0.0.0.0:$LB_PORT`
+- Back: one `server` line per entry in `$REPLICAS`, port `$VLLM_PORT`, generated from `haproxy.cfg.template` at deploy time (resolved via DNS at HAProxy startup)
 - Health check: `GET /health` on each backend (vLLM exposes this)
 - Failover behavior: HAProxy drains a backend on health-check failure
 
-Known SPOF: starsky losing power takes the API endpoint down. Accepted for current usage. Upgrade path is active/passive HAProxy via keepalived when availability requirements grow.
+Known SPOF: `$LB_HOST` losing power takes the API endpoint down. Accepted for current usage. Upgrade path is active/passive HAProxy via keepalived when availability requirements grow.
 
 ## Why containers
 
@@ -37,7 +37,7 @@ Two hosts. The "fleet" doesn't justify a control-plane abstraction:
 
 - Compose files are the source of truth — what you read is what runs.
 - `docker compose up -d` is already idempotent; rerunning `deploy.sh` is safe.
-- "starsky runs HAProxy, hutch doesn't" is one extra `deploy.sh` call, not a templated inventory.
+- "`$LB_HOST` runs HAProxy, the others don't" is one extra `deploy.sh` call driven by `cluster.env`, not a templated inventory engine.
 - Templating engines (Ansible Jinja2, Helm) would add indirection without leverage at this scale.
 
 We'd revisit if any of these change: fleet grows past ~5 boxes, hosts diverge into meaningfully different roles, or there's pre-existing in-house orchestration tooling we should fit into.
@@ -50,10 +50,10 @@ We'd revisit if any of these change: fleet grows past ~5 boxes, hosts diverge in
 
 ## Networks and ports
 
-| Port    | Where        | Purpose                                          |
-|---------|--------------|--------------------------------------------------|
-| 8000    | both nodes   | vLLM OpenAI-compatible API (internal)            |
-| 8080    | starsky      | HAProxy public ingress (non-privileged port)     |
-| ?       | both nodes   | ConnectX-7 link (unused, reserved)               |
+| Port            | Where         | Purpose                                          |
+|-----------------|---------------|--------------------------------------------------|
+| `$VLLM_PORT`    | every replica | vLLM OpenAI-compatible API (internal)            |
+| `$LB_PORT`      | `$LB_HOST`    | HAProxy public ingress (non-privileged port)     |
+| ?               | replica pair  | ConnectX-7 link (unused, reserved)               |
 
-vLLM's `:8000` should not be exposed publicly — only HAProxy on starsky terminates external traffic. Firewall rules enforce this.
+vLLM's `$VLLM_PORT` should not be exposed publicly — only HAProxy on `$LB_HOST` terminates external traffic. Firewall rules enforce this.

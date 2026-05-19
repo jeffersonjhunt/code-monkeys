@@ -1,4 +1,8 @@
-# HAProxy config for spark-cluster.
+# HAProxy config template for spark-cluster.
+# deploy.sh renders this to haproxy.cfg by replacing the `# __REPLICAS__`
+# marker below with one `server <host> <host>:$VLLM_PORT check` line per
+# entry in $REPLICAS (from cluster.env). Edit this file — never edit the
+# generated haproxy.cfg, it's overwritten on every deploy.
 # Backends use hostnames (resolved at HAProxy startup); DNS is the source of truth.
 
 global
@@ -38,5 +42,4 @@ backend vllm_pool
     http-check send meth GET uri /health
     http-check expect status 200
     default-server inter 10s fall 3 rise 2 maxconn 1024
-    server starsky starsky:8000 check
-    server hutch   hutch:8000   check
+    # __REPLICAS__

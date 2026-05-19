@@ -2,6 +2,12 @@
 src/compose/*/.env
 !src/compose/*/.env.example
 
+# Cluster inventory — real cluster.env is per-user; keep the example committed
+cluster.env
+
+# Generated from haproxy.cfg.template at deploy time
+src/compose/haproxy/haproxy.cfg
+
 # Editor / OS noise
 .DS_Store
 *.swp
