@@ -1,0 +1,23 @@
+# HAProxy front-end — starsky only.
+# Static config in haproxy.cfg (sibling file).
+
+services:
+  haproxy:
+    image: haproxy:3.0-alpine
+    container_name: haproxy
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    # haproxy:alpine ships busybox wget, so this works as-is.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8404/health || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

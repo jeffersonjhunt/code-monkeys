@@ -236,6 +236,12 @@ Uses `aws s3 sync` under the hood — only transfers files that have changed. Re
 │   ├── settings.json
 │   └── commands/
 ├── fastfetch/             # fastfetch config
-└── Library/                # macOS-only assets
-    └── KeyBindings/        # custom key bindings (installed to ~/Library/KeyBindings)
+├── Library/               # macOS-only assets
+│   └── KeyBindings/       # custom key bindings (installed to ~/Library/KeyBindings)
+└── spark/                 # DGX Spark cluster ops
+    └── cluster/           # two-node vLLM replica cluster (compose + scripts + docs)
 ```
+
+## Spark cluster
+
+`spark/cluster/` runs the DGX Spark vLLM replica cluster that consumes the `vllm-spark` primate. See `spark/cluster/README.md` and `spark/cluster/CLAUDE.md`.
