@@ -4,19 +4,25 @@
 # Auto-discovers the served model id from /v1/models, so the script always
 # tests whatever is actually deployed — no need to keep model names in sync.
 #
+# Default target comes from cluster.env ($LB_HOST:$LB_PORT — through HAProxy).
+# Bare hostnames get $VLLM_PORT appended for direct-replica testing.
+#
 # Usage:
-#   ./smoke-test.sh starsky          # → http://starsky:8000 (direct replica)
-#   ./smoke-test.sh hutch
-#   ./smoke-test.sh starsky:80       # → through HAProxy
-#   ./smoke-test.sh host:port        # explicit
+#   ./smoke-test.sh                 # → $LB_HOST:$LB_PORT (through HAProxy)
+#   ./smoke-test.sh starsky         # → starsky:$VLLM_PORT (direct replica)
+#   ./smoke-test.sh host:port       # explicit
 #
 # Exits non-zero on any failure.
 
 set -euo pipefail
 
-target="${1:-starsky:8000}"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/load-config.sh
+. "$script_dir/lib/load-config.sh"
+
+target="${1:-${LB_HOST}:${LB_PORT}}"
 if [[ "$target" != *:* ]]; then
-  target="$target:8000"
+  target="$target:$VLLM_PORT"
 fi
 base="http://$target"
 

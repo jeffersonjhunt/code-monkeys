@@ -1,4 +1,4 @@
-# vLLM replica — runs unchanged on both starsky and hutch.
+# vLLM replica — runs unchanged on every replica.
 # Variables come from .env in this directory (gitignored; see .env.example).
 # Source of truth: edit this file directly.
 

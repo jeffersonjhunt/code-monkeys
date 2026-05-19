@@ -2,19 +2,24 @@
 # model-pull.sh — fetch a HuggingFace repo into the flat ~/Models/<org>/<name>
 # layout that the vLLM compose expects. Idempotent.
 #
+# Hosts come from cluster.env ($REPLICAS, $SSH_USER).
+#
 # Usage:
-#   ./model-pull.sh <host> <repo>
+#   ./model-pull.sh <host>|all <org/repo>
 #   ./model-pull.sh starsky RedHatAI/Qwen3-Coder-Next-NVFP4
 #   ./model-pull.sh all     QuantTrio/Qwen3.6-35B-A3B-AWQ
 #
-# Reads HF_TOKEN from /home/jhunt/spark-deploy/vllm/.env on the remote host
+# Reads HF_TOKEN from ~$SSH_USER/spark-deploy/vllm/.env on the remote host
 # (deployed by deploy.sh). Uses the locally-built vllm-spark image's `hf` CLI
 # via `--entrypoint hf` so we don't need huggingface_hub installed on the host.
 
 set -euo pipefail
 
-REMOTE_USER=jhunt
-ALL_HOSTS="starsky hutch"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/load-config.sh
+. "$script_dir/lib/load-config.sh"
+
+REMOTE_USER="$SSH_USER"
 
 usage() {
   cat >&2 <<EOF
@@ -48,7 +53,7 @@ pull_one() {
 }
 
 if [[ "$HOST" == "all" ]]; then
-  for h in $ALL_HOSTS; do
+  for h in $REPLICAS; do
     pull_one "$h"
   done
 else

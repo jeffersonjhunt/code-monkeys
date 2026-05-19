@@ -23,6 +23,16 @@ fi
 
 echo ">> verify"
 ls -ld "$MODEL_DIR"
-host starsky.tworivers >/dev/null && echo "DNS: starsky.tworivers OK"
-host hutch.tworivers   >/dev/null && echo "DNS: hutch.tworivers OK"
+# Caller may pipe in CLUSTER_PEERS="hostA hostB" to have the remote box verify
+# DNS for each peer. Silent when unset — bootstrap stays usable as a plain
+# `bash -s` pipe.
+if [[ -n "${CLUSTER_PEERS:-}" ]]; then
+  for h in $CLUSTER_PEERS; do
+    if host "$h" >/dev/null 2>&1; then
+      echo "DNS: $h OK"
+    else
+      echo "DNS: $h FAIL" >&2
+    fi
+  done
+fi
 echo "OK."

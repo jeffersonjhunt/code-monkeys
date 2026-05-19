@@ -2,6 +2,8 @@
 
 Operate / teardown procedures for the spark-cluster vLLM deployment.
 
+> Examples below use the maintainer's host names (`starsky`, `hutch`) and SSH user (`jhunt`). Substitute the values from your `cluster.env` (`$REPLICAS`, `$LB_HOST`, `$SSH_USER`) when running the commands.
+
 ## Endpoints
 
 | Endpoint                      | Where               | Purpose                                  |
