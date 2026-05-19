@@ -84,3 +84,12 @@ Track D (validation with known-good model). Long-term target Qwen3-Coder-Next-NV
 - [x] Both replicas healthy and smoke-test PASS
 - [x] HAProxy round-robin verified; both backends UP
 - [x] Bench shows ~10× single-stream tok/s and ~14× cluster aggregate vs Qwen2.5-Coder baseline
+
+## Phase 10 — Inventory-driven hosts (2026-05-19)
+
+- [x] `cluster.env` / `cluster.env.example` at project root; gitignored real file
+- [x] `src/scripts/lib/load-config.sh` shared loader; validates required vars; LB_HOST ∈ REPLICAS
+- [x] All seven scripts source the inventory (`deploy.sh`, `ship-image.sh`, `model-pull.sh`, `bootstrap.sh`, `smoke-test.sh`, `bench-sweep.sh`, `bench.py`)
+- [x] `haproxy.cfg` → `haproxy.cfg.template` with `# __REPLICAS__` marker; `deploy.sh` renders before sync; generated cfg gitignored
+- [x] Living docs updated (README, CLAUDE.md, architecture.md, runbook.md); historical docs preserved
+- [x] Validated against live cluster: `deploy.sh all` clean, all three containers recovered to healthy, smoke-test PASS through HAProxy + each replica direct

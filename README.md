@@ -239,9 +239,9 @@ Uses `aws s3 sync` under the hood — only transfers files that have changed. Re
 ├── Library/               # macOS-only assets
 │   └── KeyBindings/       # custom key bindings (installed to ~/Library/KeyBindings)
 └── spark/                 # DGX Spark cluster ops
-    └── cluster/           # two-node vLLM replica cluster (compose + scripts + docs)
+    └── cluster/           # vLLM replica cluster (compose + scripts + docs)
 ```
 
 ## Spark cluster
 
-`spark/cluster/` runs the DGX Spark vLLM replica cluster that consumes the `vllm-spark` primate. See `spark/cluster/README.md` and `spark/cluster/CLAUDE.md`.
+`spark/cluster/` runs a vLLM replica cluster that consumes the `vllm-spark` primate. Hosts and roles come from a gitignored `cluster.env` (copy `cluster.env.example` and edit), so the same scripts work for the maintainer's two DGX Sparks or any other pair of SSH-reachable GPU boxes. See `spark/cluster/README.md` and `spark/cluster/CLAUDE.md`.
