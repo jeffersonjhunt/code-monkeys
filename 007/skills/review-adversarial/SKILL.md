@@ -32,6 +32,8 @@ the review; the scripts manage findings state and loop convergence.
    → "converged" — all findings resolved; done
    → "max_rounds" — hit the limit; produce summary
 8. Summary:     python scripts/loop.py summary --state .review-state.json
+9. Promote (optional): python scripts/promote.py --state .review-state.json --output docs/reviews/
+   → Converts findings to markdown files for tracking via docs-issues skill
 ```
 
 ## Scripts
@@ -81,6 +83,32 @@ python scripts/respond.py --state .review-state.json --resolve F2=disputed --rat
 ```
 
 Dispositions: `fixed`, `disputed`, `accepted` (accept-risk)
+
+### promote.py — Convert Findings to Tracked Issues (optional)
+
+After the review loop converges (or hits max rounds), you can promote findings
+into docs/reviews/ markdown files for long-term tracking. This integrates with
+the `docs-issues` skill for export to GitHub/GitLab/todo.md.
+
+```bash
+# Auto-classify by category (security/correctness/edge-case→bug, others→debt)
+python scripts/promote.py --state .review-state.json --output docs/reviews/
+
+# Explicit classification per finding
+python scripts/promote.py --state .review-state.json --output docs/reviews/ \
+    --classify F1=bug F2=feature F3=debt F4=question
+
+# Skip nits and disputed findings (default behavior)
+python scripts/promote.py --state .review-state.json --output docs/reviews/ \
+    --skip nit,disputed
+
+# Preview without writing
+python scripts/promote.py --state .review-state.json --output docs/reviews/ --dry-run
+```
+
+Promoted findings are marked `promoted: true` in the state file, so re-running
+is idempotent. Each finding becomes one markdown file in
+`docs/reviews/{kind}s/{date}-{slug}.md` with full schema (see `docs-issues` skill).
 
 ## Adversarial Perspectives
 
