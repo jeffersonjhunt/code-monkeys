@@ -16,13 +16,8 @@ Each skill lives in its own directory and follows a standard structure:
 
 | Skill | Description |
 |-------|-------------|
-| [math-fibonacci](math-fibonacci/) | Fibonacci sequence generation and ASCII tile art |
-| [roll-dice](roll-dice/) | Roll dice using a random number generator (d6, d20, etc.) |
+| [math-fibonacci](math-fibonacci/) | Fibonacci sequence generation and ASCII tile art (kept as a reference template for skill authoring) |
 | [img-sixel](img-sixel/) | Display images as SIXEL graphics or convert SIXEL to PNG |
-| [test-playwright](test-playwright/) | Manage, create, and run Playwright end-to-end tests |
-| [math-primes](math-primes/) | Prime number generation, primality testing, and factorization |
-| [text-summarize](text-summarize/) | Extractive text summarization using sentence scoring |
-| [data-csv](data-csv/) | CSV parsing, filtering, sorting, and transformation |
 | [review-adversarial](review-adversarial/) | Adversarial code review with state-tracked review loops |
 | [althingi](althingi/) | Roundtable discussions with multiple agent voices (subagent or solo mode) |
 
