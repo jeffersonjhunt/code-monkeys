@@ -52,9 +52,9 @@ Follow the frontmatter with a markdown body containing:
 
 ## Naming
 
-- Skill directories: lowercase with hyphens (e.g., `math-primes`, `data-csv`)
+- Skill directories: lowercase with hyphens (e.g., `math-fibonacci`, `docs-issues`)
 - Scripts: lowercase with hyphens or underscores
-- Use a category prefix when appropriate: `math-`, `text-`, `data-`, `img-`, `test-`
+- Use a category prefix when appropriate: `math-`, `text-`, `data-`, `img-`, `docs-`
 
 ## Testing
 
@@ -91,13 +91,13 @@ Skills use semver-style versions in their `metadata.version` field.
 make changelog
 
 # Bump a skill version
-make bump SKILL=math-primes TYPE=minor
+make bump SKILL=docs-issues TYPE=minor
 
 # Add a changelog entry
-python scripts/changelog.py add --skill math-primes --message "Added new feature"
+python scripts/changelog.py add --skill docs-issues --message "Added new feature"
 
 # Show a skill's changelog
-python scripts/changelog.py show --skill math-primes
+python scripts/changelog.py show --skill docs-issues
 ```
 
 When making changes to a skill, bump the version and add a changelog entry describing what changed.

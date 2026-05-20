@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-vLLM replica cluster across two NVIDIA DGX Spark nodes (Blackwell GB10, ARM64, 128 GB unified memory). Currently serves `QuantTrio/Qwen3.6-35B-A3B-AWQ` (community AWQ of the Qwen3.6-A3B DeltaNet+MoE hybrid) via an OpenAI-compatible HTTP API behind HAProxy. The original target `RedHatAI/Qwen3-Coder-Next-NVFP4` is parked pending an upstream FlashInfer NVFP4-MoE-on-sm_120 fix — see `docs/parking-lot.md`.
+vLLM replica cluster across two NVIDIA DGX Spark nodes (Blackwell GB10, ARM64, 128 GB unified memory). Currently serves `RedHatAI/Qwen3-Coder-Next-NVFP4` (Qwen3-Coder-Next 80B-A3B MoE, NVFP4 quant) via an OpenAI-compatible HTTP API behind HAProxy — unblocked 2026-05-08 by the locally-built `vllm-spark` image (sm_121-native cutlass). The community AWQ `QuantTrio/Qwen3.6-35B-A3B-AWQ` remains a validated fallback canary. See `docs/parking-lot.md` for the resolved write-ups.
 
 ## Topology
 

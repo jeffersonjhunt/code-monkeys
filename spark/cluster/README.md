@@ -69,7 +69,7 @@ It streams `docker save | zstd -3 | ssh | docker load` end-to-end (~3.5 min for 
 
 ## Status
 
-Both replicas healthy on AWQ. Tool calling works in `auto` mode via the `qwen3_coder` parser. HAProxy round-robins; failover drill validated. Cluster peak ~752 tok/s aggregate at c=32. Current phase and history live in `TASKS.md` and `CHANGELOG.md`.
+Both replicas healthy on `RedHatAI/Qwen3-Coder-Next-NVFP4` (unblocked by `vllm-spark` 2026-05-08). Tool calling works in `auto` mode via the `qwen3_coder` parser (known caveat: occasional malformed JSON in tool-call arguments — see memory note). HAProxy round-robins; failover drill validated. Cluster peak ~752 tok/s aggregate at c=32 (measured on the prior AWQ canary; NVFP4 numbers in `CHANGELOG.md`). Current phase and history live in `TASKS.md` and `CHANGELOG.md`.
 
 ## Layout
 
