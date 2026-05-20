@@ -20,6 +20,7 @@ Each skill lives in its own directory and follows a standard structure:
 | [img-sixel](img-sixel/) | Display images as SIXEL graphics or convert SIXEL to PNG |
 | [review-adversarial](review-adversarial/) | Adversarial code review with state-tracked review loops |
 | [althingi](althingi/) | Roundtable discussions with multiple agent voices (subagent or solo mode) |
+| [docs-issues](docs-issues/) | Manage markdown-based issues in docs/reviews/ and export to GitHub/GitLab/todo.md |
 
 ## Usage
 

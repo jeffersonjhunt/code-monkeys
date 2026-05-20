@@ -8,6 +8,7 @@
 ## Skills to Add
 - [x] review-adversarial — Adversarial code review with state-tracked review loops
 - [x] althingi — Roundtable discussion orchestrator (subagent + solo mode)
+- [x] docs-issues — Markdown-based issue tracking with export to GitHub/GitLab/todo.md (paired with review-adversarial promote.py)
 
 ## Improvements
 - [x] Add tests for math-fibonacci
