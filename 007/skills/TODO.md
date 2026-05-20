@@ -6,22 +6,28 @@
 - [x] Add versioning/changelog tooling
 
 ## Skills to Add
-- [x] math-primes — Prime number generation and sieve algorithms
-- [x] text-summarize — Text summarization utilities
-- [x] data-csv — CSV parsing and transformation
 - [x] review-adversarial — Adversarial code review with state-tracked review loops
 - [x] althingi — Roundtable discussion orchestrator (subagent + solo mode)
 
 ## Improvements
 - [x] Add tests for math-fibonacci
 - [x] Add `--format` flag to fibonacci-generator (json, csv, plain)
-- [x] Add tests for roll-dice
-- [x] Add multi-dice support to roll-dice (e.g., `2d6`, `3d8+2`)
 - [x] Add tests for img-sixel
 - [x] Add `--output` flag to img-sixel for saving SIXEL output to file
-- [x] Add tests for test-playwright
-- [x] Add `playwright.sh update` command to update browsers
 - [x] Document skill authoring guidelines
+
+## Removed (redundant with agent abilities)
+
+These skills were pruned because their functionality is already provided
+natively by the host agent (Claude / Kiro). Kept here as a record:
+- math-primes (prime generation/factorization — trivial to compute natively)
+- roll-dice (random — trivial to compute natively)
+- text-summarize (extractive summarizer — agent summarizes better)
+- data-csv (CSV operations — agent reads/transforms directly)
+- test-playwright (thin wrapper over `npx playwright`)
+
+`math-fibonacci` is intentionally kept as a reference template for new
+skill authoring, even though Fibonacci itself is also trivial to compute.
 
 ## Parking Lot
 
