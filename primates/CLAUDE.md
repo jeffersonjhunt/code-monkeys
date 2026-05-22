@@ -26,7 +26,7 @@ All builds use `docker buildx build` except llama-cpp-spark which uses `docker b
 
 ```
 codemonkey (base, dockerfile in parent dir)
-├── miniforge3       (adds Miniforge3 for aarch64, conda init for zsh)
+├── miniforge3       (adds Miniforge3 for aarch64, conda init for zsh, uv in base env)
 │   ├── claude       (adds claude-code via native installer, claude-env conda env)
 │   ├── opencode     (adds opencode via curl installer to /usr/local/bin, opencode-env conda env, pre-pointed at spark-cluster vLLM)
 │   └── kiro         (adds Amazon Kiro CLI via native installer, kiro-env conda env)

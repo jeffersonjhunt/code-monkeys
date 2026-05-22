@@ -73,7 +73,7 @@ nvidia/cuda:13.1.1 → llama-cpp-spark  (multi-stage: full/light/server)
 | Image | Purpose |
 |---|---|
 | **codemonkey** | Base image — Debian 13, zsh, oh-my-zsh, git, vim, build-essential, cmake, python3, nodejs, nmap, clamav, AWS CLI v2 |
-| **miniforge3** | Adds Miniforge3 (conda for aarch64 and x86_64), creates `miniforge3-env` |
+| **miniforge3** | Adds Miniforge3 (conda for aarch64 and x86_64), creates `miniforge3-env`, installs `uv` in the conda base env |
 | **claude** | Adds Claude Code via native installer, creates `claude-env` |
 | **opencode** | Adds opencode via the curl installer (binary in `/usr/local/bin`), creates `opencode-env`, pre-configured for the spark-cluster vLLM (`starsky:8080`, model `qwen3-coder-next`) |
 | **kiro** | Adds Amazon Kiro CLI via native installer, creates `kiro-env` |
