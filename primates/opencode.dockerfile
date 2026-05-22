@@ -9,14 +9,17 @@ RUN if [ "$UNSAFE_SSL" = "true" ]; then /opt/miniforge3/bin/conda config --set s
     && echo "${IMAGE_NAME}-env" > /opt/miniforge3/.default-env \
     && if [ "$UNSAFE_SSL" = "true" ]; then /opt/miniforge3/bin/conda config --remove-key ssl_verify; fi
 
-# Configure apt and install packages
-RUN  apt-get update \
-  && apt-get -y install npm
-
-# Add Open Code support
-RUN if [ "$UNSAFE_SSL" = "true" ]; then npm config set strict-ssl false; fi \
-  && npm install -g opencode-ai \
-  && if [ "$UNSAFE_SSL" = "true" ]; then npm config delete strict-ssl; fi
+# Add Open Code support via curl installer. The installer hardcodes its target
+# to $HOME/.opencode/bin, so install under a throwaway HOME and relocate the
+# binary into /usr/local/bin (on PATH, root-owned). Keeping it outside
+# /home/codemonkey means it is not shadowed by the primate-home volume mount,
+# so the version is image-managed: rebuild this image to upgrade. Runtime
+# self-update is disabled in opencode.json since it cannot write here.
+RUN export HOME=/tmp/oc \
+  && mkdir -p "$HOME" \
+  && curl $([ "$UNSAFE_SSL" = "true" ] && echo "--insecure") -fsSL https://opencode.ai/install | bash -s -- --no-modify-path \
+  && install -m 0755 "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode \
+  && rm -rf "$HOME"
 
 # Point opencode at the spark-cluster vLLM (HAProxy on starsky:8080).
 # apiKey is hardcoded in the json (vLLM ignores it; OpenAI-compatible SDK

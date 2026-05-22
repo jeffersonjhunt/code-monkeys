@@ -28,7 +28,7 @@ All builds use `docker buildx build` except llama-cpp-spark which uses `docker b
 codemonkey (base, dockerfile in parent dir)
 ├── miniforge3       (adds Miniforge3 for aarch64, conda init for zsh)
 │   ├── claude       (adds claude-code via native installer, claude-env conda env)
-│   ├── opencode     (adds npm, opencode-ai, opencode-env conda env, pre-pointed at spark-cluster vLLM)
+│   ├── opencode     (adds opencode via curl installer to /usr/local/bin, opencode-env conda env, pre-pointed at spark-cluster vLLM)
 │   └── kiro         (adds Amazon Kiro CLI via native installer, kiro-env conda env)
 ├── embedded         (adds libfmt, libboost, cc65, vasm 6502 assembler)
 ├── lamp             (adds Apache, MariaDB, PHP)
@@ -44,6 +44,8 @@ nvidia/cuda:13.1.1-runtime-ubuntu24.04 (independent)
 ```
 
 `vllm-spark` keeps the `-devel` base at runtime (not `-runtime`) because FlashInfer and Triton JIT-compile CUDA kernels at first request — they need `nvcc`, `gcc`/`g++`, and `python3-dev` available inside the container.
+
+`opencode` installs its binary to `/usr/local/bin/opencode` (not `~/.opencode/bin`, where the installer defaults) so it sits outside `/home/codemonkey` and is not shadowed by the `<image>-home` volume that `primate()` mounts. The version is image-managed — rebuild the image to upgrade; opencode's runtime self-update is disabled in `opencode.json`. `make upgrade` does not touch it (it only syncs dotfiles into the home volume).
 
 ## Conda Environments
 
