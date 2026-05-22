@@ -39,10 +39,10 @@ python skills/math-fibonacci/scripts/fibonacci-tiles.py --count 6
 
 ## Development
 
+The Makefile lives in the parent `007/` directory:
+
 ```bash
-make test    # Run all skill tests
-make clean   # Remove generated artifacts
-make list    # List available skills
+cd .. && make test    # Run all skill tests
 ```
 
 ## License
