@@ -125,14 +125,16 @@ Primate containers can build and manage sibling containers via the host Docker d
 **How it works:**
 - The `codemonkey` base image includes `docker-ce-cli` and `docker-buildx-plugin`
 - `primate()` bind-mounts `/var/run/docker.sock` when the socket exists on the host
-- On first login, `zshrc.template` detects the socket's GID and adds `codemonkey` to a matching group
+- `zshrc.template` adds `codemonkey` to a group matching the socket's GID on first login (so plain `docker` works after a second login or `newgrp`)
 
 **Usage from inside a primate container:**
 ```bash
-cd workspace                # if code-monkeys repo is your workspace
-cd primates && make all     # build all images from inside the container
-docker ps                   # manage sibling containers
+cd workspace                     # if code-monkeys repo is your workspace
+cd primates && sudo make all     # build all images from inside the container
+sudo docker ps                   # manage sibling containers
 ```
+
+`sudo` works immediately (codemonkey has NOPASSWD sudo) and is the most reliable path for scripts and `make`. Plain `docker …` (no sudo) only works after re-entering the container — `usermod -aG` doesn't update an already-running shell's credentials.
 
 **Security note:** Mounting the Docker socket grants root-equivalent access to the host. This is standard for personal dev environments but should not be used in multi-tenant or production contexts.
 
