@@ -1,5 +1,5 @@
 ARG UBUNTU_VERSION=24.04
-ARG CUDA_VERSION=13.1.1
+ARG CUDA_VERSION=13.2.1
 
 ARG BASE_CUDA_DEV_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
 ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
@@ -10,7 +10,7 @@ FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 ARG CUDA_DOCKER_ARCH=121
 
 # Clone llama.cpp at build time
-ARG LLAMA_CPP_VERSION=b8192
+ARG LLAMA_CPP_VERSION=b9296
 
 RUN apt-get update && \
     apt-get install -y build-essential cmake python3 python3-pip git libcurl4-openssl-dev libgomp1 && \
