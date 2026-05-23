@@ -119,6 +119,35 @@ def test_lb_host_with_force_allowed():
 
 
 @needs_env
+def test_lb_host_auto_fqdn_from_host_suffix():
+    # --host hutch.tworivers + bare LB_HOST=starsky → LB_TARGET=starsky.tworivers
+    r = run(["--host", "hutch.tworivers", "--dry-run"])
+    assert r.returncode == 0, r.stderr
+    lb_host = CFG.get("LB_HOST")
+    assert lb_host, "cluster.env missing LB_HOST"
+    assert f"LB host    : jhunt@{lb_host}.tworivers" in r.stdout
+
+
+@needs_env
+def test_lb_host_explicit_override():
+    r = run([
+        "--host", "hutch.tworivers", "--dry-run",
+        "--lb-host", "explicit.example.com",
+    ])
+    assert r.returncode == 0, r.stderr
+    assert "LB host    : jhunt@explicit.example.com" in r.stdout
+
+
+@needs_env
+def test_lb_host_bare_when_host_is_bare():
+    # --host hutch (bare) → LB_TARGET stays bare (from cluster.env)
+    r = run(["--host", "hutch", "--dry-run"])
+    assert r.returncode == 0, r.stderr
+    lb_host = CFG.get("LB_HOST")
+    assert f"LB host    : jhunt@{lb_host}\n" in r.stdout or f"LB host    : jhunt@{lb_host} " in r.stdout
+
+
+@needs_env
 def test_git_sync_uses_current_branch_by_default():
     r = run(["--host", "hutch.tworivers", "--sync", "git", "--dry-run"])
     assert r.returncode == 0, r.stderr
