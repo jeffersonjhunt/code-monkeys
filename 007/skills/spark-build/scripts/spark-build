@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# spark-build — build spark-class primate images on a cluster node, with drain/restore.
+# See ../SKILL.md for usage and rationale.
+set -euo pipefail
+
+ALL_IMAGES=(llama-cpp-spark comfy-ui-spark vllm-spark)
+
+usage() {
+  cat <<'EOF'
+Usage: spark-build [options]
+
+Build spark-class primate images on a cluster replica, draining it from the
+cluster first so users keep getting served by the remaining replicas.
+
+Options:
+  --host HOST       SSH target (default: first non-LB replica from cluster.env;
+                    use FQDN like hutch.tworivers if bare name does not resolve)
+  --image NAME      Image to build; repeatable. NAME may be "all" or one of:
+                    llama-cpp-spark, comfy-ui-spark, vllm-spark.
+                    Default: all three.
+  --sync MODE       Code sync to host: "rsync" (working tree) or "git".
+                    Default: rsync.
+  --ref REF         Git ref for --sync git. Default: current branch.
+  --dry-run         Print every step without executing (no network).
+  --skip-drain      Do not stop vLLM on the host before building.
+  --no-restart      Do not restart vLLM on the host after building.
+  --force           Allow targeting the LB host (takes the cluster API down).
+  --help            Show this help.
+
+Reads spark/cluster/cluster.env for REPLICAS, LB_HOST, SSH_USER,
+VLLM_PORT, LB_PORT, LB_STATS_PORT.
+EOF
+}
+
+# ---- parse args ---------------------------------------------------------
+HOST=""
+IMAGES=()
+SYNC=rsync
+GIT_REF=""
+DRY_RUN=0
+SKIP_DRAIN=0
+NO_RESTART=0
+FORCE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)        HOST="$2"; shift 2 ;;
+    --image)       IMAGES+=("$2"); shift 2 ;;
+    --sync)        SYNC="$2"; shift 2 ;;
+    --ref)         GIT_REF="$2"; shift 2 ;;
+    --dry-run)     DRY_RUN=1; shift ;;
+    --skip-drain)  SKIP_DRAIN=1; shift ;;
+    --no-restart)  NO_RESTART=1; shift ;;
+    --force)       FORCE=1; shift ;;
+    --help|-h)     usage; exit 0 ;;
+    *) echo "Error: unknown arg: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+# resolve --image all → expand
+RESOLVED=()
+if [[ ${#IMAGES[@]} -eq 0 ]]; then
+  RESOLVED=("${ALL_IMAGES[@]}")
+else
+  for img in "${IMAGES[@]}"; do
+    if [[ "$img" == "all" ]]; then
+      RESOLVED=("${ALL_IMAGES[@]}")
+    else
+      RESOLVED+=("$img")
+    fi
+  done
+fi
+IMAGES=("${RESOLVED[@]}")
+
+# validate image names
+for img in "${IMAGES[@]}"; do
+  case "$img" in
+    llama-cpp-spark|comfy-ui-spark|vllm-spark) ;;
+    *) echo "Error: unknown image '$img'. Valid: ${ALL_IMAGES[*]} (or 'all')" >&2; exit 1 ;;
+  esac
+done
+
+case "$SYNC" in rsync|git) ;; *) echo "Error: --sync must be rsync or git" >&2; exit 1 ;; esac
+
+# ---- locate repo root and load cluster.env ------------------------------
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../../../.." && pwd)
+CLUSTER_ENV="$REPO_ROOT/spark/cluster/cluster.env"
+
+if [[ ! -f "$CLUSTER_ENV" ]]; then
+  echo "Error: $CLUSTER_ENV not found. Copy cluster.env.example and fill in." >&2
+  exit 2
+fi
+
+# shellcheck disable=SC1090
+. "$CLUSTER_ENV"
+
+: "${SSH_USER:?cluster.env must set SSH_USER}"
+: "${REPLICAS:?cluster.env must set REPLICAS}"
+: "${LB_HOST:?cluster.env must set LB_HOST}"
+: "${LB_STATS_PORT:=8404}"
+
+# pick a default host (first non-LB replica)
+if [[ -z "$HOST" ]]; then
+  for r in $REPLICAS; do
+    [[ "$r" != "$LB_HOST" ]] && { HOST="$r"; break; }
+  done
+fi
+[[ -z "$HOST" ]] && { echo "Error: no non-LB replica in REPLICAS='$REPLICAS'" >&2; exit 1; }
+
+if [[ "$HOST" == "$LB_HOST" && $FORCE -eq 0 ]]; then
+  echo "Error: $HOST is LB_HOST — draining it takes the cluster API down." >&2
+  echo "       Pass --force if you really mean it." >&2
+  exit 1
+fi
+
+# ---- helpers ------------------------------------------------------------
+log() { printf '\033[1;34m→\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
+
+run() {
+  # Print every command, execute only when not dry-run.
+  printf '  $ %s\n' "$*"
+  (( DRY_RUN )) && return 0
+  eval "$@"
+}
+
+# Convenience SSH wrapper. Quote the remote command as a single arg.
+sshx() {
+  run "ssh -o BatchMode=yes ${SSH_USER}@${HOST} $(printf '%q' "$1")"
+}
+
+# Run a command on the LB host (not the target build host).
+sshl() {
+  run "ssh -o BatchMode=yes ${SSH_USER}@${LB_HOST} $(printf '%q' "$1")"
+}
+
+# ---- safety: restore vLLM on exit if we drained it ----------------------
+DRAINED=0
+cleanup() {
+  if (( DRAINED && ! NO_RESTART )); then
+    warn "(cleanup) restoring vLLM on $HOST"
+    ssh -o BatchMode=yes "${SSH_USER}@${HOST}" \
+      'cd ~/spark-deploy/vllm && docker compose up -d' || \
+      warn "(cleanup) restore failed — restart manually"
+  fi
+}
+trap cleanup EXIT
+
+# ---- plan --------------------------------------------------------------
+log "Plan:"
+echo "    host       : ${SSH_USER}@${HOST}"
+echo "    images     : ${IMAGES[*]}"
+echo "    sync       : ${SYNC}${GIT_REF:+ (ref=$GIT_REF)}"
+echo "    drain vLLM : $((1-SKIP_DRAIN))"
+echo "    restart    : $((1-NO_RESTART))"
+echo "    LB host    : ${SSH_USER}@${LB_HOST}"
+echo "    dry-run    : ${DRY_RUN}"
+echo
+
+# ---- pre-flight on host -------------------------------------------------
+log "Pre-flight on $HOST"
+sshx 'set -e; sudo -n true; docker version --format "{{.Server.Version}}" >/dev/null; nvidia-smi --query-gpu=name --format=csv,noheader | head -1'
+
+# ---- drain --------------------------------------------------------------
+if (( ! SKIP_DRAIN )); then
+  log "Draining $HOST from cluster (docker compose stop vllm)"
+  sshx 'cd ~/spark-deploy/vllm && docker compose stop'
+  DRAINED=1
+
+  log "Waiting up to 60s for HAProxy on $LB_HOST to mark $HOST DOWN"
+  if (( ! DRY_RUN )); then
+    state=""
+    for _ in $(seq 1 12); do
+      sleep 5
+      state=$(ssh -o BatchMode=yes "${SSH_USER}@${LB_HOST}" \
+        "curl -sS 'http://127.0.0.1:${LB_STATS_PORT}/stats;csv' | awk -F, -v h='${HOST%%.*}' '\$1==\"vllm_pool\" && \$2==h {print \$18}'" 2>/dev/null || true)
+      [[ "$state" == "DOWN" || "$state" == "MAINT" ]] && break
+    done
+    if [[ "$state" != "DOWN" && "$state" != "MAINT" ]]; then
+      warn "$HOST status is '$state' after 60s (expected DOWN). Proceeding anyway."
+    fi
+  fi
+fi
+
+# ---- verify another replica is UP --------------------------------------
+log "Cluster backend status (need >=1 UP that is not $HOST)"
+sshl "curl -sS 'http://127.0.0.1:${LB_STATS_PORT}/stats;csv' | awk -F, '\$1==\"vllm_pool\" && \$2!=\"BACKEND\" && \$2!=\"FRONTEND\" {print \"    \"\$2,\$18}'"
+if (( ! DRY_RUN && ! SKIP_DRAIN )); then
+  up=$(ssh -o BatchMode=yes "${SSH_USER}@${LB_HOST}" \
+    "curl -sS 'http://127.0.0.1:${LB_STATS_PORT}/stats;csv' | awk -F, -v h='${HOST%%.*}' '\$1==\"vllm_pool\" && \$2!=\"BACKEND\" && \$2!=\"FRONTEND\" && \$2!=h && \$18==\"UP\" {n++} END {print n+0}'")
+  if [[ "$up" == "0" ]]; then
+    warn "No other replica is UP — building anyway would leave the cluster with zero serving capacity."
+    warn "Use --skip-drain if you really mean to do this, or wait for another replica to recover."
+    exit 1
+  fi
+fi
+
+# ---- sync code to host --------------------------------------------------
+log "Sync code to $HOST via $SYNC"
+case "$SYNC" in
+  rsync)
+    run "rsync -avz --delete --exclude='.git' --exclude='vault.tar.gz' --exclude='*-home' '$REPO_ROOT/' '${SSH_USER}@${HOST}:~/workspace/code-monkeys/'"
+    ;;
+  git)
+    REF="${GIT_REF:-$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)}"
+    REMOTE_URL=$(git -C "$REPO_ROOT" remote get-url origin)
+    sshx "[ -d ~/workspace/code-monkeys/.git ] || (mkdir -p ~/workspace && git clone $REMOTE_URL ~/workspace/code-monkeys)"
+    sshx "cd ~/workspace/code-monkeys && git fetch --all --prune && git checkout '$REF' && git pull --ff-only"
+    ;;
+esac
+
+# ---- build --------------------------------------------------------------
+for img in "${IMAGES[@]}"; do
+  log "Building $img on $HOST"
+  sshx "cd ~/workspace/code-monkeys/primates && make ${img}.build"
+done
+
+# ---- restart ------------------------------------------------------------
+if (( ! NO_RESTART )); then
+  log "Restarting vLLM on $HOST (docker compose up -d)"
+  sshx 'cd ~/spark-deploy/vllm && docker compose up -d'
+  DRAINED=0  # cleanup trap no-op now
+  log "vLLM cold-load is ~2 min; HAProxy marks UP after /health passes."
+  log "Watch: ssh ${SSH_USER}@${LB_HOST} 'curl -sS http://127.0.0.1:${LB_STATS_PORT}/stats;csv | awk -F, \"\\\$1==\\\"vllm_pool\\\" {print \\\$2,\\\$18}\"'"
+fi
+
+log "Done."
