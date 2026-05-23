@@ -215,6 +215,8 @@ fi
 log "Sync code to $HOST via $SYNC"
 case "$SYNC" in
   rsync)
+    # Ensure parent dir exists; rsync only creates the final path component.
+    sshx 'mkdir -p ~/workspace'
     run "rsync -avz --delete --exclude='.git' --exclude='vault.tar.gz' --exclude='*-home' '$REPO_ROOT/' '${SSH_USER}@${HOST}:~/workspace/code-monkeys/'"
     ;;
   git)
