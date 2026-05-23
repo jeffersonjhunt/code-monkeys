@@ -61,6 +61,7 @@ RUN apt-get -y install \
       vim-nox \
       curl \
       wget \
+      rsync \
       zip \
       tree \
       unzip \
