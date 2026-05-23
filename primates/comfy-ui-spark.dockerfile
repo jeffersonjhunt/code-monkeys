@@ -43,9 +43,9 @@ WORKDIR /app
 ARG COMFYUI_VERSION=v0.22.0
 RUN git clone --branch ${COMFYUI_VERSION} --depth 1 https://github.com/Comfy-Org/ComfyUI.git .
 
-ARG PYTORCH_VERSION=2.12.0
-ARG TORCHVISION_VERSION=0.27.0
-ARG TORCHAUDIO_VERSION=2.12.0
+ARG PYTORCH_VERSION=2.11.0
+ARG TORCHVISION_VERSION=0.26.0
+ARG TORCHAUDIO_VERSION=2.11.0
 RUN pip install --break-system-packages \
     torch==${PYTORCH_VERSION} torchvision==${TORCHVISION_VERSION} torchaudio==${TORCHAUDIO_VERSION} \
     --index-url https://download.pytorch.org/whl/cu130
