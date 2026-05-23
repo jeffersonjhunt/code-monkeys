@@ -14,7 +14,7 @@ make codemonkey.build       # Build the codemonkey base image (from parent direc
 make <name>.build           # Build a specific image, e.g. make claude.build
 make llama-cpp-spark.build  # Build llama.cpp for DGX Spark (requires NVIDIA kernel)
 make comfy-ui-spark.build   # Build ComfyUI for DGX Spark (requires NVIDIA kernel)
-make vllm-spark.build       # Build vLLM v0.20.1 with sm_121 native cutlass (requires NVIDIA kernel)
+make vllm-spark.build       # Build vLLM v0.21.0 with sm_121 native cutlass (requires NVIDIA kernel)
 make all UNSAFE_SSL=true    # Build with SSL verification disabled (sets TAINTED_BUILD=true in images)
 make all FRESH=false        # Skip freshclam during codemonkey build (faster)
 make clean                  # Remove all built images
@@ -35,11 +35,11 @@ codemonkey (base, dockerfile in parent dir)
 ├── huggingface      (adds python3 venv, huggingface-cli)
 └── minion           (empty extension of codemonkey)
 
-nvidia/cuda:13.1.1-devel-ubuntu24.04 (independent)
+nvidia/cuda:13.2.1-devel-ubuntu24.04 (independent)
 ├── llama-cpp-spark  (multi-stage: full, light, server targets for sm_121/Blackwell GPUs)
-└── vllm-spark       (multi-stage build/runtime; vLLM v0.20.1 source build with sm_121 native cutlass — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE)
+└── vllm-spark       (multi-stage build/runtime; vLLM v0.21.0 source build with sm_121 native cutlass — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE)
 
-nvidia/cuda:13.1.1-runtime-ubuntu24.04 (independent)
+nvidia/cuda:13.2.1-runtime-ubuntu24.04 (independent)
 └── comfy-ui-spark   (ComfyUI node-based Stable Diffusion GUI for sm_121/Blackwell GPUs)
 ```
 

@@ -34,7 +34,7 @@ make all UNSAFE_SSL=true    # Build with SSL verification disabled (tainted buil
 make all FRESH=false        # Skip freshclam during codemonkey build (faster, no ClamAV DB update)
 make llama-cpp-spark.build  # Requires NVIDIA kernel
 make comfy-ui-spark.build   # Requires NVIDIA kernel
-make vllm-spark.build       # Requires NVIDIA kernel — vLLM v0.20.1 source build, sm_121 native cutlass
+make vllm-spark.build       # Requires NVIDIA kernel — vLLM v0.21.0 source build, sm_121 native cutlass
 make clean                  # Remove all built images
 ```
 
@@ -47,9 +47,9 @@ debian:13-slim → codemonkey → miniforge3 (miniforge3-env) → claude (claude
                             → huggingface
                             → minion
 
-nvidia/cuda:13.1.1 → llama-cpp-spark (multi-stage: full/light/server)
+nvidia/cuda:13.2.1 → llama-cpp-spark (multi-stage: full/light/server)
                    → comfy-ui-spark
-                   → vllm-spark      (vLLM v0.20.1 source, sm_121 native cutlass — backs the spark-cluster)
+                   → vllm-spark      (vLLM v0.21.0 source, sm_121 native cutlass — backs the spark-cluster)
 ```
 
 Miniforge3-derived images each get a conda environment (`<image>-env`) that is auto-activated at login. See `primates/CLAUDE.md` for details on adding this to new images.
