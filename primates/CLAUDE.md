@@ -78,11 +78,14 @@ RUN /opt/miniforge3/bin/conda create -y -n ${IMAGE_NAME}-env python \
 
 ## Docker-out-of-Docker
 
-All codemonkey-based containers include `docker-ce-cli` and `docker-buildx-plugin`. When launched via `primate()`, the host's `/var/run/docker.sock` is bind-mounted automatically (if present). The container's `zshrc.template` fixes up the socket GID on first login so `codemonkey` can use docker without sudo.
+All codemonkey-based containers include `docker-ce-cli` and `docker-buildx-plugin`. When launched via `primate()`, the host's `/var/run/docker.sock` is bind-mounted automatically (if present). Two ways to use the daemon from inside a primate:
+
+- **`sudo docker …`** — works immediately. `codemonkey` has NOPASSWD sudo, so this is the simplest path for scripts and `make` invocations.
+- **Plain `docker …`** — `zshrc.template` adds `codemonkey` to a group matching the socket's GID on first login, but `usermod -aG` doesn't update an already-running shell's credentials. After exiting and re-entering the container (or `newgrp <group>`), plain `docker` works without sudo.
 
 This means you can build primate images from inside a running container:
 
 ```bash
 cd workspace/primates   # assuming code-monkeys repo is the workspace
-make all                # builds all images via the host daemon
+sudo make all           # builds all images via the host daemon
 ```
