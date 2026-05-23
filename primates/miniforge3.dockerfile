@@ -2,7 +2,7 @@ FROM codemonkey:latest
 LABEL maintainer="Jefferson J. Hunt <jeffersonjhunt@gmail.com>"
 
 # Add Miniforge3 support (replaces Miniconda — BSD licensed, conda-forge default)
-ARG MINIFORGE_VERSION=26.1.0-0
+ARG MINIFORGE_VERSION=26.3.2-2
 ARG TARGETARCH
 ARG IMAGE_NAME=miniforge3
 ARG UNSAFE_SSL=false
