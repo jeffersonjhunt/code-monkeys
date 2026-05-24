@@ -1,5 +1,5 @@
 ARG UBUNTU_VERSION=24.04
-ARG CUDA_VERSION=13.1.1
+ARG CUDA_VERSION=13.2.1
 
 ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
 
@@ -40,12 +40,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
-ARG COMFYUI_VERSION=v0.15.1
+ARG COMFYUI_VERSION=v0.22.0
 RUN git clone --branch ${COMFYUI_VERSION} --depth 1 https://github.com/Comfy-Org/ComfyUI.git .
 
-ARG PYTORCH_VERSION=2.10.0
-ARG TORCHVISION_VERSION=0.25.0
-ARG TORCHAUDIO_VERSION=2.10.0
+ARG PYTORCH_VERSION=2.11.0
+ARG TORCHVISION_VERSION=0.26.0
+ARG TORCHAUDIO_VERSION=2.11.0
 RUN pip install --break-system-packages \
     torch==${PYTORCH_VERSION} torchvision==${TORCHVISION_VERSION} torchaudio==${TORCHAUDIO_VERSION} \
     --index-url https://download.pytorch.org/whl/cu130

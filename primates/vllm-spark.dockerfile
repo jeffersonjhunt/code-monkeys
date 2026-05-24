@@ -1,5 +1,5 @@
 ARG UBUNTU_VERSION=24.04
-ARG CUDA_VERSION=13.1.1
+ARG CUDA_VERSION=13.2.1
 
 ARG BASE_CUDA_DEV_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
 # Runtime uses the devel image (not runtime) because Triton JIT needs a host
@@ -15,7 +15,10 @@ FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 # is the whole point of this image — upstream vllm-openai stops at sm_120
 # native and crashes on FP8 dense / NVFP4 MoE on DGX Spark.
 ARG TORCH_CUDA_ARCH_LIST="12.0 12.1+PTX"
-ARG VLLM_VERSION=v0.20.1
+ARG VLLM_VERSION=v0.21.0
+# Keep TORCH_VERSION at 2.11.0: vLLM v0.21.0's requirements/cuda.txt still
+# pins torch==2.11.0 / torchvision==0.26.0 / torchaudio==2.11.0. Bumping
+# torch here would conflict with vLLM's resolver during the pip step.
 ARG TORCH_VERSION=2.11.0
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu130
 
