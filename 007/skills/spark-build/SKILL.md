@@ -43,7 +43,9 @@ Default build target is the first replica that is **not** `LB_HOST` (so draining
 
 ## DNS / Hostname Notes
 
-The cluster scripts use bare hostnames (e.g. `hutch`) which resolve on the workstation and on each cluster box. When run from **inside a primate container**, bare names may not resolve — pass the FQDN (e.g. `--host hutch.tworivers`). The skill SSHs verbatim to whatever it's given.
+The cluster scripts use bare hostnames (e.g. `hutch`) which resolve on the workstation and on each cluster box. When run from **inside a primate container**, bare names may not resolve — pass the FQDN (e.g. `--host hutch.tworivers`).
+
+When `--host` is an FQDN and `LB_HOST` from `cluster.env` is bare, the skill auto-suffixes the LB SSH target with the same domain (so `--host hutch.tworivers` + `LB_HOST=starsky` → LB target `starsky.tworivers`). Override explicitly with `--lb-host`.
 
 ## Usage
 
@@ -72,6 +74,7 @@ The cluster scripts use bare hostnames (e.g. `hutch`) which resolve on the works
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--host HOST` | first non-`LB_HOST` in `$REPLICAS` | SSH target (use FQDN if bare name doesn't resolve) |
+| `--lb-host HOST` | `LB_HOST` from cluster.env (auto-suffixed with `--host`'s domain when `--host` is an FQDN) | Explicit SSH target for the LB host |
 | `--image NAME` | `all` (all three spark images) | Repeatable; image to build |
 | `--sync rsync\|git` | `rsync` | How to get code onto the host |
 | `--ref REF` | current branch | Git ref for `--sync git` |
