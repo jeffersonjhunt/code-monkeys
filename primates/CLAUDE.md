@@ -15,6 +15,7 @@ make <name>.build           # Build a specific image, e.g. make claude.build
 make llama-cpp-spark.build  # Build llama.cpp for DGX Spark (requires NVIDIA kernel)
 make comfy-ui-spark.build   # Build ComfyUI for DGX Spark (requires NVIDIA kernel)
 make vllm-spark.build       # Build vLLM v0.21.0 with sm_121 native cutlass (requires NVIDIA kernel)
+make spark-bench.build      # Build the LLM-eval harness primate (build on x86 host — intel-nuc.tworivers — for SWE-Bench testbed compatibility)
 make all UNSAFE_SSL=true    # Build with SSL verification disabled (sets TAINTED_BUILD=true in images)
 make all FRESH=false        # Skip freshclam during codemonkey build (faster)
 make clean                  # Remove all built images
@@ -26,10 +27,11 @@ All builds use `docker buildx build` except llama-cpp-spark which uses `docker b
 
 ```
 codemonkey (base, dockerfile in parent dir)
-├── miniforge3       (adds Miniforge3 for aarch64, conda init for zsh, uv in base env)
+├── miniforge3       (adds Miniforge3 for aarch64/x86_64 via TARGETARCH, conda init for zsh, uv in base env)
 │   ├── claude       (adds claude-code via native installer, claude-env conda env)
 │   ├── opencode     (adds opencode via curl installer to /usr/local/bin, opencode-env conda env, pre-pointed at spark-cluster vLLM)
-│   └── kiro         (adds Amazon Kiro CLI via native installer, kiro-env conda env)
+│   ├── kiro         (adds Amazon Kiro CLI via native installer, kiro-env conda env)
+│   └── spark-bench  (x86-only — LLM eval harnesses for the spark-cluster; SWE-Bench Verified via SWE-agent, tau2-bench, LiveCodeBench, AIME/GPQA. Runs on intel-nuc.tworivers)
 ├── embedded         (adds libfmt, libboost, cc65, vasm 6502 assembler)
 ├── lamp             (adds Apache, MariaDB, PHP)
 ├── huggingface      (adds python3 venv, huggingface-cli)
