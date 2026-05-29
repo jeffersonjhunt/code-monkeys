@@ -42,7 +42,7 @@ make clean                  # Remove all built images
 
 ```
 debian:13-slim → codemonkey → miniforge3 (miniforge3-env) → claude (claude-env) | opencode (opencode-env) | kiro (kiro-env)
-                            → embedded
+                            → embedded                              → spark-bench (spark-bench-env)
                             → lamp
                             → huggingface
                             → minion
@@ -53,6 +53,8 @@ nvidia/cuda:13.2.1 → llama-cpp-spark (multi-stage: full/light/server)
 ```
 
 Miniforge3-derived images each get a conda environment (`<image>-env`) that is auto-activated at login. See `primates/CLAUDE.md` for details on adding this to new images.
+
+The codemonkey/miniforge3 chain is **arch-aware via runtime detection** (`uname -m`, `dpkg --print-architecture`) and **TARGETARCH** — the same dockerfiles build cleanly on both aarch64 (Mjolnir, primary dev) and x86_64 (intel-nuc.tworivers, used for `spark-bench`). The CUDA chain is sm_121-only and only builds on Spark hardware.
 
 ## Key Conventions
 

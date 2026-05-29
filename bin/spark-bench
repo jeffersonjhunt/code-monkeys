@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# spark-bench — launch the spark-bench primate on the bench host (intel-nuc)
+# and run an LLM evaluation harness against the spark-cluster.
+#
+# Usage:
+#   spark-bench                        # interactive zsh into the container
+#   spark-bench <cmd> [args...]        # run cmd inside the container
+#   spark-bench --help
+#
+# Environment overrides:
+#   SPARK_BENCH_HOST       default: intel-nuc.tworivers
+#   SPARK_BENCH_USER       default: jhunt
+#   VLLM_BASE_URL          default: http://starsky.tworivers:8080/v1
+#                          (override to http://hutch.tworivers:8001/v1 for the
+#                           GLM-4.7-Flash test endpoint)
+#   SPARK_BENCH_MODEL      default: qwen3-coder-next
+#   SPARK_BENCH_IMAGE      default: spark-bench:latest
+#   SPARK_BENCH_RESULTS    default: /home/jhunt/spark-bench/results (on bench host)
+#   SPARK_BENCH_CACHE      default: /home/jhunt/spark-bench/cache   (on bench host)
+
+set -euo pipefail
+
+BENCH_HOST="${SPARK_BENCH_HOST:-intel-nuc.tworivers}"
+BENCH_USER="${SPARK_BENCH_USER:-jhunt}"
+VLLM_BASE_URL="${VLLM_BASE_URL:-http://starsky.tworivers:8080/v1}"
+MODEL="${SPARK_BENCH_MODEL:-qwen3-coder-next}"
+IMAGE="${SPARK_BENCH_IMAGE:-spark-bench:latest}"
+RESULTS="${SPARK_BENCH_RESULTS:-/home/${BENCH_USER}/spark-bench/results}"
+CACHE="${SPARK_BENCH_CACHE:-/home/${BENCH_USER}/spark-bench/cache}"
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+# Decide interactive vs non-interactive
+if [ $# -eq 0 ]; then
+  DOCKER_FLAGS="-it"
+  CMD=("/bin/zsh")
+else
+  if [ -t 0 ] && [ -t 1 ]; then
+    DOCKER_FLAGS="-it"
+  else
+    DOCKER_FLAGS="-i"
+  fi
+  CMD=("$@")
+fi
+
+# Build remote command. Single-quote-safe via base64 transit.
+REMOTE_CMD=$(cat <<REMOTE
+set -euo pipefail
+mkdir -p "${RESULTS}" "${CACHE}"
+DOCKER_GID=\$(stat -c '%g' /var/run/docker.sock)
+exec sudo docker run --rm ${DOCKER_FLAGS} \\
+  --network host \\
+  --volume /var/run/docker.sock:/var/run/docker.sock \\
+  --group-add \${DOCKER_GID} \\
+  --volume "${RESULTS}:/results" \\
+  --volume "${CACHE}:/cache" \\
+  --env VLLM_BASE_URL="${VLLM_BASE_URL}" \\
+  --env OPENAI_API_BASE="${VLLM_BASE_URL}" \\
+  --env OPENAI_API_KEY="spark-cluster-no-auth" \\
+  --env SPARK_BENCH_MODEL="${MODEL}" \\
+  "${IMAGE}" \\
+  $(printf ' %q' "${CMD[@]}")
+REMOTE
+)
+
+exec ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=120 \
+     -t "${BENCH_USER}@${BENCH_HOST}" "${REMOTE_CMD}"

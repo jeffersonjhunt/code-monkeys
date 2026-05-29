@@ -36,6 +36,7 @@ help:
 	@echo "  llama-cpp-spark.build  Build llama.cpp for DGX Spark (requires NVIDIA kernel)"
 	@echo "  comfy-ui-spark.build   Build ComfyUI for DGX Spark (requires NVIDIA kernel)"
 	@echo "  vllm-spark.build       Build vLLM with native sm_121 kernels (requires NVIDIA kernel)"
+	@echo "  spark-bench.build      Build LLM eval harness primate (build on x86 host; see 007/skills/spark-bench/)"
 	@echo "  upgrade                Upgrade all existing primate home volumes with latest dotfiles"
 	@echo "  <name>.upgrade         Upgrade a specific primate home volume"
 	@echo "  clean                  Remove all built images"
