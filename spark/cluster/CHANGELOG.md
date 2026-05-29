@@ -2,7 +2,12 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-05-23 (latest)
+## 2026-05-29 (latest)
+
+- **vLLM compose: dropped the default `--reasoning-parser qwen3` flag.** The currently-served model (`RedHatAI/Qwen3-Coder-Next-NVFP4`) is the *Instruct* variant — it does not emit `<think>` tags. With the `qwen3` reasoning parser active, every response was routed into a non-standard `reasoning` field with `content: null`, which the OpenAI Python client (used by every bench harness — SWE-agent, tau2-bench, LiveCodeBench, lighteval) does not surface. Verified end-to-end: raw HTTP showed `"content": null, "reasoning": "4"` on a "what is 2+2" probe before the change; after rolling restart (hutch first, then starsky — same drain pattern as the 2026-05-23 stack bump), `"content": "4", "reasoning": null` as expected and the OpenAI client returns the right thing. For a future model that does need a reasoning parser (e.g. GLM-4.7-Flash, which uses `<think>` tags by design), set `VLLM_REASONING_PARSER` in `.env` and uncomment the two commented lines in `compose.yml`. `--tool-call-parser qwen3_coder` retained — Qwen3-Coder does emit `<tool_call>` XML and we use it.
+- **Rolling restart pattern reused successfully.** Each replica's `docker compose up -d --force-recreate` cost ~5 min of single-replica downtime while the model reloaded from `/models` disk cache; HAProxy automatically marked the recreating node DOWN and routed to the other. Total wall time including verify steps ~15 min for both nodes.
+
+## 2026-05-23
 
 - **NVIDIA stack bumped cluster-wide.** All three spark images upgraded: `vllm-spark` → CUDA 13.2.1 + vLLM v0.21.0 (torch held at 2.11.0 since `vllm v0.21.0`'s `requirements/cuda.txt` still pins it); `llama-cpp-spark` → CUDA 13.2.1 + llama.cpp b9296; `comfy-ui-spark` → CUDA 13.2.1 + ComfyUI v0.22.0 + torch 2.11.0 / torchvision 0.26.0 / torchaudio 2.11.0 (cu130 aarch64 has no `torchaudio==2.12.0` published yet). Hutch driver `580.159.03` already satisfies CUDA 13.2's ≥580.65.06 requirement, so no host update needed.
 - **Zero-downtime rollout** via the new `007/skills/spark-build` skill — built on hutch (hutch drained from HAProxy, vllm container stopped, image built, vllm restarted with new image), then `vllm-spark:latest` shipped to starsky via `ship-image.sh`-style `docker save | zstd | ssh | docker load`, then starsky's vllm recreated. HAProxy showed at least one replica UP throughout. Both replicas verified `vllm 0.21.0` after rollout. Total wall time ~2.5 h including the ~58 min vllm-spark wheel build on hutch.
