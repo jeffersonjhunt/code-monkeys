@@ -54,14 +54,21 @@ services:
       # Prefix caching — hashes prompt prefixes and reuses KV pages across requests.
       # Big TTFT win for agent workloads with repeated system prompts / multi-turn chat.
       - --enable-prefix-caching
-      # Tool / reasoning parsers — pick parser via env var to match the model:
+      # Tool parser — pick via env var to match the model:
       #   qwen3_coder   → Qwen3-Coder / Qwen3.6 family (current; uses <tool_call> XML; auto mode reliable)
       #   hermes        → Qwen2.5 family (caveat: auto mode unreliable, see runbook)
       - --enable-auto-tool-choice
       - --tool-call-parser
       - "${VLLM_TOOL_PARSER:-qwen3_coder}"
-      - --reasoning-parser
-      - "${VLLM_REASONING_PARSER:-qwen3}"
+      # Reasoning parser intentionally NOT set by default. The Qwen3-Coder-Next
+      # *Instruct* variant we serve does not emit <think> tags; with vLLM's
+      # `qwen3` reasoning parser active, every response gets dumped into the
+      # non-standard `reasoning` field with `content: null`, which the OpenAI
+      # Python client doesn't surface. For a model that does need a reasoning
+      # parser (e.g. GLM-4.7-Flash), set VLLM_REASONING_PARSER in .env and
+      # uncomment the two lines below.
+      # - --reasoning-parser
+      # - "${VLLM_REASONING_PARSER:-qwen3}"
     # Python-based healthcheck — vllm-openai image doesn't ship wget, but
     # python3 is always present. start_period generous since model load can
     # take 5–10 min on first start and ~2 min from disk cache.
