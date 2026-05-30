@@ -34,19 +34,29 @@ ARG LCB_REF=main
 # Install harness packages into spark-bench-env via uv (much faster resolver
 # than pip). uv is already on PATH from miniforge3 (symlinked to /usr/local/bin).
 #
-# SWE-agent's __init__.py asserts CONFIG_DIR / TOOLS_DIR / TRAJECTORY_DIR
-# exist as siblings of its package — none of which ship in the wheel. Clone
-# the repo to /opt/sweagent so config/ and tools/ live alongside the source,
-# then override the env vars below to point sweagent at the cloned tree.
-# Trajectory output lands under /results (host-mounted).
+# All three of SWE-agent, LiveCodeBench, and tau2-bench have packaging quirks
+# that need an editable install from a clone — not a `pip install <git+url>`:
+#
+#   SWE-agent: __init__.py asserts CONFIG_DIR / TOOLS_DIR / TRAJECTORY_DIR
+#     exist as siblings of its package — none of which ship in the wheel.
+#   LiveCodeBench: pip-from-git ships only `lcb_runner/lm_styles.py`; the
+#     whole `lcb_runner.runner` subpackage is missing. -e from the clone
+#     exposes the source tree via .pth so all submodules import.
+#   tau2-bench: imports fine, but expects domain data at a sibling `data/`
+#     dir under TAU2_DATA_DIR; data isn't in the wheel.
+#
+# Clone all three, install editable from the clones, and set the env vars
+# that point each library at its cloned data/config tree.
 RUN /opt/miniforge3/envs/${IMAGE_NAME}-env/bin/python -m pip install --upgrade pip \
     && git clone --depth 1 --branch ${SWEAGENT_REF} https://github.com/SWE-agent/SWE-agent.git /opt/sweagent \
+    && git clone --depth 1 --branch ${LCB_REF}      https://github.com/LiveCodeBench/LiveCodeBench.git /opt/livecodebench \
+    && git clone --depth 1 --branch ${TAU2_REF}     https://github.com/sierra-research/tau2-bench.git /opt/tau2-bench \
     && uv pip install --python /opt/miniforge3/envs/${IMAGE_NAME}-env/bin/python \
         $([ "$UNSAFE_SSL" = "true" ] && echo "--native-tls --allow-insecure-host pypi.org --allow-insecure-host files.pythonhosted.org") \
         "swebench==${SWEBENCH_VERSION}" \
-        "/opt/sweagent" \
-        "git+https://github.com/sierra-research/tau2-bench.git@${TAU2_REF}" \
-        "git+https://github.com/LiveCodeBench/LiveCodeBench.git@${LCB_REF}" \
+        -e "/opt/sweagent" \
+        -e "/opt/livecodebench" \
+        -e "/opt/tau2-bench" \
         "openai>=2.0" \
         "datasets" \
         "huggingface_hub" \
@@ -62,10 +72,13 @@ RUN /opt/miniforge3/envs/${IMAGE_NAME}-env/bin/python -m pip install --upgrade p
 # __init__.py); default to in-image, override at run-time (-e
 # SWE_AGENT_TRAJECTORY_DIR=/results/...) when you want results to persist.
 RUN mkdir -p /opt/sweagent/trajectories \
-    && chown -R codemonkey:codemonkey /opt/sweagent/trajectories
+    && chown -R codemonkey:codemonkey /opt/sweagent/trajectories /opt/sweagent /opt/livecodebench /opt/tau2-bench
 ENV SWE_AGENT_CONFIG_DIR=/opt/sweagent/config
 ENV SWE_AGENT_TOOLS_DIR=/opt/sweagent/tools
 ENV SWE_AGENT_TRAJECTORY_DIR=/opt/sweagent/trajectories
+# tau2 looks here for its airline/retail/telecom task data
+ENV TAU2_DATA_DIR=/opt/tau2-bench/data
+# LiveCodeBench's runner expects to be invoked as `python -m lcb_runner.runner.main`
 
 # Bench result + cache layout — bind-mount these from the host so results
 # survive container restarts and SWE-Bench's testbed Docker images are

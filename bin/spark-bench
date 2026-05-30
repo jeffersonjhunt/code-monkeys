@@ -3,9 +3,17 @@
 # and run an LLM evaluation harness against the spark-cluster.
 #
 # Usage:
-#   spark-bench                        # interactive zsh into the container
-#   spark-bench <cmd> [args...]        # run cmd inside the container
+#   spark-bench                              # interactive zsh into the container
+#   spark-bench <cmd> [args...]              # run cmd; container stops with cmd
+#   spark-bench -d [--name NAME] <cmd...>    # run detached (survives this SSH session)
+#   spark-bench --logs NAME [--follow]       # docker logs <NAME> on the bench host
+#   spark-bench --ls                         # list spark-bench containers
+#   spark-bench --rm NAME                    # remove a stopped container
 #   spark-bench --help
+#
+# Detached runs auto-name themselves `spark-bench-<YYYYmmdd-HHMMSS>` if no --name
+# is given. They do NOT use --rm, so the container persists after exit for log
+# inspection — clean up with `spark-bench --rm NAME` when done.
 #
 # Environment overrides:
 #   SPARK_BENCH_HOST       default: intel-nuc.tworivers
@@ -17,6 +25,9 @@
 #   SPARK_BENCH_IMAGE      default: spark-bench:latest
 #   SPARK_BENCH_RESULTS    default: /home/jhunt/spark-bench/results (on bench host)
 #   SPARK_BENCH_CACHE      default: /home/jhunt/spark-bench/cache   (on bench host)
+#   SPARK_BENCH_SKILL_DIR  default: /home/jhunt/Source/Edda/code-monkeys/007/skills/spark-bench
+#                          (mounted read-only at /opt/skill in the container; lets harness
+#                           scripts under scripts/ run without rebuilding the image)
 
 set -euo pipefail
 
@@ -27,36 +38,93 @@ MODEL="${SPARK_BENCH_MODEL:-qwen3-coder-next}"
 IMAGE="${SPARK_BENCH_IMAGE:-spark-bench:latest}"
 RESULTS="${SPARK_BENCH_RESULTS:-/home/${BENCH_USER}/spark-bench/results}"
 CACHE="${SPARK_BENCH_CACHE:-/home/${BENCH_USER}/spark-bench/cache}"
+SKILL_DIR="${SPARK_BENCH_SKILL_DIR:-/home/${BENCH_USER}/Source/Edda/code-monkeys/007/skills/spark-bench}"
 
-if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+remote() {
+  ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=120 \
+      "${BENCH_USER}@${BENCH_HOST}" "$@"
+}
+
+remote_tty() {
+  ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=120 \
+      -t "${BENCH_USER}@${BENCH_HOST}" "$@"
+}
+
+usage() {
   sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
-  exit 0
-fi
+}
 
-# Decide interactive vs non-interactive
-if [ $# -eq 0 ]; then
-  DOCKER_FLAGS="-it"
-  CMD=("/bin/zsh")
+# --- Parse leading control flags ---
+DETACH=0
+NAME=""
+FOLLOW=0
+ACTION="run"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -d|--detach) DETACH=1; shift ;;
+    --name)
+      [[ $# -ge 2 ]] || { echo "--name requires a value" >&2; exit 2; }
+      NAME="$2"; shift 2 ;;
+    --logs)
+      ACTION="logs"; shift
+      [[ $# -ge 1 && "$1" != --* ]] && { NAME="$1"; shift; }
+      [[ "${1:-}" == "--follow" || "${1:-}" == "-f" ]] && { FOLLOW=1; shift; }
+      ;;
+    --ls|--list) ACTION="ls"; shift ;;
+    --rm)
+      ACTION="rm"; shift
+      [[ $# -ge 1 ]] || { echo "--rm requires a NAME" >&2; exit 2; }
+      NAME="$1"; shift ;;
+    --) shift; break ;;
+    -*) echo "unknown flag: $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+
+# --- Dispatch non-run actions ---
+case "$ACTION" in
+  logs)
+    [[ -n "$NAME" ]] || { echo "--logs requires a NAME" >&2; exit 2; }
+    flag=$([[ $FOLLOW == 1 ]] && echo "-f" || echo "")
+    remote_tty "sudo docker logs ${flag} ${NAME}"
+    exit
+    ;;
+  ls)
+    remote "sudo docker ps -a --filter 'ancestor=${IMAGE}' --format 'table {{.Names}}\t{{.Status}}\t{{.CreatedAt}}'"
+    exit
+    ;;
+  rm)
+    remote "sudo docker rm -f ${NAME}"
+    exit
+    ;;
+esac
+
+# --- Build the run command ---
+CMD=("$@")
+[[ ${#CMD[@]} -eq 0 ]] && CMD=("/bin/zsh")
+
+if [[ $DETACH == 1 ]]; then
+  [[ -z "$NAME" ]] && NAME="spark-bench-$(date +%Y%m%d-%H%M%S)"
+  RUN_FLAGS="-d --name ${NAME}"
+elif [[ -t 0 && -t 1 ]]; then
+  RUN_FLAGS="--rm -it"
 else
-  if [ -t 0 ] && [ -t 1 ]; then
-    DOCKER_FLAGS="-it"
-  else
-    DOCKER_FLAGS="-i"
-  fi
-  CMD=("$@")
+  RUN_FLAGS="--rm -i"
 fi
 
-# Build remote command. Single-quote-safe via base64 transit.
 REMOTE_CMD=$(cat <<REMOTE
 set -euo pipefail
 mkdir -p "${RESULTS}" "${CACHE}"
 DOCKER_GID=\$(stat -c '%g' /var/run/docker.sock)
-exec sudo docker run --rm ${DOCKER_FLAGS} \\
+sudo docker run ${RUN_FLAGS} \\
   --network host \\
   --volume /var/run/docker.sock:/var/run/docker.sock \\
   --group-add \${DOCKER_GID} \\
   --volume "${RESULTS}:/results" \\
   --volume "${CACHE}:/cache" \\
+  --volume "${SKILL_DIR}:/opt/skill:ro" \\
   --env VLLM_BASE_URL="${VLLM_BASE_URL}" \\
   --env OPENAI_API_BASE="${VLLM_BASE_URL}" \\
   --env OPENAI_API_KEY="spark-cluster-no-auth" \\
@@ -66,5 +134,13 @@ exec sudo docker run --rm ${DOCKER_FLAGS} \\
 REMOTE
 )
 
-exec ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=120 \
-     -t "${BENCH_USER}@${BENCH_HOST}" "${REMOTE_CMD}"
+if [[ $DETACH == 1 ]]; then
+  remote "${REMOTE_CMD}" >/dev/null
+  echo "started:  ${NAME}"
+  echo "logs:     spark-bench --logs ${NAME}"
+  echo "follow:   spark-bench --logs ${NAME} --follow"
+  echo "list:     spark-bench --ls"
+  echo "cleanup:  spark-bench --rm ${NAME}   # when done"
+else
+  remote_tty "${REMOTE_CMD}"
+fi
