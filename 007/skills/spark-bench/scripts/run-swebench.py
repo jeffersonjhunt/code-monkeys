@@ -71,6 +71,10 @@ def main():
     if not cfg.startswith("/"):
         cfg = f"/opt/sweagent/{cfg}"
 
+    # NOTE: --instances.evaluate=True is intentionally OMITTED. That hook
+    # auto-runs `sb-cli submit` which uploads predictions to the SWE-bench
+    # leaderboard API; we want local scoring instead. After predictions
+    # complete we invoke `swebench.harness.run_evaluation` directly below.
     cmd = [
         sweagent_bin, "run-batch",
         "--instances.type", "swe_bench",
@@ -78,7 +82,6 @@ def main():
         "--instances.split", args.split,
         "--instances.slice", slice_arg,
         "--instances.shuffle=True",
-        "--instances.evaluate=True",
         "--instances.deployment.docker_args=--privileged",
         "--config", cfg,
         "--agent.model.name", f"openai/{args.spark_model}",
@@ -88,10 +91,41 @@ def main():
         "--output_dir", str(outdir),
     ] + passthrough
 
-    print(f"[run-swebench] cmd={' '.join(cmd)}")
+    print(f"[run-swebench] generate predictions: {' '.join(cmd)}")
     rc = subprocess.run(cmd).returncode
-    print(f"[run-swebench] exit {rc}")
-    sys.exit(rc)
+    print(f"[run-swebench] generation exit {rc}")
+    if rc != 0:
+        sys.exit(rc)
+
+    preds_path = outdir / "preds.json"
+    if not preds_path.exists():
+        print(f"[run-swebench] WARNING: {preds_path} does not exist; cannot evaluate")
+        sys.exit(2)
+
+    # Local evaluation via swebench harness: runs the per-instance testbed
+    # containers (swebench/sweb.eval.x86_64.*) against the predictions and
+    # writes a report file alongside.
+    subset_dataset = {
+        "verified": "SWE-bench/SWE-bench_Verified",
+        "lite":     "SWE-bench/SWE-bench_Lite",
+        "full":     "SWE-bench/SWE-bench",
+        "multimodal": "SWE-bench/SWE-bench_Multimodal",
+    }.get(args.subset, "SWE-bench/SWE-bench_Verified")
+
+    py_bin = "/opt/miniforge3/envs/spark-bench-env/bin/python"
+    eval_cmd = [
+        py_bin, "-m", "swebench.harness.run_evaluation",
+        "--dataset_name", subset_dataset,
+        "--split", args.split,
+        "--predictions_path", str(preds_path),
+        "--max_workers", str(args.workers),
+        "--run_id", outdir.name,
+        "--report_dir", str(outdir),
+    ]
+    print(f"[run-swebench] evaluate locally: {' '.join(eval_cmd)}")
+    eval_rc = subprocess.run(eval_cmd, cwd=outdir).returncode
+    print(f"[run-swebench] eval exit {eval_rc}")
+    sys.exit(eval_rc)
 
 
 if __name__ == "__main__":
