@@ -94,6 +94,12 @@ def main():
         "--config", cfg,
         "--agent.model.name", f"openai/{args.spark_model}",
         "--agent.model.api_base", args.endpoint,
+        # Disable LiteLLM's per-call $$$ cost tracking — our locally-served
+        # model isn't in LiteLLM's price registry, so any non-zero limit
+        # throws `ModelConfigurationError: This model isn't mapped yet`
+        # mid-agent-loop and forces an empty autosubmit patch.
+        "--agent.model.per_instance_cost_limit", "0",
+        "--agent.model.total_cost_limit", "0",
         "--num_workers", str(args.workers),
         "--output_dir", str(outdir),
     ] + passthrough
