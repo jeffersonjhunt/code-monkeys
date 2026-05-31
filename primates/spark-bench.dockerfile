@@ -41,7 +41,10 @@ ARG LCB_REF=main
 #     exist as siblings of its package — none of which ship in the wheel.
 #   LiveCodeBench: pip-from-git ships only `lcb_runner/lm_styles.py`; the
 #     whole `lcb_runner.runner` subpackage is missing. -e from the clone
-#     exposes the source tree via .pth so all submodules import.
+#     exposes the source tree via .pth so all submodules import. The LCB
+#     dataset `livecodebench/code_generation_lite` is still distributed as a
+#     legacy HuggingFace loading script (code_generation_lite.py), which
+#     `datasets>=4.0` refuses to load — hence the `datasets<4.0` pin below.
 #   tau2-bench: imports fine, but expects domain data at a sibling `data/`
 #     dir under TAU2_DATA_DIR; data isn't in the wheel.
 #
@@ -58,7 +61,7 @@ RUN /opt/miniforge3/envs/${IMAGE_NAME}-env/bin/python -m pip install --upgrade p
         -e "/opt/livecodebench" \
         -e "/opt/tau2-bench" \
         "openai>=2.0" \
-        "datasets" \
+        "datasets<4.0" \
         "huggingface_hub" \
         "tiktoken" \
         "jsonlines" \
