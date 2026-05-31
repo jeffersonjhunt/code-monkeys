@@ -2,7 +2,11 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-05-29 (latest)
+## 2026-05-31 (latest)
+
+- **HAProxy `timeout client` / `timeout server` bumped 600s → 3600s** (1 hour). Triggered by the SWE-Bench Verified baseline (`007/skills/spark-bench/scripts/run-swebench.py`) on Qwen3-Coder-Next: long agent loops + multi-thousand-token model responses occasionally exceeded the prior 10-min ceiling, producing HAProxy 504s that LiteLLM retried, ballooning per-problem wall to ~2 h. 1 h cap matches the worst-case observed response time (~30 min) with margin. Connect timeout left at 5s. Deployed via `deploy.sh starsky.tworivers haproxy` — instant `docker compose up -d --force-recreate`, ~5s frontend blip during which in-flight bench requests retried automatically. Cluster returned to 2/2 UP in under a minute.
+
+## 2026-05-29
 
 - **vLLM compose: dropped the default `--reasoning-parser qwen3` flag.** The currently-served model (`RedHatAI/Qwen3-Coder-Next-NVFP4`) is the *Instruct* variant — it does not emit `<think>` tags. With the `qwen3` reasoning parser active, every response was routed into a non-standard `reasoning` field with `content: null`, which the OpenAI Python client (used by every bench harness — SWE-agent, tau2-bench, LiveCodeBench, lighteval) does not surface. Verified end-to-end: raw HTTP showed `"content": null, "reasoning": "4"` on a "what is 2+2" probe before the change; after rolling restart (hutch first, then starsky — same drain pattern as the 2026-05-23 stack bump), `"content": "4", "reasoning": null` as expected and the OpenAI client returns the right thing. For a future model that does need a reasoning parser (e.g. GLM-4.7-Flash, which uses `<think>` tags by design), set `VLLM_REASONING_PARSER` in `.env` and uncomment the two commented lines in `compose.yml`. `--tool-call-parser qwen3_coder` retained — Qwen3-Coder does emit `<tool_call>` XML and we use it.
 - **Rolling restart pattern reused successfully.** Each replica's `docker compose up -d --force-recreate` cost ~5 min of single-replica downtime while the model reloaded from `/models` disk cache; HAProxy automatically marked the recreating node DOWN and routed to the other. Total wall time including verify steps ~15 min for both nodes.
