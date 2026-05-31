@@ -40,12 +40,20 @@ def main():
     ap.add_argument("--workers", type=int, default=1, help="concurrent problems (keep low on 4-core box)")
     ap.add_argument("--split", default="test", help="swebench split: test (canonical Verified) or dev")
     ap.add_argument("--subset", default="verified", help="swebench subset: verified | lite | full | multimodal")
-    ap.add_argument("--agent-config", default="config/default.yaml",
-                    help="SWE-agent config (path resolved relative to /opt/sweagent)")
+    ap.add_argument("--agent-config", default="config/default_backticks.yaml",
+                    help="SWE-agent config (relative to /opt/sweagent). Default is "
+                         "default_backticks.yaml — its parse_function=thought_action "
+                         "works with models LiteLLM doesn't auto-detect as supporting "
+                         "function calling (which is our locally-served vLLM endpoint). "
+                         "Use default.yaml if your model name is in LiteLLM's "
+                         "function-calling allowlist.")
     ap.add_argument("--results-dir", default="/results")
     ap.add_argument("--name", default=None)
-    ap.add_argument("--temperature", type=float, default=0.0,
-                    help="0.0 matches GLM-4.7-Flash card SWE-Bench eval params")
+    # NOTE: temperature is set inside the agent config (default 0.0); passing
+    # it via --agent.model.completion_kwargs collides with sweagent's own
+    # kwarg, producing `litellm.main.completion() got multiple values for
+    # keyword argument 'temperature'`. To change temperature, edit the
+    # agent config or fork it.
     ap.add_argument("-h", "--help", action="store_true")
     args, passthrough = ap.parse_known_args()
 
@@ -86,7 +94,6 @@ def main():
         "--config", cfg,
         "--agent.model.name", f"openai/{args.spark_model}",
         "--agent.model.api_base", args.endpoint,
-        "--agent.model.completion_kwargs", f'{{"temperature": {args.temperature}}}',
         "--num_workers", str(args.workers),
         "--output_dir", str(outdir),
     ] + passthrough
