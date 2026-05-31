@@ -16,8 +16,12 @@ defaults
     option httplog
     option dontlognull
     timeout connect 5s
-    timeout client 600s
-    timeout server 600s
+    # Long timeouts for benchmark workloads that generate long chain-of-thought
+    # or multi-thousand-token responses on the 80B/3B MoE — at ~50-100 tok/s
+    # the GB10 can spend 10+ minutes on a single response. 60 min covers the
+    # observed worst case (~30 min) with margin.
+    timeout client 3600s
+    timeout server 3600s
     retries 3
 
 # Stats and self-healthcheck on loopback only
