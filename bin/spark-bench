@@ -127,7 +127,9 @@ sudo docker run ${RUN_FLAGS} \\
   --volume "${SKILL_DIR}:/opt/skill:ro" \\
   --env VLLM_BASE_URL="${VLLM_BASE_URL}" \\
   --env OPENAI_API_BASE="${VLLM_BASE_URL}" \\
+  --env OPENAI_BASE_URL="${VLLM_BASE_URL}" \\
   --env OPENAI_API_KEY="spark-cluster-no-auth" \\
+  --env OPENAI_KEY="spark-cluster-no-auth" \\
   --env SPARK_BENCH_MODEL="${MODEL}" \\
   "${IMAGE}" \\
   $(printf ' %q' "${CMD[@]}")
