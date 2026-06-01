@@ -81,6 +81,10 @@ def main():
     p.add_argument("--results-dir", default="/results")
     p.add_argument("--name", default="gpqa-diamond")
     p.add_argument("--seed", type=int, default=0, help="seed for the subset selection (reproducible)")
+    p.add_argument("--openai-timeout", type=int, default=3600,
+                   help="per-request timeout (sec). Thinking models can spend 30-60 min/question.")
+    p.add_argument("--openai-max-retries", type=int, default=0,
+                   help="OpenAI client retry count. 0 = no retries.")
     args = p.parse_args()
 
     if not args.model or not args.endpoint:
@@ -104,7 +108,8 @@ def main():
         problems = [{"idx": i, **dict(ds[i])} for i in range(len(ds))]
         print(f"loaded {len(problems)} questions (full set)")
 
-    client = openai.OpenAI(base_url=args.endpoint, api_key=args.api_key, timeout=1700)
+    client = openai.OpenAI(base_url=args.endpoint, api_key=args.api_key,
+                            timeout=args.openai_timeout, max_retries=args.openai_max_retries)
 
     ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     model_slug = re.sub(r"[^A-Za-z0-9._-]", "-", args.model)
