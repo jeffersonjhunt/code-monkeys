@@ -104,6 +104,11 @@ def main():
     p.add_argument("--top-p", type=float, default=0.95)
     p.add_argument("--results-dir", default="/results")
     p.add_argument("--name", default="aime25", help="run name suffix for output dir")
+    p.add_argument("--openai-timeout", type=int, default=3600,
+                   help="per-request timeout (sec). Thinking models can take 30-60 min/problem.")
+    p.add_argument("--openai-max-retries", type=int, default=0,
+                   help="OpenAI client retry count. 0 = no retries (failure shows up as None pred). "
+                        "Default 2 would stack to 3*timeout in the worst case.")
     args = p.parse_args()
 
     if not args.model or not args.endpoint:
@@ -121,7 +126,8 @@ def main():
     problems += [{"id": f"II-{i+1:02d}", **dict(r)} for i, r in enumerate(ds_ii)]
     print(f"loaded {len(problems)} problems")
 
-    client = openai.OpenAI(base_url=args.endpoint, api_key=args.api_key, timeout=900)
+    client = openai.OpenAI(base_url=args.endpoint, api_key=args.api_key,
+                            timeout=args.openai_timeout, max_retries=args.openai_max_retries)
 
     ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     model_slug = re.sub(r"[^A-Za-z0-9._-]", "-", args.model)
