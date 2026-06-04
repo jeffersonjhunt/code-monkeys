@@ -15,6 +15,8 @@ alias git.sync='git fetch upstream; git checkout master; git merge upstream/mast
 alias dps='docker ps --format "table {{.Names}}\t{{.ID}}\t{{.Ports}}\t{{.Status}}"'
 alias dpi='docker images'
 alias drm='docker rmi $(dpi | grep none | cut -w -f 3)'
+# GPU process monitor inside the cuda-base primate (needs a TTY + GPU access)
+alias nvtop='docker run --rm -it --gpus all cuda-base:runtime nvtop'
 alias k='kubectl'
 
 alias utmctl="/Applications/UTM.app/Contents/MacOS/utmctl"
