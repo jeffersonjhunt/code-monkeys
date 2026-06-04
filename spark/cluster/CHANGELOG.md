@@ -2,7 +2,11 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-05-31 (latest)
+## 2026-06-04 (latest)
+
+- **Spark images now build from a shared `cuda-base` primate.** `vllm-spark`, `comfy-ui-spark`, and `llama-cpp-spark` no longer `FROM nvidia/cuda:*` directly — their shipping stages extend `cuda-base` (one dockerfile, two flavors `:runtime` + `:devel`), which centralizes the codemonkey user, the sudo/zsh/git/curl floor, **`nvtop`** (now in every GPU image), and cross-GPU arch defaults (sm_89/sm_120/sm_121). The served `vllm-spark` runtime extends `cuda-base:devel` and re-pins `TORCH_CUDA_ARCH_LIST="12.0 12.1+PTX"` so FlashInfer's runtime JIT stays Spark-only — **no change to served-model behavior**. Rebuild path is unchanged: `make <img>.build` (and the `spark-build` skill) now build `cuda-base` first as a prerequisite, cached after the first run. The Makefile `_nv_check` guard was also generalized to pass on any NVIDIA host (x86 boxes with a 4090/5090, not just `-nvidia`-kernel Sparks), so the family is now build/run-validated on x86 (host `ren`) as well as Spark. No cluster redeploy required until the next image rebuild rolls through via `spark-build`. See root `CLAUDE.md` / `README.md` and `primates/CLAUDE.md` for the image hierarchy.
+
+## 2026-05-31
 
 - **HAProxy `timeout client` / `timeout server` bumped 600s → 3600s** (1 hour). Triggered by the SWE-Bench Verified baseline (`007/skills/spark-bench/scripts/run-swebench.py`) on Qwen3-Coder-Next: long agent loops + multi-thousand-token model responses occasionally exceeded the prior 10-min ceiling, producing HAProxy 504s that LiteLLM retried, ballooning per-problem wall to ~2 h. 1 h cap matches the worst-case observed response time (~30 min) with margin. Connect timeout left at 5s. Deployed via `deploy.sh starsky.tworivers haproxy` — instant `docker compose up -d --force-recreate`, ~5s frontend blip during which in-flight bench requests retried automatically. Cluster returned to 2/2 UP in under a minute.
 
