@@ -14,7 +14,7 @@ The spark-class primate images can only build on an NVIDIA-kernel host with a Bl
 1. Drain the target node from the cluster (stop `vllm` so HAProxy marks it DOWN)
 2. Verify another replica is still UP so the API stays available
 3. Sync the working tree to the build host (`rsync` by default, or `git pull` of a named ref)
-4. Build the requested spark images on the host
+4. Build the requested spark images on the host (each `make <img>.build` builds the shared `cuda-base` base — `:runtime` + `:devel` — first as a prerequisite; it carries `nvtop` and the codemonkey user, and is cached after the first run)
 5. Restart the vLLM container so HAProxy marks the node back UP
 
 ## When to Use

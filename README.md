@@ -47,7 +47,7 @@ The shell config is layered:
 
 1. **`zshrc.template`** — installed as `~/.zshrc` inside containers; sources `~/.zbase`, fixes ownership of mounted directories, activates the image's conda environment if present
 2. **`zbase`** — main config: oh-my-zsh setup, plugins, PATH, editor, history settings
-3. **`zaliases`** — aliases (`dps`, `dpi`, `probe`, `ocd`, `git.all`, etc.)
+3. **`zaliases`** — aliases (`dps`, `dpi`, `probe`, `nvtop` (GPU monitor via the cuda-base primate), `ocd`, `git.all`, etc.)
 4. **`zfuncs`** — functions: `primate()`, `primate-upgrade()`, `which-os()`, `code-here()`, `tree()`, `clamscan()`, `tad()`, `watch()`
 
 ## Primates
@@ -65,9 +65,9 @@ debian:13-slim → codemonkey → miniforge3 → claude
                              → huggingface
                              → minion
 
-nvidia/cuda:13.2.1 → llama-cpp-spark  (multi-stage: full/light/server)
-                   → comfy-ui-spark
-                   → vllm-spark      (vLLM with sm_121 native cutlass)
+nvidia/cuda:13.2.1 → cuda-base → llama-cpp-spark  (multi-stage: full/light/server)
+                              → comfy-ui-spark
+                              → vllm-spark      (vLLM with sm_121 native cutlass)
 ```
 
 | Image | Purpose |
@@ -81,9 +81,10 @@ nvidia/cuda:13.2.1 → llama-cpp-spark  (multi-stage: full/light/server)
 | **lamp** | Adds Apache, MariaDB, PHP |
 | **huggingface** | Adds python3 venv and huggingface-cli |
 | **minion** | Bare codemonkey extension (general-purpose runner) |
-| **llama-cpp-spark** | llama.cpp for NVIDIA DGX Spark (sm_121 Blackwell GPUs) |
-| **comfy-ui-spark** | ComfyUI for NVIDIA DGX Spark (sm_121 Blackwell GPUs) |
-| **vllm-spark** | vLLM v0.21.0 source build with sm_121 native cutlass — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE that crashes on upstream `vllm/vllm-openai` |
+| **cuda-base** | Shared CUDA base for the GPU images (one dockerfile, two flavors — `cuda-base:runtime` + `cuda-base:devel`). Adds `nvtop`, the codemonkey user, and cross-GPU arch defaults (sm_89 RTX 4090 / sm_120 RTX 5090 / sm_121 DGX Spark) so the family runs on x86 NVIDIA boxes as well as Spark |
+| **llama-cpp-spark** | llama.cpp for NVIDIA GPUs (from `cuda-base`; default arch sm_121 Blackwell) |
+| **comfy-ui-spark** | ComfyUI for NVIDIA GPUs (from `cuda-base:runtime`; cross-GPU via PyTorch wheels) |
+| **vllm-spark** | vLLM v0.21.0 source build with sm_121 native cutlass (runtime from `cuda-base:devel`) — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE that crashes on upstream `vllm/vllm-openai` |
 
 ### Building
 
@@ -91,7 +92,8 @@ nvidia/cuda:13.2.1 → llama-cpp-spark  (multi-stage: full/light/server)
 cd primates
 make help                   # show all targets
 make all                    # build codemonkey + all standard images
-make spark                  # build all + GPU images (requires NVIDIA kernel)
+make spark                  # build all + GPU images (requires an NVIDIA GPU)
+make cuda-base.build        # shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the GPU targets
 make claude.build           # build a single image
 make all FORCE=1            # rebuild from scratch (--no-cache)
 make all UNSAFE_SSL=true    # disable SSL verification during build (tainted build)
@@ -157,7 +159,7 @@ make upgrade                 # upgrade all
 - Shell: zsh with oh-my-zsh (jjh theme — based on ys, adds conda env display)
 - Home: `/home/codemonkey` (persisted via named Docker volume)
 - Workspace: `/home/codemonkey/workspace` (bind mount from host)
-- Standard images target aarch64 (ARM64); CUDA images target sm_121
+- Standard images target aarch64 (ARM64); the CUDA images build from `cuda-base` with cross-GPU arch defaults (sm_89/sm_120/sm_121), except `vllm-spark` which pins sm_120/sm_121. The `make` GPU targets pass on any NVIDIA host (an `-nvidia` kernel, or `nvidia-smi`/`lspci` seeing a card), not just DGX Spark
 - `TAINTED_BUILD` env var: `true` if built with `UNSAFE_SSL=true` (login warning displayed), `false` otherwise. Note: `UNSAFE_SSL` only relaxes verification *during* image construction — conda/git/npm config changes are reverted before the RUN ends, so SSL verification is restored at runtime.
 
 ## Vault (optional)
