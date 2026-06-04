@@ -151,8 +151,16 @@ clean:
 	echo "Cleaning up images..."
 	docker rmi -f $(TARGETS:%=%:latest) codemonkey:latest llama-cpp-spark:latest comfy-ui-spark:latest vllm-spark:latest cuda-base:runtime cuda-base:devel || true
 
+# Guard for the CUDA image targets. Passes on any host that can build/run
+# them: a DGX Spark (-nvidia kernel), or an x86/other box with an NVIDIA GPU
+# (nvidia-smi present, or the card visible on the PCI bus). Kernel-name-only
+# was Spark-specific and wrongly blocked x86 NVIDIA hosts like ren (4090).
 .PHONY:
 _nv_check:
-ifneq ($(shell echo $(KERNEL) | grep -c -- '-nvidia$$'),1)
-	$(error This machine is not running an NVIDIA kernel. Detected: $(KERNEL))
-endif
+	@if echo "$(KERNEL)" | grep -q -- '-nvidia$$'; then :; \
+	elif command -v nvidia-smi >/dev/null 2>&1; then :; \
+	elif lspci 2>/dev/null | grep -qi nvidia; then :; \
+	else \
+		echo "ERROR: no NVIDIA GPU detected — kernel '$(KERNEL)' is not an -nvidia kernel, nvidia-smi is absent, and lspci shows no NVIDIA device." >&2; \
+		exit 1; \
+	fi
