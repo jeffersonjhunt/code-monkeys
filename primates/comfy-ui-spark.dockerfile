@@ -1,37 +1,18 @@
-ARG UBUNTU_VERSION=24.04
-ARG CUDA_VERSION=13.2.1
-
-ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
-
-FROM ${BASE_CUDA_RUN_CONTAINER}
-
-# CUDA architecture for DGX Spark Blackwell GPUs (sm_121)
-ARG CUDA_DOCKER_ARCH=121
-
-# Replace the default ubuntu user (UID 1000) with codemonkey so bind
-# mounts from the host (workspace, .ssh, .aws) have matching ownership
-RUN userdel -r ubuntu 2>/dev/null || true \
-    && useradd \
-    --uid 1000 \
-    --home-dir /home/codemonkey \
-    --create-home \
-    --shell /bin/zsh \
-    --comment "Code Monkey,,," \
-    codemonkey
+# comfy-ui-spark — ComfyUI on the shared CUDA base (runtime flavor).
+# The codemonkey user, nvtop, and the sudo/zsh/git/curl floor come from
+# cuda-base; ComfyUI rides PyTorch's prebuilt wheels (already multi-arch),
+# so it inherits cuda-base's broad TORCH_CUDA_ARCH_LIST and runs on
+# sm_89/sm_120/sm_121 without a source build.
+ARG CUDA_BASE=cuda-base:runtime
+FROM ${CUDA_BASE}
 
 RUN apt-get update \
     && apt-get install -y \
-    sudo \
-    zsh \
     python3 \
     python3-pip \
     python3-venv \
-    git \
-    curl \
     libgl1 \
     libglib2.0-0 \
-    && echo "codemonkey ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/codemonkey \
-    && chmod 0440 /etc/sudoers.d/codemonkey \
     && apt autoremove -y \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \

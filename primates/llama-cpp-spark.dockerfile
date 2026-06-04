@@ -1,12 +1,17 @@
+# Build stage stays on the raw CUDA devel image (throwaway — only its
+# compiled artifacts are copied forward). The shipping stages extend the
+# shared cuda-base:runtime, which provides the codemonkey user, nvtop, and
+# the sudo/zsh/curl floor.
 ARG UBUNTU_VERSION=24.04
 ARG CUDA_VERSION=13.2.1
 
 ARG BASE_CUDA_DEV_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
-ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
+ARG CUDA_BASE=cuda-base:runtime
 
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
-# CUDA architecture for DGX Spark Blackwell GPUs (sm_121)
+# CUDA architecture for DGX Spark Blackwell GPUs (sm_121). Override to e.g.
+# "89;120;121" (cuda-base's default) to build a cross-GPU binary.
 ARG CUDA_DOCKER_ARCH=121
 
 # Clone llama.cpp at build time
@@ -41,24 +46,11 @@ RUN mkdir -p /app/full \
     && cp requirements.txt /app/full \
     && cp .devops/tools.sh /app/full/tools.sh
 
-## Base image
-FROM ${BASE_CUDA_RUN_CONTAINER} AS base
-
-# Replace the default ubuntu user (UID 1000) with codemonkey so bind
-# mounts from the host (workspace, .ssh, .aws) have matching ownership
-RUN userdel -r ubuntu 2>/dev/null || true \
-    && useradd \
-    --uid 1000 \
-    --home-dir /home/codemonkey \
-    --create-home \
-    --shell /bin/zsh \
-    --comment "Code Monkey,,," \
-    codemonkey
+## Base image — codemonkey user, nvtop, sudo/zsh/curl come from cuda-base.
+FROM ${CUDA_BASE} AS base
 
 RUN apt-get update \
-    && apt-get install -y libgomp1 curl sudo zsh \
-    && echo "codemonkey ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/codemonkey \
-    && chmod 0440 /etc/sudoers.d/codemonkey \
+    && apt-get install -y libgomp1 \
     && apt autoremove -y \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \
