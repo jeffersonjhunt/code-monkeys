@@ -346,6 +346,25 @@ remove_skills() {
   run make -C "${SRC}/007/skills" uninstall
 }
 
+install_kiro_clients() {
+  if [[ ! -f "${SRC}/007/clients/kiro/Makefile" ]]; then
+    echo "  skip: 007/clients/kiro not found"
+    return
+  fi
+
+  echo "Installing kiro client files..."
+  run make -C "${SRC}/007/clients/kiro" install
+}
+
+remove_kiro_clients() {
+  if [[ ! -f "${SRC}/007/clients/kiro/Makefile" ]]; then
+    return
+  fi
+
+  echo "Removing kiro client files..."
+  run make -C "${SRC}/007/clients/kiro" uninstall
+}
+
 # --- Parse args ---
 
 while [[ $# -gt 0 ]]; do
@@ -373,6 +392,7 @@ if [[ "$UNINSTALL" == true ]]; then
   remove_zshrc
   remove_repos
   remove_skills
+  remove_kiro_clients
   [[ "$OS" == "MacOS" ]] && remove_macos
 
   if [[ "$DRY_RUN" == false ]]; then
@@ -402,6 +422,7 @@ else
   install_hooks
 
   install_skills
+  install_kiro_clients
 
   if [[ "$DRY_RUN" == false ]]; then
     touch "${SRC}/.configured"

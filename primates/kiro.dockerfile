@@ -12,4 +12,7 @@ RUN if [ "$UNSAFE_SSL" = "true" ]; then /opt/miniforge3/bin/conda config --set s
 # Install Kiro CLI via native installer
 RUN su -c "curl $([ "$UNSAFE_SSL" = "true" ] && echo "--insecure") -fsSL https://cli.kiro.dev/install | bash" codemonkey
 
+# Install Playwright Chromium and its system deps for MCP browser automation
+RUN npx playwright install --with-deps chromium
+
 # Fin

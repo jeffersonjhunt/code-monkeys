@@ -29,3 +29,6 @@ alias cls='clear; ls'
 alias get_idf='source ${HOME}/Source/3rd_Party/esp-idf/export.sh'
 
 alias hf_login='hf auth login --token $HF_TOKEN --add-to-git-credential'
+
+alias kc='kiro-cli chat --tui --agent pa'
+

@@ -1,0 +1,109 @@
+{
+  "name": "pa",
+  "description": "Personal assistant for calendar, files, notes, and personal task management",
+  "prompt": "You are a personal assistant helping with everyday tasks like finding files, parsing calendars, organizing notes, and managing personal information. Be concise and helpful.",
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest"
+      ],
+      "disabled": false
+    },
+    "playwright": {
+      "url": "",
+      "headers": {},
+      "oauthScopes": [
+        "openid",
+        "email",
+        "profile",
+        "offline_access"
+      ],
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest"
+      ],
+      "env": {},
+      "timeout": 120000,
+      "disabled": false,
+      "disabledTools": []
+    },
+    "ldap-directory": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/home/codemonkey/.local/share/kiro/custom-mcp-servers/ldap-mcp-server",
+        "ldap-mcp-server.py"
+      ],
+      "env": {},
+      "disabled": false
+    },
+    "obsidian": {
+      "command": "mcp-obsidian",
+      "args": [],
+      "env": {
+        "OBSIDIAN_API_KEY": "730349d5048d1e8fab7f2ba1a4a12038abec19e53ba7ea0f4ff11e086f71b9fd",
+        "OBSIDIAN_HOST": "127.0.0.1",
+        "OBSIDIAN_PORT": "27124"
+      },
+      "disabled": false
+    },
+    "obsidian-tasks": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/home/codemonkey/.local/share/kiro/personal/obsidian-tasks",
+        "mcp_server.py"
+      ],
+      "disabled": false
+    }
+  },
+  "tools": [
+    "fs_read",
+    "fs_write",
+    "execute_bash",
+    "grep",
+    "glob",
+    "web_fetch",
+    "web_search",
+    "knowledge",
+    "introspect",
+    "@obsidian-tasks/*",
+    "@obsidian/*",
+    "@chrome-devtools/*",
+    "@playwright/*",
+    "@ldap-directory/*"
+  ],
+  "toolAliases": {},
+  "allowedTools": [
+    "fs_read",
+    "grep",
+    "glob",
+    "web_fetch",
+    "web_search",
+    "knowledge",
+    "introspect",
+    "@obsidian/*",
+    "@obsidian-tasks/*",
+    "@ldap-directory/*"
+  ],
+  "resources": [
+    "file:///home/codemonkey/.local/share/kiro/ai-context/steering/**/*.md",
+    "file:///home/codemonkey/.local/share/kiro/ai-context/common/**/*.md",
+    "file:///home/codemonkey/.local/share/kiro/ai-context/memory/personal-memory.md",
+    "file:///home/codemonkey/.local/share/kiro/ai-context/personal/**/*.md"
+  ],
+  "hooks": {},
+  "toolsSettings": {
+    "execute_bash": {
+      "allowedCommands": [
+        "/home/codemonkey/.local/bin/remember.sh *",
+        "/home/codemonkey/.local/bin/daily-data.sh",
+        "jq *"
+      ]
+    }
+  }
+}

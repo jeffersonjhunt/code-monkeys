@@ -18,6 +18,7 @@ This is a personal development environment repository (dotfiles + containerized 
 - **`aws/`**: AWS CLI config and credentials — managed by vault, never commit plaintext
 - **`claude/`**: Claude Code settings and custom slash commands (symlinked to `~/.claude` by setup, copied into claude primate image)
 - **`007/skills/`**: Agent skills library — portable skills installed into `~/.kiro/skills/` and `~/.claude/skills/` by `setup`. Run `make test` from `007/` to test. See `007/skills/CONTRIBUTING.md` for authoring guidelines.
+- **`007/clients/kiro/`**: Kiro-specific client files — MCP servers (LDAP, Obsidian Tasks), agent definitions (`pa.json`), and AI context resources. Installed to `~/.local/share/kiro/` and `~/.kiro/agents/` via `make -C 007/clients/kiro install`. MCP server credentials (LDAP, Obsidian) come from the vault-managed `env` file (see `env.template` for all variables).
 - **`Library/`**: macOS-only assets (`KeyBindings/DefaultKeyBinding.dict` is copied to `~/Library/KeyBindings` by setup)
 - **`spark/`**: DGX Spark cluster ops. `spark/cluster/` is a host-name-agnostic vLLM replica cluster (compose stacks, scripts, runbook) that consumes the `vllm-spark` primate. Hosts and roles come from a gitignored `spark/cluster/cluster.env`; the maintainer's deployment is two DGX Spark nodes (starsky, hutch). See `spark/cluster/CLAUDE.md`.
 

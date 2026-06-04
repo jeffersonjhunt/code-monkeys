@@ -38,6 +38,8 @@ What it does:
 - Installs `zbase` as `~/.zshrc` (copy, not symlink)
 - Clones oh-my-zsh plugins: `zsh-autosuggestions`, `zsh-completions`, `zsh-syntax-highlighting`
 - Installs git hooks from `hooks/` into `.git/hooks/`
+- Installs agent skills via `make -C 007/skills install` (copies to `~/.local/share/agent-skills/`, symlinks into `~/.claude/skills/` and `~/.kiro/skills/`)
+- Installs kiro client files via `make -C 007/clients/kiro install` (copies MCP servers, AI context, and agent configs into `~/.local/share/kiro/` and `~/.kiro/agents/`)
 - On macOS: installs custom key bindings to `~/Library/KeyBindings`
 - Warns (non-fatal) if optional tools `aws` or `fastfetch` are not installed (the `bin/aws` shim covers a missing AWS CLI by running it in the `minion` container)
 
@@ -76,7 +78,7 @@ nvidia/cuda:13.2.1 → llama-cpp-spark  (multi-stage: full/light/server)
 | **miniforge3** | Adds Miniforge3 (conda for aarch64 and x86_64), creates `miniforge3-env`, installs `uv` in the conda base env |
 | **claude** | Adds Claude Code via native installer, creates `claude-env` |
 | **opencode** | Adds opencode via the curl installer (binary in `/usr/local/bin`), creates `opencode-env`, pre-configured for the spark-cluster vLLM (`starsky:8080`, model `qwen3-coder-next`) |
-| **kiro** | Adds Amazon Kiro CLI via native installer, creates `kiro-env` |
+| **kiro** | Adds Amazon Kiro CLI via native installer, creates `kiro-env`, includes Playwright + Chromium for browser automation MCP |
 | **embedded** | Adds libfmt, libboost, cc65, vasm 6502 assembler |
 | **lamp** | Adds Apache, MariaDB, PHP |
 | **huggingface** | Adds python3 venv and huggingface-cli |
@@ -206,9 +208,10 @@ Uses `aws s3 sync` under the hood — only transfers files that have changed. Re
 
 ### Creating vaults from scratch
 
-1. Create `ssh/`, `aws/`, and/or `env` with your credentials
-2. Run `./vault lock` to encrypt them (you'll set a password)
-3. Run `./vault sync push` to back them up to S3 (optional)
+1. Copy `env.template` to `env` and fill in real values
+2. Create `ssh/`, `aws/`, and/or other credential files
+3. Run `./vault lock` to encrypt them (you'll set a password)
+4. Run `./vault sync push` to back them up to S3 (optional)
 
 ## Repository Layout
 
@@ -216,12 +219,20 @@ Uses `aws s3 sync` under the hood — only transfers files that have changed. Re
 .
 ├── setup                  # host machine setup script (symlinks dotfiles into $HOME)
 ├── vault                  # encrypt/decrypt secrets at rest
+├── env.template           # placeholder env file — copy to 'env' and fill in real values
 ├── bin/                   # host shim scripts symlinked into ~/.local/bin/
 │   └── aws                # local-first AWS CLI wrapper (falls back to minion container)
 ├── codemonkey.dockerfile  # base Docker image (debian:13-slim)
 ├── primates/              # specialized Docker images built on codemonkey
 │   ├── Makefile
 │   └── *.dockerfile
+├── 007/                   # agent tooling
+│   ├── skills/            # portable agent skills (installed to ~/.local/share/agent-skills/)
+│   └── clients/kiro/      # kiro-specific MCP servers, agents, and AI context
+│       ├── Makefile       # install/uninstall into $HOME
+│       ├── mcp-servers/   # custom MCP servers (LDAP, Obsidian Tasks)
+│       ├── agents/        # agent definitions (pa.json)
+│       └── ai-context/    # resource files (steering, common, memory, personal)
 ├── zshrc.template         # zsh config for containers (sources zbase)
 ├── zbase                  # main zsh config (oh-my-zsh, plugins, PATH)
 ├── zaliases               # shell aliases
