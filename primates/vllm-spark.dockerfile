@@ -2,10 +2,11 @@ ARG UBUNTU_VERSION=24.04
 ARG CUDA_VERSION=13.2.1
 
 ARG BASE_CUDA_DEV_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
-# Runtime uses the devel image (not runtime) because Triton JIT needs a host
-# C compiler and FlashInfer's py3-none-any wheel JITs CUDA kernels via nvcc
-# at first use. The runtime base lacks both. Image size cost is ~4-5 GB.
-ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
+# Runtime extends cuda-base:devel (the devel flavor, NOT :runtime) because
+# Triton JIT needs a host C compiler and FlashInfer's py3-none-any wheel JITs
+# CUDA kernels via nvcc at first use. The runtime flavor lacks both. Image
+# size cost is ~4-5 GB.
+ARG CUDA_BASE=cuda-base:devel
 
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
@@ -88,33 +89,25 @@ RUN python3 -c 'import vllm; print("vllm", vllm.__version__)' \
  && python3 -c 'import torch; print("torch", torch.__version__, "cuda:", torch.version.cuda)'
 
 
-FROM ${BASE_CUDA_RUN_CONTAINER} AS runtime
+FROM ${CUDA_BASE} AS runtime
 
-# Replace default ubuntu user (UID 1000) with codemonkey so bind mounts from
-# the host (workspace, .ssh, .aws) have matching ownership. Same pattern as
-# llama-cpp-spark.dockerfile.
-RUN userdel -r ubuntu 2>/dev/null || true \
-    && useradd \
-       --uid 1000 \
-       --home-dir /home/codemonkey \
-       --create-home \
-       --shell /bin/zsh \
-       --comment "Code Monkey,,," \
-       codemonkey
+# cuda-base sets a broad cross-GPU TORCH_CUDA_ARCH_LIST, but vllm-spark is
+# Spark-pinned: re-pin so FlashInfer/Triton runtime JIT emit only sm_120/sm_121
+# at first forward pass rather than also compiling sm_89. Matches the build
+# stage's arch list above.
+ENV TORCH_CUDA_ARCH_LIST="12.0 12.1+PTX"
 
+# codemonkey user, nvtop, sudo/zsh/ca-certificates come from cuda-base. This
+# adds vLLM's runtime extras (python3 + the gcc/g++/libgomp1 the JIT paths
+# shell out to).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        sudo \
-        zsh \
         python3 \
         python3-dev \
         python3-venv \
-        ca-certificates \
         libgomp1 \
         gcc \
         g++ \
-    && echo "codemonkey ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/codemonkey \
-    && chmod 0440 /etc/sudoers.d/codemonkey \
     && apt autoremove -y \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \

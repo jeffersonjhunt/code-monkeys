@@ -33,6 +33,7 @@ help:
 	@echo "  lamp.build             Build LAMP stack (Apache, MariaDB, PHP)"
 	@echo "  huggingface.build      Build Hugging Face environment (python3 venv, hf cli)"
 	@echo "  minion.build           Build minion (bare codemonkey extension)"
+	@echo "  cuda-base.build        Build the shared CUDA base (cuda-base:runtime + cuda-base:devel)"
 	@echo "  llama-cpp-spark.build  Build llama.cpp for DGX Spark (requires NVIDIA kernel)"
 	@echo "  comfy-ui-spark.build   Build ComfyUI for DGX Spark (requires NVIDIA kernel)"
 	@echo "  vllm-spark.build       Build vLLM with native sm_121 kernels (requires NVIDIA kernel)"
@@ -55,17 +56,23 @@ codemonkey.build:
 	docker buildx build $(BUILD_ARGS) -t codemonkey:latest -f codemonkey.dockerfile .
 
 .PHONY:
-llama-cpp-spark.build: _nv_check
+cuda-base.build:
+	echo "Building cuda-base image (runtime + devel)..."
+	docker buildx build $(BUILD_ARGS) --build-arg CUDA_FLAVOR=runtime -t cuda-base:runtime -f cuda-base.dockerfile .
+	docker buildx build $(BUILD_ARGS) --build-arg CUDA_FLAVOR=devel   -t cuda-base:devel   -f cuda-base.dockerfile .
+
+.PHONY:
+llama-cpp-spark.build: _nv_check cuda-base.build
 	echo "Building llama.cpp image..."
 	docker buildx build $(BUILD_ARGS) -t llama-cpp-spark:latest --target full -f llama-cpp-spark.dockerfile .
 
 .PHONY:
-comfy-ui-spark.build: _nv_check
+comfy-ui-spark.build: _nv_check cuda-base.build
 	echo "Building comfy-ui-spark image..."
 	docker buildx build $(BUILD_ARGS) -t comfy-ui-spark:latest -f comfy-ui-spark.dockerfile .
 
 .PHONY:
-vllm-spark.build: _nv_check
+vllm-spark.build: _nv_check cuda-base.build
 	echo "Building vllm-spark image..."
 	docker buildx build $(BUILD_ARGS) -t vllm-spark:latest -f vllm-spark.dockerfile .
 
@@ -142,7 +149,7 @@ upgrade:
 .PHONY:
 clean:
 	echo "Cleaning up images..."
-	docker rmi -f $(TARGETS:%=%:latest) codemonkey:latest llama-cpp-spark:latest comfy-ui-spark:latest || true
+	docker rmi -f $(TARGETS:%=%:latest) codemonkey:latest llama-cpp-spark:latest comfy-ui-spark:latest vllm-spark:latest cuda-base:runtime cuda-base:devel || true
 
 .PHONY:
 _nv_check:

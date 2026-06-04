@@ -12,6 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make all                    # Build codemonkey base + all targets (minion, embedded, miniforge3, claude, opencode, kiro, lamp, huggingface)
 make codemonkey.build       # Build the codemonkey base image (from parent directory)
 make <name>.build           # Build a specific image, e.g. make claude.build
+make cuda-base.build        # Build the shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the spark targets
 make llama-cpp-spark.build  # Build llama.cpp for DGX Spark (requires NVIDIA kernel)
 make comfy-ui-spark.build   # Build ComfyUI for DGX Spark (requires NVIDIA kernel)
 make vllm-spark.build       # Build vLLM v0.21.0 with sm_121 native cutlass (requires NVIDIA kernel)
@@ -37,13 +38,14 @@ codemonkey (base, dockerfile in parent dir)
 ├── huggingface      (adds python3 venv, huggingface-cli)
 └── minion           (empty extension of codemonkey)
 
-nvidia/cuda:13.2.1-devel-ubuntu24.04 (independent)
-├── llama-cpp-spark  (multi-stage: full, light, server targets for sm_121/Blackwell GPUs)
-└── vllm-spark       (multi-stage build/runtime; vLLM v0.21.0 source build with sm_121 native cutlass — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE)
-
-nvidia/cuda:13.2.1-runtime-ubuntu24.04 (independent)
-└── comfy-ui-spark   (ComfyUI node-based Stable Diffusion GUI for sm_121/Blackwell GPUs)
+nvidia/cuda:13.2.1-{runtime,devel}-ubuntu24.04
+└── cuda-base        (shared CUDA base; one dockerfile, two flavors — cuda-base:runtime + cuda-base:devel. Adds nvtop, the codemonkey user, the sudo/zsh/git/curl floor, and cross-GPU arch defaults sm_89/sm_120/sm_121)
+    ├── llama-cpp-spark  (build stage on raw cuda devel; shipping stages on cuda-base:runtime — full/light/server for sm_121/Blackwell)
+    ├── comfy-ui-spark   (cuda-base:runtime; ComfyUI node-based Stable Diffusion GUI, cross-GPU via PyTorch wheels)
+    └── vllm-spark       (build stage on raw cuda devel; runtime stage on cuda-base:devel; vLLM v0.21.0 source build with sm_121 native cutlass — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE)
 ```
+
+`cuda-base` is built in two flavors from a single `cuda-base.dockerfile` via the `CUDA_FLAVOR` build arg: `:runtime` (slim, for images that only run prebuilt binaries) and `:devel` (ships nvcc + headers, for images that JIT-compile CUDA at runtime). The three spark `.build` Makefile targets list `cuda-base.build` as a prerequisite, so it is built automatically (and the spark-build skill, which runs `make <img>.build`, picks it up for free). Build stages of the multi-stage images stay on the raw `nvidia/cuda` devel image — they are throwaway, so only the shipping stages extend `cuda-base`.
 
 `vllm-spark` keeps the `-devel` base at runtime (not `-runtime`) because FlashInfer and Triton JIT-compile CUDA kernels at first request — they need `nvcc`, `gcc`/`g++`, and `python3-dev` available inside the container.
 
