@@ -42,6 +42,27 @@ def register_spark_model(model_name: str):
     lm_styles.LanguageModelStore[model_name] = lm
 
 
+def patch_extract_code_for_none():
+    """Guard LCB's extract_code against None/non-str outputs so a single
+    failed generation (e.g. an HAProxy timeout) doesn't crash combine_results
+    and lose the entire run's outputs. Replaces None with "" so extract_code
+    returns "" (empty submission, scored as wrong)."""
+    from lcb_runner.utils import extraction_utils
+    _orig = extraction_utils.extract_code
+    def _safe(model_output, lmstyle):
+        if model_output is None:
+            return ""
+        if not isinstance(model_output, str):
+            try:
+                model_output = str(model_output)
+            except Exception:
+                return ""
+        return _orig(model_output, lmstyle)
+    extraction_utils.extract_code = _safe
+    from lcb_runner.runner import scenario_router
+    scenario_router.extract_code = _safe
+
+
 def main():
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--spark-model", default=os.environ.get("SPARK_BENCH_MODEL", "qwen3-coder-next"),
@@ -63,6 +84,7 @@ def main():
         return
 
     register_spark_model(args.spark_model)
+    patch_extract_code_for_none()
 
     # If no --model was passed through, supply it (the LCB default points at a
     # different model that isn't in our endpoint).
