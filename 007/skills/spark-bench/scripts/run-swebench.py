@@ -40,13 +40,15 @@ def main():
     ap.add_argument("--workers", type=int, default=1, help="concurrent problems (keep low on 4-core box)")
     ap.add_argument("--split", default="test", help="swebench split: test (canonical Verified) or dev")
     ap.add_argument("--subset", default="verified", help="swebench subset: verified | lite | full | multimodal")
-    ap.add_argument("--agent-config", default="config/default_backticks.yaml",
-                    help="SWE-agent config (relative to /opt/sweagent). Default is "
-                         "default_backticks.yaml — its parse_function=thought_action "
-                         "works with models LiteLLM doesn't auto-detect as supporting "
-                         "function calling (which is our locally-served vLLM endpoint). "
-                         "Use default.yaml if your model name is in LiteLLM's "
-                         "function-calling allowlist.")
+    ap.add_argument("--agent-config", default="/opt/skill/swebench/default_backticks_submit_strict.yaml",
+                    help="SWE-agent config. Default is our submit-strict derivative of "
+                         "default_backticks.yaml at /opt/skill/swebench/ — same tool "
+                         "bundles + parse_function=thought_action, but with the prompts "
+                         "rewritten to teach the submit protocol. Vanilla "
+                         "config/default_backticks.yaml had Qwen3 submitting 4/20 and "
+                         "GLM 1/20 because models wrote 'FIX COMPLETE' in text without "
+                         "ever calling submit. Bare paths are resolved relative to "
+                         "/opt/sweagent/ for the in-image configs; absolute paths used as-is.")
     ap.add_argument("--results-dir", default="/results")
     ap.add_argument("--name", default=None)
     # NOTE: temperature is set inside the agent config (default 0.0); passing

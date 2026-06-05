@@ -1,0 +1,92 @@
+# Derivative of /opt/sweagent/config/default_backticks.yaml with the
+# system_template + instance_template rewritten to TEACH THE SUBMIT PROTOCOL.
+#
+# Problem this fixes: vanilla default_backticks.yaml never tells the model
+# how to declare completion. Models (Qwen3-Coder-Next, GLM-4.7-Flash) end up
+# writing "FIX COMPLETE AND VERIFIED" in plain text and never calling
+# `submit`. SWE-Bench Verified submit rate observed at 4/20 (Qwen3) and 1/20
+# (GLM) — too low to discriminate model quality.
+#
+# Three changes:
+#   1. system_template now explicitly defines the submit protocol up front.
+#   2. instance_template gets a numbered step 6 calling submit.
+#   3. next_step_template gets a short reminder, so models that drift into
+#      monologue after a successful test run get pulled back to the protocol.
+#
+# Everything else (tool bundles, parse_function, history_processors) is
+# unchanged so this slots in as a drop-in replacement.
+
+agent:
+  templates:
+    system_template: |-
+      You are a helpful assistant that can interact with a computer to solve software-engineering tasks.
+
+      You work by issuing one shell command at a time using backtick blocks. After each command you see its output. You then decide on the next command. Continue until the task is complete.
+
+      WHEN YOU BELIEVE THE FIX IS COMPLETE you MUST call the `submit` command to record your answer. Writing "fix complete" or "I am done" in plain text DOES NOT count — only an actual `submit` command records the patch. Without calling `submit` your work is discarded as an empty answer regardless of how well you described it.
+
+      The protocol:
+        - Investigate, reproduce, edit, verify, then `submit`.
+        - If you find yourself summarizing your changes without running `submit`, stop and run `submit` instead.
+        - You have a finite number of steps. Do NOT spend steps explaining; spend them acting.
+    instance_template: |-
+      <uploaded_files>
+      {{working_dir}}
+      </uploaded_files>
+      I've uploaded a python code repository in the directory {{working_dir}}. Consider the following PR description:
+
+      <pr_description>
+      {{problem_statement}}
+      </pr_description>
+
+      Can you help me implement the necessary changes to the repository so that the requirements specified in the <pr_description> are met?
+      I've already taken care of all changes to any of the test files described in the <pr_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!
+      Your task is to make the minimal changes to non-tests files in the {{working_dir}} directory to ensure the <pr_description> is satisfied.
+      Follow these steps to resolve the issue:
+      1. As a first step, it might be a good idea to find and read code relevant to the <pr_description>
+      2. Create a script to reproduce the error and execute it with `python <filename.py>` using the bash tool, to confirm the error
+      3. Edit the sourcecode of the repo to resolve the issue
+      4. Rerun your reproduce script and confirm that the error is fixed!
+      5. Think about edgecases and make sure your fix handles them as well
+      6. When (and ONLY when) steps 1-5 are done, call `submit` to record your patch. This is required — writing "done" or "fix complete" in plain text does not submit anything.
+
+      Your thinking should be thorough and so it's fine if it's very long. But remember: every step you spend on summary instead of `submit` is a step closer to the step limit.
+    next_step_template: |-
+      OBSERVATION:
+      {{observation}}
+
+      Remember: if your fix is complete and verified, run `submit` now. Do not summarize — submit.
+    next_step_no_output_template: |-
+      Your command ran successfully and did not produce any output.
+
+      If your fix is complete and verified, run `submit` now.
+  tools:
+    bundles:
+      - path: tools/registry
+      - path: tools/edit_anthropic
+      - path: tools/review_on_submit_m
+    registry_variables:
+      USE_FILEMAP: 'true'
+      SUBMIT_REVIEW_MESSAGES:
+        - |
+          Thank you for your work on this issue. Please carefully follow the steps below to help review your changes.
+
+          1. If you made any changes to your code after running the reproduction script, please run the reproduction script again.
+            If the reproduction script is failing, please revisit your changes and make sure they are correct.
+            If you have already removed your reproduction script, please ignore this step.
+          2. Remove your reproduction script (if you haven't done so already).
+          3. If you have modified any TEST files, please revert them to the state they had before you started fixing the issue.
+            You can do this with `git checkout -- /path/to/test/file.py`. Use below <diff> to find the files you need to revert.
+          4. Run the submit command again to confirm.
+
+          Here is a list of all of your changes:
+
+          <diff>
+          {{diff}}
+          </diff>
+    enable_bash_tool: true
+    parse_function:
+      type: thought_action
+  history_processors:
+    - type: cache_control
+      last_n_messages: 2
