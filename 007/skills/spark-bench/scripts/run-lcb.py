@@ -46,7 +46,13 @@ def patch_extract_code_for_none():
     """Guard LCB's extract_code against None/non-str outputs so a single
     failed generation (e.g. an HAProxy timeout) doesn't crash combine_results
     and lose the entire run's outputs. Replaces None with "" so extract_code
-    returns "" (empty submission, scored as wrong)."""
+    returns "" (empty submission, scored as wrong).
+
+    Must be called BEFORE any lcb_runner.runner.* import: scenario_router does
+    `from ...extraction_utils import extract_code` at module-load time, so we
+    need to mutate extraction_utils.extract_code before that binding happens.
+    Only patches extraction_utils; we do NOT import scenario_router here
+    because it has a side-effect open() on a CWD-relative prompt file."""
     from lcb_runner.utils import extraction_utils
     _orig = extraction_utils.extract_code
     def _safe(model_output, lmstyle):
@@ -59,8 +65,6 @@ def patch_extract_code_for_none():
                 return ""
         return _orig(model_output, lmstyle)
     extraction_utils.extract_code = _safe
-    from lcb_runner.runner import scenario_router
-    scenario_router.extract_code = _safe
 
 
 def main():
