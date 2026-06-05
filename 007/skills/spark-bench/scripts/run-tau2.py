@@ -48,19 +48,32 @@ from pathlib import Path
 
 def patch_tau2_judge_model(judge_llm: str, judge_temp: float):
     """Override tau2's hardcoded gpt-4.1 defaults for NL assertions + env
-    interface. Must be called BEFORE any `tau2.cli` import so that downstream
-    `from tau2.config import DEFAULT_LLM_NL_ASSERTIONS` bindings pick up the
-    new value.
+    interface.
 
-    Why both:
+    Two-layer patch because of an import-order gotcha:
+      1. `tau2/__init__.py` eagerly imports `tau2.evaluator.evaluator`, which
+         transitively imports `tau2.evaluator.evaluator_nl_assertions`. That
+         module does `from tau2.config import DEFAULT_LLM_NL_ASSERTIONS` at
+         module-load — binding the NAME in its own namespace to the current
+         value of the config attribute (the original "gpt-4.1...").
+      2. Same for `tau2.environment.utils.interface_agent` which imports
+         `DEFAULT_LLM_ENV_INTERFACE`.
+
+    Mutating `tau2.config.DEFAULT_LLM_NL_ASSERTIONS` alone is therefore NOT
+    sufficient — the consumer modules' bound copies were captured BEFORE we
+    got a chance to mutate. So we also patch each consumer module directly.
+
+    Why patch tau2.config at all then? Anything imported later that does
+    `from tau2.config import ...` will see the new value. Defense in depth.
+
+    Why patch both:
       - NLAssertionsEvaluator (tau2/evaluator/evaluator_nl_assertions.py:122)
         uses DEFAULT_LLM_NL_ASSERTIONS to LLM-check natural-language
-        assertions on retail/airline tasks. Without this patch every retail
+        assertions on retail/airline tasks. Without the patch every retail
         task with NL assertions fails the assertion check with
-        litellm.NotFoundError, which silently undermeasures rewards.
+        litellm.NotFoundError, which undermeasures rewards.
       - InterfaceAgent (tau2/environment/utils/interface_agent.py:37) uses
-        DEFAULT_LLM_ENV_INTERFACE to drive environment-side LLM calls. Fewer
-        tasks hit this but the failure mode is the same.
+        DEFAULT_LLM_ENV_INTERFACE to drive environment-side LLM calls.
     """
     from tau2 import config as tau2_config
     tau2_config.DEFAULT_LLM_NL_ASSERTIONS = judge_llm
@@ -69,6 +82,17 @@ def patch_tau2_judge_model(judge_llm: str, judge_temp: float):
     tau2_config.DEFAULT_LLM_ENV_INTERFACE = judge_llm
     tau2_config.DEFAULT_LLM_ENV_INTERFACE_TEMPERATURE = judge_temp
     tau2_config.DEFAULT_LLM_ENV_INTERFACE_ARGS = {"temperature": judge_temp}
+
+    # Now patch the modules that already bound the old value at their
+    # own module-load time (which happens during the tau2 package import
+    # triggered above).
+    from tau2.evaluator import evaluator_nl_assertions
+    evaluator_nl_assertions.DEFAULT_LLM_NL_ASSERTIONS = judge_llm
+    evaluator_nl_assertions.DEFAULT_LLM_NL_ASSERTIONS_ARGS = {"temperature": judge_temp}
+
+    from tau2.environment.utils import interface_agent
+    interface_agent.DEFAULT_LLM_ENV_INTERFACE = judge_llm
+    interface_agent.DEFAULT_LLM_ENV_INTERFACE_ARGS = {"temperature": judge_temp}
 
 
 def main():
