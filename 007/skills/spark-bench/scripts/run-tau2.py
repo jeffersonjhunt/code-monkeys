@@ -135,9 +135,9 @@ def main():
 
     sys.argv = cli_argv
     from tau2.cli import main as tau2_main
-    rc = tau2_main()
+    rc = tau2_main() or 0  # tau2.cli.main returns None on success
     print(f"[run-tau2] exit {rc}")
-    sys.exit(rc if rc else 0)
+    sys.exit(rc)
 
 
 if __name__ == "__main__":
