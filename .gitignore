@@ -8,6 +8,7 @@ gitconfig
 openvpn/logs/
 **/*.DS_Store
 .DS_Store
+._*
 .configured
 .claude/
 007/skills/skills-ref/.venv
