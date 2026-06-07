@@ -93,3 +93,11 @@ Track D (validation with known-good model). Long-term target Qwen3-Coder-Next-NV
 - [x] `haproxy.cfg` → `haproxy.cfg.template` with `# __REPLICAS__` marker; `deploy.sh` renders before sync; generated cfg gitignored
 - [x] Living docs updated (README, CLAUDE.md, architecture.md, runbook.md); historical docs preserved
 - [x] Validated against live cluster: `deploy.sh all` clean, all three containers recovered to healthy, smoke-test PASS through HAProxy + each replica direct
+
+## Phase 11 — Primate rename + cross-GPU unification (2026-06-07)
+
+- [x] GPU primates renamed `vllm-spark`→`cuda-vllm`, `comfy-ui-spark`→`cuda-comfy`, `llama-cpp-spark`→`cuda-llama-cpp`; `cuda-vllm` arch broadened to native sm_89/120/121 with `MAX_JOBS`/`NVCC_THREADS` build-args (code-monkeys `primates/`)
+- [x] Cluster `compose.yml` default flipped to `${VLLM_IMAGE:-cuda-vllm:latest}`; `.env(.example)`, READMEs, `CLAUDE.md`, `ship-image.sh`, `model-pull.sh` updated
+- [x] Rolled both Sparks to `cuda-vllm:latest` one at a time (retag of the identical sm_121 artifact → compose flip → recreate); cluster never lost a backend; old `*-spark` tags dropped
+- [x] Smoke-test PASS through HAProxy (`starsky:8080`) + both replicas direct (`:8000`) on `qwen3-coder-next`
+- [x] Cross-GPU proof: fresh `cuda-vllm` built on x86 4090 `ren` (job-tuned), shipped to `stimpy`, smoke-tested on both — builds/serves on sm_89 as well as sm_121
