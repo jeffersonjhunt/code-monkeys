@@ -7,8 +7,8 @@
 #   ./ship-image.sh <src-host> <dst-host>|all <image:tag>
 #
 # Examples:
-#   ./ship-image.sh starsky hutch vllm-spark:latest
-#   ./ship-image.sh starsky all   vllm-spark:latest    # every replica except src
+#   ./ship-image.sh starsky hutch cuda-vllm:latest
+#   ./ship-image.sh starsky all   cuda-vllm:latest    # every replica except src
 #
 # Streams `docker save | zstd` through ssh to `zstd -d | docker load` on the
 # destination — no intermediate disk file on either side. zstd -3 is a sweet
@@ -31,8 +31,8 @@ usage() {
 Usage: $0 <src-host> <dst-host>|all <image:tag>
 
 Examples:
-  $0 starsky hutch vllm-spark:latest
-  $0 starsky all   vllm-spark:latest
+  $0 starsky hutch cuda-vllm:latest
+  $0 starsky all   cuda-vllm:latest
 EOF
   exit 2
 }

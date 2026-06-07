@@ -10,9 +10,11 @@ ARG CUDA_BASE=cuda-base:runtime
 
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
-# CUDA architecture for DGX Spark Blackwell GPUs (sm_121). Override to e.g.
-# "89;120;121" (cuda-base's default) to build a cross-GPU binary.
-ARG CUDA_DOCKER_ARCH=121
+# Cross-GPU by default: sm_89 (RTX 4090) + sm_120 (RTX 5090) + sm_121 (DGX
+# Spark). llama.cpp's CUDA build is cheap and low-RAM, so building all three
+# is fine on any of the boxes. Override to a single arch (e.g. "121") for a
+# slimmer, faster single-target build.
+ARG CUDA_DOCKER_ARCH=89;120;121
 
 # Clone llama.cpp at build time
 ARG LLAMA_CPP_VERSION=b9296

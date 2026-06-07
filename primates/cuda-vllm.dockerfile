@@ -10,12 +10,14 @@ ARG CUDA_BASE=cuda-base:devel
 
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
-# Spark-only: sm_121 native + sm_120 PTX fallback. Drops sm_80/87/89/90/100
-# cubins from _C.so / _moe_C.so — image is no longer portable to other GPUs
-# but shrinks ~1.5 GB. The native sm_121 build of vLLM's cutlass extensions
-# is the whole point of this image — upstream vllm-openai stops at sm_120
-# native and crashes on FP8 dense / NVFP4 MoE on DGX Spark.
-ARG TORCH_CUDA_ARCH_LIST="12.0 12.1+PTX"
+# Cross-GPU: sm_89 (RTX 4090 / Ada) + sm_120 (RTX 5090) + sm_121 (DGX Spark
+# GB10) native, with sm_121 PTX fallback. The native sm_121 build of vLLM's
+# cutlass extensions is the whole reason this image exists — upstream
+# vllm-openai stops at sm_120 native and crashes on FP8 dense / NVFP4 MoE on
+# DGX Spark. Including 8.9 keeps the image runnable on the 4090 boxes too
+# (~1.5 GB larger than a Spark-only build). Override to "12.0 12.1+PTX" for a
+# slimmer Spark-only build.
+ARG TORCH_CUDA_ARCH_LIST="8.9 12.0 12.1+PTX"
 ARG VLLM_VERSION=v0.21.0
 # Keep TORCH_VERSION at 2.11.0: vLLM v0.21.0's requirements/cuda.txt still
 # pins torch==2.11.0 / torchvision==0.26.0 / torchaudio==2.11.0. Bumping
@@ -46,7 +48,7 @@ RUN python3 -m venv /opt/venv \
 
 # PyTorch must be present before building vLLM extensions. cu131 wheels do
 # not exist for aarch64; cu130 wheel runs fine on a cu131.x runtime base
-# (same pattern as primates/comfy-ui-spark.dockerfile). PEP 440 makes
+# (same pattern as primates/cuda-comfy.dockerfile). PEP 440 makes
 # torch==2.11.0+cu130 satisfy any subsequent torch==2.11.0 requirement.
 RUN pip install torch==${TORCH_VERSION} --index-url ${TORCH_INDEX}
 
@@ -74,13 +76,17 @@ RUN pip install \
 # future tweaks don't invalidate apt/torch/cuda.txt layers.
 #
 # vLLM's setup.py:191 computes ninja -j as (MAX_JOBS // NVCC_THREADS).
-# Heavy cutlass templates (NVFP4, MLA, machete, qutlass) want 10–15 GB each;
-# 8 in flight OOMs a 121 GB Spark. MAX_JOBS=16 / NVCC_THREADS=4 gives 4
-# parallel ninja jobs × 4 nvcc threads = 16 active compile threads,
-# ~48–60 GB peak with comfortable margin.
+# Heavy cutlass templates (NVFP4, MLA, machete, qutlass) want 10–15 GB each.
+# Defaults (MAX_JOBS=16 / NVCC_THREADS=4 → 4 parallel ninja jobs, ~48–60 GB
+# peak) are sized for a 121 GB DGX Spark. On a low-RAM x86 host (the 4090 boxes
+# have ~30 GB) override BOTH to a small equal value to force a single parallel
+# job, e.g. --build-arg MAX_JOBS=6 --build-arg NVCC_THREADS=6 → 1 ninja job,
+# ~15 GB peak. Slower (cutlass templates compile mostly serially) but fits.
+ARG MAX_JOBS=16
+ARG NVCC_THREADS=4
 ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
-ENV NVCC_THREADS=4
-ENV MAX_JOBS=16
+ENV NVCC_THREADS=${NVCC_THREADS}
+ENV MAX_JOBS=${MAX_JOBS}
 
 # Build vLLM with the explicit arch list so cutlass blobs come out as sm_121.
 RUN cd vllm && pip install . --no-build-isolation
@@ -91,11 +97,11 @@ RUN python3 -c 'import vllm; print("vllm", vllm.__version__)' \
 
 FROM ${CUDA_BASE} AS runtime
 
-# cuda-base sets a broad cross-GPU TORCH_CUDA_ARCH_LIST, but vllm-spark is
-# Spark-pinned: re-pin so FlashInfer/Triton runtime JIT emit only sm_120/sm_121
-# at first forward pass rather than also compiling sm_89. Matches the build
-# stage's arch list above.
-ENV TORCH_CUDA_ARCH_LIST="12.0 12.1+PTX"
+# Match the build stage's arch list so FlashInfer/Triton runtime JIT emit the
+# right cubins at first forward pass (sm_89 on the 4090s, sm_120/sm_121 on
+# Blackwell). cuda-base already sets this, but pin it explicitly here so the
+# image is self-describing regardless of base drift.
+ENV TORCH_CUDA_ARCH_LIST="8.9 12.0 12.1+PTX"
 
 # codemonkey user, nvtop, sudo/zsh/ca-certificates come from cuda-base. This
 # adds vLLM's runtime extras (python3 + the gcc/g++/libgomp1 the JIT paths

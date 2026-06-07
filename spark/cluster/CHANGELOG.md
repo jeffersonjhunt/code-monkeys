@@ -2,7 +2,11 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-06-04 (latest)
+## 2026-06-07 (latest)
+
+- **GPU primates renamed and unified cross-GPU.** `vllm-spark` → **`cuda-vllm`**, `comfy-ui-spark` → `cuda-comfy`, `llama-cpp-spark` → `cuda-llama-cpp` (the `-spark` suffix no longer fits now that the family builds and runs on x86/sm_89 4090s as well as the aarch64/sm_121 Sparks). `cuda-vllm` now ships **native sm_89/120/121** by default (`TORCH_CUDA_ARCH_LIST="8.9 12.0 12.1+PTX"`, runtime JIT arch matched), and exposes `MAX_JOBS`/`NVCC_THREADS` build-args so it can be built on the 30 GB 4090 boxes (override to `6`/`6` → single parallel cutlass job, ~15 GB peak) as well as the 128 GB Sparks (defaults). The cluster's `compose.yml` default flipped to `${VLLM_IMAGE:-cuda-vllm:latest}`; `.env(.example)`, the vllm/cluster READMEs, `CLAUDE.md`, and the `spark-build` skill were updated to match. **No served-model behavior change** on the Sparks — same sm_121 cutlass, same model. Dated historical docs (parking-lot, decisions, the old build-plan) keep the `vllm-spark` name as the record of what existed then. Redeploy rolls the renamed image through one replica at a time via `spark-build`.
+
+## 2026-06-04
 
 - **Spark images now build from a shared `cuda-base` primate.** `vllm-spark`, `comfy-ui-spark`, and `llama-cpp-spark` no longer `FROM nvidia/cuda:*` directly — their shipping stages extend `cuda-base` (one dockerfile, two flavors `:runtime` + `:devel`), which centralizes the codemonkey user, the sudo/zsh/git/curl floor, **`nvtop`** (now in every GPU image), and cross-GPU arch defaults (sm_89/sm_120/sm_121). The served `vllm-spark` runtime extends `cuda-base:devel` and re-pins `TORCH_CUDA_ARCH_LIST="12.0 12.1+PTX"` so FlashInfer's runtime JIT stays Spark-only — **no change to served-model behavior**. Rebuild path is unchanged: `make <img>.build` (and the `spark-build` skill) now build `cuda-base` first as a prerequisite, cached after the first run. The Makefile `_nv_check` guard was also generalized to pass on any NVIDIA host (x86 boxes with a 4090/5090, not just `-nvidia`-kernel Sparks), so the family is now build/run-validated on x86 (host `ren`) as well as Spark. No cluster redeploy required until the next image rebuild rolls through via `spark-build`. See root `CLAUDE.md` / `README.md` and `primates/CLAUDE.md` for the image hierarchy.
 

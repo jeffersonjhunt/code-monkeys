@@ -4,9 +4,9 @@
 #   make cuda-base.build  ->  cuda-base:runtime  AND  cuda-base:devel
 #
 #   cuda-base:runtime  — slim; for images that only run prebuilt binaries
-#                        (comfy-ui-spark; llama-cpp-spark final stages).
+#                        (cuda-comfy; cuda-llama-cpp final stages).
 #   cuda-base:devel    — ships nvcc + headers; for images that JIT-compile
-#                        CUDA at runtime (vllm-spark, whose FlashInfer/Triton
+#                        CUDA at runtime (cuda-vllm, whose FlashInfer/Triton
 #                        paths shell out to nvcc on the first forward pass).
 #
 # Cross-GPU by design. nvidia/cuda:* is a multi-arch manifest, so buildx
@@ -16,7 +16,8 @@
 #   sm_120 — RTX 5090 (Blackwell, x86)
 #   sm_121 — DGX Spark GB10 (Blackwell, aarch64)
 # These are defaults, not mandates: an image with an expensive source build
-# (vllm-spark) narrows the list to its host arch to keep build time sane.
+# (cuda-vllm) may narrow the list via --build-arg TORCH_CUDA_ARCH_LIST to a
+# single host arch to keep build time / image size down.
 
 ARG UBUNTU_VERSION=24.04
 ARG CUDA_VERSION=13.2.1
@@ -29,8 +30,8 @@ FROM ${BASE_CUDA_CONTAINER}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Cross-GPU compile/JIT defaults. Children that source-build (vllm-spark)
-# override these to a single host arch; PyTorch-wheel images (comfy-ui-spark)
+# Cross-GPU compile/JIT defaults. Children that source-build (cuda-vllm) can
+# override these to a single host arch; PyTorch-wheel images (cuda-comfy)
 # inherit the broad list so custom-node CUDA ops compile for any of the three.
 ARG TORCH_CUDA_ARCH_LIST="8.9 12.0 12.1+PTX"
 ARG CUDA_DOCKER_ARCH="89;120;121"

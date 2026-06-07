@@ -1,12 +1,12 @@
 # spark-cluster
 
-vLLM replica cluster across two GPU nodes (designed for NVIDIA DGX Spark — Blackwell GB10, 128 GB UMA — but the orchestration is host-name agnostic and works with any pair of SSH-reachable boxes that meet the requirements below). Serves an OpenAI-compatible HTTP API behind HAProxy. Runs the locally-built `vllm-spark` image (sm_121-native cutlass — built from `../../primates/vllm-spark.dockerfile`) which unblocks both FP8 dense and NVFP4 MoE paths that crash on upstream `vllm/vllm-openai`. See `docs/parking-lot.md` for the resolved-canary write-ups.
+vLLM replica cluster across two GPU nodes (designed for NVIDIA DGX Spark — Blackwell GB10, 128 GB UMA — but the orchestration is host-name agnostic and works with any pair of SSH-reachable boxes that meet the requirements below). Serves an OpenAI-compatible HTTP API behind HAProxy. Runs the locally-built `cuda-vllm` image (native sm_89/120/121 cutlass — built from `../../primates/cuda-vllm.dockerfile`) which unblocks both FP8 dense and NVFP4 MoE paths that crash on upstream `vllm/vllm-openai`. See `docs/parking-lot.md` for the resolved-canary write-ups.
 
 ## Requirements
 
 Two hosts that:
 - Run Ubuntu (or any distro with Docker, `docker compose`, `zstd`, and `host` available)
-- Each have an NVIDIA GPU + `nvidia-container-toolkit` (the included `vllm-spark` image is built for sm_121 / Blackwell; rebuild with a different `TORCH_CUDA_ARCH_LIST` for other GPUs)
+- Each have an NVIDIA GPU + `nvidia-container-toolkit` (the included `cuda-vllm` image ships native sm_89/120/121; override `TORCH_CUDA_ARCH_LIST` for a slimmer single-target build)
 - Are SSH-reachable from your workstation as a single shared user with passwordless sudo and membership in the `docker` group
 - Resolve each other's short names via DNS (or `/etc/hosts`)
 
@@ -58,11 +58,11 @@ Deploy:
 
 `deploy.sh` rsyncs the relevant `src/compose/<stack>/` directory to `~/spark-deploy/<stack>/` on the host and runs `docker compose up -d`. For the haproxy stack it renders `haproxy.cfg` from `haproxy.cfg.template` with one `server` line per replica before syncing.
 
-When the `vllm-spark` image is rebuilt in `../../primates/`, ship it from the box that built it to the others:
+When the `cuda-vllm` image is rebuilt in `../../primates/`, ship it from the box that built it to the others:
 
 ```bash
-./src/scripts/ship-image.sh <src-host> <dst-host> vllm-spark:latest   # one dest
-./src/scripts/ship-image.sh <src-host> all        vllm-spark:latest   # every other replica
+./src/scripts/ship-image.sh <src-host> <dst-host> cuda-vllm:latest   # one dest
+./src/scripts/ship-image.sh <src-host> all        cuda-vllm:latest   # every other replica
 ```
 
 It streams `docker save | zstd -3 | ssh | docker load` end-to-end (~3.5 min for 6.7 GB compressed over LAN). Then `deploy.sh` to pick up the new image.

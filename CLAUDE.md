@@ -19,7 +19,7 @@ This is a personal development environment repository (dotfiles + containerized 
 - **`claude/`**: Claude Code settings and custom slash commands (symlinked to `~/.claude` by setup, copied into claude primate image)
 - **`007/skills/`**: Agent skills library — portable skills installed into `~/.kiro/skills/` and `~/.claude/skills/` by `setup`. Run `make test` from `007/` to test. See `007/skills/CONTRIBUTING.md` for authoring guidelines.
 - **`Library/`**: macOS-only assets (`KeyBindings/DefaultKeyBinding.dict` is copied to `~/Library/KeyBindings` by setup)
-- **`spark/`**: DGX Spark cluster ops. `spark/cluster/` is a host-name-agnostic vLLM replica cluster (compose stacks, scripts, runbook) that consumes the `vllm-spark` primate. Hosts and roles come from a gitignored `spark/cluster/cluster.env`; the maintainer's deployment is two DGX Spark nodes (starsky, hutch). See `spark/cluster/CLAUDE.md`.
+- **`spark/`**: DGX Spark cluster ops. `spark/cluster/` is a host-name-agnostic vLLM replica cluster (compose stacks, scripts, runbook) that consumes the `cuda-vllm` primate. Hosts and roles come from a gitignored `spark/cluster/cluster.env`; the maintainer's deployment is two DGX Spark nodes (starsky, hutch). See `spark/cluster/CLAUDE.md`.
 
 ## Build Commands
 
@@ -33,9 +33,10 @@ make <name>.build           # Build a specific image (claude, miniforge3, embedd
 make all UNSAFE_SSL=true    # Build with SSL verification disabled (tainted build)
 make all FRESH=false        # Skip freshclam during codemonkey build (faster, no ClamAV DB update)
 make cuda-base.build        # Shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the spark targets
-make llama-cpp-spark.build  # Requires NVIDIA kernel
-make comfy-ui-spark.build   # Requires NVIDIA kernel
-make vllm-spark.build       # Requires NVIDIA kernel — vLLM v0.21.0 source build, sm_121 native cutlass
+make cuda-llama-cpp.build   # Requires NVIDIA kernel — llama.cpp, cross-GPU sm_89/120/121
+make cuda-comfy.build       # Requires NVIDIA kernel — ComfyUI, cross-GPU
+make cuda-vllm.build        # Requires NVIDIA kernel — vLLM v0.21.0 source build, native sm_89/120/121 cutlass
+make cuda                   # Base + all standard + the three cuda-* GPU images
 make clean                  # Remove all built images
 ```
 
@@ -49,21 +50,21 @@ debian:13-slim → codemonkey → miniforge3 (miniforge3-env) → claude (claude
                             → minion
 
 nvidia/cuda:13.2.1 → cuda-base (runtime + devel flavors; nvtop, codemonkey user, cross-GPU arch defaults)
-                       → llama-cpp-spark (multi-stage: full/light/server)
-                       → comfy-ui-spark
-                       → vllm-spark      (vLLM v0.21.0 source, sm_121 native cutlass — backs the spark-cluster)
+                       → cuda-llama-cpp (multi-stage: full/light/server; cross-GPU sm_89/120/121)
+                       → cuda-comfy
+                       → cuda-vllm       (vLLM v0.21.0 source, native sm_89/120/121 cutlass — backs the spark-cluster, runs on the 4090s)
 ```
 
 Miniforge3-derived images each get a conda environment (`<image>-env`) that is auto-activated at login. See `primates/CLAUDE.md` for details on adding this to new images.
 
-The codemonkey/miniforge3 chain is **arch-aware via runtime detection** (`uname -m`, `dpkg --print-architecture`) and **TARGETARCH** — the same dockerfiles build cleanly on both aarch64 (Mjolnir, primary dev) and x86_64 (intel-nuc.tworivers, used for `spark-bench`). The CUDA chain builds from `cuda-base`, whose arch defaults span sm_89 (RTX 4090), sm_120 (RTX 5090), and sm_121 (DGX Spark) so the family runs on x86 NVIDIA boxes as well as Spark; `vllm-spark` is the exception — it narrows to sm_120/sm_121 because its cutlass source build is too expensive to fan out across every arch.
+The codemonkey/miniforge3 chain is **arch-aware via runtime detection** (`uname -m`, `dpkg --print-architecture`) and **TARGETARCH** — the same dockerfiles build cleanly on both aarch64 (Mjolnir, primary dev) and x86_64 (intel-nuc.tworivers, used for `spark-bench`). The CUDA chain builds from `cuda-base`, whose arch defaults span sm_89 (RTX 4090), sm_120 (RTX 5090), and sm_121 (DGX Spark) so the family runs on x86 NVIDIA boxes as well as Spark. `cuda-vllm` now ships native sm_89 alongside sm_120/sm_121 (so it runs on the 4090s too); pass `--build-arg TORCH_CUDA_ARCH_LIST="12.0 12.1+PTX"` for a slimmer Spark-only build.
 
 ## Key Conventions
 
 - Dockerfiles use `<image-name>.dockerfile` naming; `codemonkey.dockerfile` lives at root, all others in `primates/`
 - Container user is `codemonkey` (UID/GID 1000) with sudo, shell is zsh with Oh-My-Zsh
 - APT cleanup pattern in Dockerfiles: `apt-get autoclean -y && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*`
-- Standard images target aarch64 (ARM64); CUDA images build from `cuda-base` with cross-GPU arch defaults (sm_89/sm_120/sm_121), except `vllm-spark` which pins sm_120/sm_121
+- Standard images target aarch64 (ARM64); the `cuda-*` images build from `cuda-base` with cross-GPU arch defaults (sm_89/sm_120/sm_121), including `cuda-vllm` (override its `TORCH_CUDA_ARCH_LIST` for a slimmer single-target build)
 - Shell config is layered: `zshrc.template` sources `~/.zbase` and `~/.zaliases`; functions live in `zfuncs`
 - Git remote is GitHub; main branch is `master`
 - Vault files (`*.vault`) and personal assets (`face`, `gitconfig`) are gitignored — secrets are never committed

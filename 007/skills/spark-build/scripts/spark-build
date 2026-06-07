@@ -3,7 +3,7 @@
 # See ../SKILL.md for usage and rationale.
 set -euo pipefail
 
-ALL_IMAGES=(llama-cpp-spark comfy-ui-spark vllm-spark)
+ALL_IMAGES=(cuda-llama-cpp cuda-comfy cuda-vllm)
 
 usage() {
   cat <<'EOF'
@@ -19,7 +19,7 @@ Options:
                     cluster.env, auto-suffixed with --host's domain when
                     --host is an FQDN and LB_HOST is bare).
   --image NAME      Image to build; repeatable. NAME may be "all" or one of:
-                    llama-cpp-spark, comfy-ui-spark, vllm-spark.
+                    cuda-llama-cpp, cuda-comfy, cuda-vllm.
                     Default: all three.
   --sync MODE       Code sync to host: "rsync" (working tree) or "git".
                     Default: rsync.
@@ -80,7 +80,7 @@ IMAGES=("${RESOLVED[@]}")
 # validate image names
 for img in "${IMAGES[@]}"; do
   case "$img" in
-    llama-cpp-spark|comfy-ui-spark|vllm-spark) ;;
+    cuda-llama-cpp|cuda-comfy|cuda-vllm) ;;
     *) echo "Error: unknown image '$img'. Valid: ${ALL_IMAGES[*]} (or 'all')" >&2; exit 1 ;;
   esac
 done

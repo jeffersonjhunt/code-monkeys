@@ -10,7 +10,7 @@
 #   ./model-pull.sh all     QuantTrio/Qwen3.6-35B-A3B-AWQ
 #
 # Reads HF_TOKEN from ~$SSH_USER/spark-deploy/vllm/.env on the remote host
-# (deployed by deploy.sh). Uses the locally-built vllm-spark image's `hf` CLI
+# (deployed by deploy.sh). Uses the locally-built cuda-vllm image's `hf` CLI
 # via `--entrypoint hf` so we don't need huggingface_hub installed on the host.
 
 set -euo pipefail
@@ -46,7 +46,7 @@ pull_one() {
       --entrypoint hf \
       -v ~/Models:/models \
       --env-file ~/spark-deploy/vllm/.env \
-      vllm-spark:latest \
+      cuda-vllm:latest \
       download '$REPO' --local-dir '/models/$REPO' --quiet
     du -sh ~/Models/$REPO | sed 's/^/   /'
   "

@@ -1,6 +1,6 @@
 ---
 name: spark-build
-description: Build spark-class primate images (llama-cpp-spark, comfy-ui-spark, vllm-spark) on a cluster node while draining that node from the cluster, so users keep getting served by the remaining replicas. Stops the vLLM container on the target node first (frees the unified memory the build needs) and restarts it after the build finishes.
+description: Build the cuda-* primate images (cuda-llama-cpp, cuda-comfy, cuda-vllm) on a cluster node while draining that node from the cluster, so users keep getting served by the remaining replicas. Stops the vLLM container on the target node first (frees the unified memory the build needs) and restarts it after the build finishes.
 license: Apache-2.0
 metadata:
   author: ooe
@@ -19,7 +19,7 @@ The spark-class primate images can only build on an NVIDIA-kernel host with a Bl
 
 ## When to Use
 
-- Bumping pins in `primates/{llama-cpp-spark,comfy-ui-spark,vllm-spark}.dockerfile`
+- Bumping pins in `primates/{cuda-llama-cpp,cuda-comfy,cuda-vllm}.dockerfile`
 - Rebuilding any spark image after a code change
 - Rolling a vLLM version through the cluster one replica at a time
 
@@ -53,11 +53,11 @@ When `--host` is an FQDN and `LB_HOST` from `cluster.env` is bare, the skill aut
 # Build all three spark images on the default non-LB replica (rsync working tree)
 ./scripts/spark-build
 
-# Build just vllm-spark on a specific host
-./scripts/spark-build --host hutch.tworivers --image vllm-spark
+# Build just cuda-vllm on a specific host
+./scripts/spark-build --host hutch.tworivers --image cuda-vllm
 
 # Build multiple images
-./scripts/spark-build --image llama-cpp-spark --image vllm-spark
+./scripts/spark-build --image cuda-llama-cpp --image cuda-vllm
 
 # Build a specific committed ref instead of the working tree
 ./scripts/spark-build --sync git --ref master

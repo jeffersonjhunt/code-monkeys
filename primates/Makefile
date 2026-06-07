@@ -23,7 +23,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all                    Build codemonkey base + all standard images"
-	@echo "  spark                  Build all + llama-cpp-spark + comfy-ui-spark (requires NVIDIA kernel)"
+	@echo "  cuda                   Build all + cuda-llama-cpp + cuda-comfy + cuda-vllm (requires NVIDIA kernel)"
 	@echo "  codemonkey.build       Build the codemonkey base image"
 	@echo "  miniforge3.build       Build Miniforge3 (conda for aarch64)"
 	@echo "  claude.build           Build claude-code environment"
@@ -34,9 +34,9 @@ help:
 	@echo "  huggingface.build      Build Hugging Face environment (python3 venv, hf cli)"
 	@echo "  minion.build           Build minion (bare codemonkey extension)"
 	@echo "  cuda-base.build        Build the shared CUDA base (cuda-base:runtime + cuda-base:devel)"
-	@echo "  llama-cpp-spark.build  Build llama.cpp for DGX Spark (requires NVIDIA kernel)"
-	@echo "  comfy-ui-spark.build   Build ComfyUI for DGX Spark (requires NVIDIA kernel)"
-	@echo "  vllm-spark.build       Build vLLM with native sm_121 kernels (requires NVIDIA kernel)"
+	@echo "  cuda-llama-cpp.build   Build llama.cpp (cross-GPU sm_89/120/121; requires NVIDIA kernel)"
+	@echo "  cuda-comfy.build       Build ComfyUI (cross-GPU; requires NVIDIA kernel)"
+	@echo "  cuda-vllm.build        Build vLLM with native sm_89/120/121 kernels (requires NVIDIA kernel)"
 	@echo "  spark-bench.build      Build LLM eval harness primate (build on x86 host; see 007/skills/spark-bench/)"
 	@echo "  upgrade                Upgrade all existing primate home volumes with latest dotfiles"
 	@echo "  <name>.upgrade         Upgrade a specific primate home volume"
@@ -62,25 +62,29 @@ cuda-base.build:
 	docker buildx build $(BUILD_ARGS) --build-arg CUDA_FLAVOR=devel   -t cuda-base:devel   -f cuda-base.dockerfile .
 
 .PHONY:
-llama-cpp-spark.build: _nv_check cuda-base.build
-	echo "Building llama.cpp image..."
-	docker buildx build $(BUILD_ARGS) -t llama-cpp-spark:latest --target full -f llama-cpp-spark.dockerfile .
+cuda-llama-cpp.build: _nv_check cuda-base.build
+	echo "Building cuda-llama-cpp image..."
+	docker buildx build $(BUILD_ARGS) -t cuda-llama-cpp:latest --target full -f cuda-llama-cpp.dockerfile .
 
 .PHONY:
-comfy-ui-spark.build: _nv_check cuda-base.build
-	echo "Building comfy-ui-spark image..."
-	docker buildx build $(BUILD_ARGS) -t comfy-ui-spark:latest -f comfy-ui-spark.dockerfile .
+cuda-comfy.build: _nv_check cuda-base.build
+	echo "Building cuda-comfy image..."
+	docker buildx build $(BUILD_ARGS) -t cuda-comfy:latest -f cuda-comfy.dockerfile .
 
 .PHONY:
-vllm-spark.build: _nv_check cuda-base.build
-	echo "Building vllm-spark image..."
-	docker buildx build $(BUILD_ARGS) -t vllm-spark:latest -f vllm-spark.dockerfile .
+cuda-vllm.build: _nv_check cuda-base.build
+	echo "Building cuda-vllm image..."
+	docker buildx build $(BUILD_ARGS) -t cuda-vllm:latest -f cuda-vllm.dockerfile .
 
 .PHONY:
 all: codemonkey.build $(addsuffix .build,$(TARGETS))
 
 .PHONY:
-spark: all llama-cpp-spark.build comfy-ui-spark.build vllm-spark.build
+cuda: all cuda-llama-cpp.build cuda-comfy.build cuda-vllm.build
+
+# Deprecated alias — kept so existing muscle memory / scripts keep working.
+.PHONY:
+spark: cuda
 
 .PHONY:
 claude.build:
@@ -149,7 +153,7 @@ upgrade:
 .PHONY:
 clean:
 	echo "Cleaning up images..."
-	docker rmi -f $(TARGETS:%=%:latest) codemonkey:latest llama-cpp-spark:latest comfy-ui-spark:latest vllm-spark:latest cuda-base:runtime cuda-base:devel || true
+	docker rmi -f $(TARGETS:%=%:latest) codemonkey:latest cuda-llama-cpp:latest cuda-comfy:latest cuda-vllm:latest cuda-base:runtime cuda-base:devel || true
 
 # Guard for the CUDA image targets. Passes on any host that can build/run
 # them: a DGX Spark (-nvidia kernel), or an x86/other box with an NVIDIA GPU

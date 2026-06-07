@@ -1,4 +1,4 @@
-# comfy-ui-spark — ComfyUI on the shared CUDA base (runtime flavor).
+# cuda-comfy — ComfyUI on the shared CUDA base (runtime flavor).
 # The codemonkey user, nvtop, and the sudo/zsh/git/curl floor come from
 # cuda-base; ComfyUI rides PyTorch's prebuilt wheels (already multi-arch),
 # so it inherits cuda-base's broad TORCH_CUDA_ARCH_LIST and runs on
@@ -38,5 +38,5 @@ RUN chown -R codemonkey:codemonkey /app
 EXPOSE 8188
 USER codemonkey
 
-COPY comfy-ui-spark-entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY cuda-comfy-entrypoint.sh /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["entrypoint.sh"]

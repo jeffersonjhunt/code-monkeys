@@ -65,9 +65,9 @@ debian:13-slim → codemonkey → miniforge3 → claude
                              → huggingface
                              → minion
 
-nvidia/cuda:13.2.1 → cuda-base → llama-cpp-spark  (multi-stage: full/light/server)
-                              → comfy-ui-spark
-                              → vllm-spark      (vLLM with sm_121 native cutlass)
+nvidia/cuda:13.2.1 → cuda-base → cuda-llama-cpp  (multi-stage: full/light/server)
+                              → cuda-comfy
+                              → cuda-vllm       (vLLM with native sm_89/120/121 cutlass)
 ```
 
 | Image | Purpose |
@@ -82,9 +82,9 @@ nvidia/cuda:13.2.1 → cuda-base → llama-cpp-spark  (multi-stage: full/light/s
 | **huggingface** | Adds python3 venv and huggingface-cli |
 | **minion** | Bare codemonkey extension (general-purpose runner) |
 | **cuda-base** | Shared CUDA base for the GPU images (one dockerfile, two flavors — `cuda-base:runtime` + `cuda-base:devel`). Adds `nvtop`, the codemonkey user, and cross-GPU arch defaults (sm_89 RTX 4090 / sm_120 RTX 5090 / sm_121 DGX Spark) so the family runs on x86 NVIDIA boxes as well as Spark |
-| **llama-cpp-spark** | llama.cpp for NVIDIA GPUs (from `cuda-base`; default arch sm_121 Blackwell) |
-| **comfy-ui-spark** | ComfyUI for NVIDIA GPUs (from `cuda-base:runtime`; cross-GPU via PyTorch wheels) |
-| **vllm-spark** | vLLM v0.21.0 source build with sm_121 native cutlass (runtime from `cuda-base:devel`) — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE that crashes on upstream `vllm/vllm-openai` |
+| **cuda-llama-cpp** | llama.cpp for NVIDIA GPUs (from `cuda-base`; cross-GPU default arch sm_89/120/121) |
+| **cuda-comfy** | ComfyUI for NVIDIA GPUs (from `cuda-base:runtime`; cross-GPU via PyTorch wheels) |
+| **cuda-vllm** | vLLM v0.21.0 source build with native sm_89/120/121 cutlass (runtime from `cuda-base:devel`) — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE that crashes on upstream `vllm/vllm-openai`, and runs on the 4090s |
 
 ### Building
 
@@ -92,7 +92,7 @@ nvidia/cuda:13.2.1 → cuda-base → llama-cpp-spark  (multi-stage: full/light/s
 cd primates
 make help                   # show all targets
 make all                    # build codemonkey + all standard images
-make spark                  # build all + GPU images (requires an NVIDIA GPU)
+make cuda                   # build all + the cuda-* GPU images (requires an NVIDIA GPU)
 make cuda-base.build        # shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the GPU targets
 make claude.build           # build a single image
 make all FORCE=1            # rebuild from scratch (--no-cache)
@@ -159,7 +159,7 @@ make upgrade                 # upgrade all
 - Shell: zsh with oh-my-zsh (jjh theme — based on ys, adds conda env display)
 - Home: `/home/codemonkey` (persisted via named Docker volume)
 - Workspace: `/home/codemonkey/workspace` (bind mount from host)
-- Standard images target aarch64 (ARM64); the CUDA images build from `cuda-base` with cross-GPU arch defaults (sm_89/sm_120/sm_121), except `vllm-spark` which pins sm_120/sm_121. The `make` GPU targets pass on any NVIDIA host (an `-nvidia` kernel, or `nvidia-smi`/`lspci` seeing a card), not just DGX Spark
+- Standard images target aarch64 (ARM64); the `cuda-*` images build from `cuda-base` with cross-GPU arch defaults (sm_89/sm_120/sm_121), including `cuda-vllm` (override its `TORCH_CUDA_ARCH_LIST` for a slimmer single-target build). The `make` GPU targets pass on any NVIDIA host (an `-nvidia` kernel, or `nvidia-smi`/`lspci` seeing a card), not just DGX Spark
 - `TAINTED_BUILD` env var: `true` if built with `UNSAFE_SSL=true` (login warning displayed), `false` otherwise. Note: `UNSAFE_SSL` only relaxes verification *during* image construction — conda/git/npm config changes are reverted before the RUN ends, so SSL verification is restored at runtime.
 
 ## Vault (optional)
@@ -248,4 +248,4 @@ Uses `aws s3 sync` under the hood — only transfers files that have changed. Re
 
 ## Spark cluster
 
-`spark/cluster/` runs a vLLM replica cluster that consumes the `vllm-spark` primate. Hosts and roles come from a gitignored `cluster.env` (copy `cluster.env.example` and edit), so the same scripts work for the maintainer's two DGX Sparks or any other pair of SSH-reachable GPU boxes. See `spark/cluster/README.md` and `spark/cluster/CLAUDE.md`.
+`spark/cluster/` runs a vLLM replica cluster that consumes the `cuda-vllm` primate. Hosts and roles come from a gitignored `cluster.env` (copy `cluster.env.example` and edit), so the same scripts work for the maintainer's two DGX Sparks or any other pair of SSH-reachable GPU boxes. See `spark/cluster/README.md` and `spark/cluster/CLAUDE.md`.
