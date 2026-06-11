@@ -2,6 +2,17 @@
 
 Architectural decision log. Newest first.
 
+## 2026-06-10 — Moved HAProxy to the control plane (`minerva`) and pulled `starsky` for g.deceiver reasoning
+
+The g.deceiver build needed a dedicated GB10 for its reasoning model (`reasoning-llm`); a dense bf16 32B is memory-bandwidth-bound at ~4 tok/s on a GB10, so it wants a whole box for the A3B-AWQ thinking model. We pulled `starsky` from the coding cluster rather than co-locating (only ~25 GiB was free alongside the coding replica).
+
+That forced the LB decoupling we'd already wanted (see `architecture.md` SPOF note): HAProxy lived **on** `starsky`, so freeing `starsky` meant moving the LB. It now runs as a standalone container on `minerva` (control plane, no GPU) at **`:8888`**, fronting `hutch` alone.
+
+- Tooling changes (this branch): `load-config.sh` no longer requires `LB_HOST ∈ REPLICAS` (a dedicated LB host is valid); `haproxy.cfg.template`/`deploy.sh` now honor `$LB_PORT` for the public bind (was hardcoded `:8080`).
+- Cutover was zero-downtime: stood up `minerva:8888` alongside the live `starsky:8080`, repointed coding clients, then tore down starsky's HAProxy + coding vLLM.
+- **Consequence:** the coding cluster is now single-replica (`hutch` only). Accepted for now; tracked in `TASKS.md` Phase 12.
+- **Follow-up:** HAProxy is still a dumb round-robin and ignores the request `model`. Replacing it with a model-aware router (so one endpoint serves both the coding model on hutch and the reasoning model on starsky) is the open task in `TASKS.md` Phase 12.
+
 ## 2026-05-06 — Switched served model to `QuantTrio/Qwen3.6-35B-A3B-AWQ`
 
 After Qwen2.5-Coder-32B-Instruct (Track D) validated the cluster, we tried two more rounds toward the original NVFP4 target before settling here:

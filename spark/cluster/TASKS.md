@@ -101,3 +101,15 @@ Track D (validation with known-good model). Long-term target Qwen3-Coder-Next-NV
 - [x] Rolled both Sparks to `cuda-vllm:latest` one at a time (retag of the identical sm_121 artifact → compose flip → recreate); cluster never lost a backend; old `*-spark` tags dropped
 - [x] Smoke-test PASS through HAProxy (`starsky:8080`) + both replicas direct (`:8000`) on `qwen3-coder-next`
 - [x] Cross-GPU proof: fresh `cuda-vllm` built on x86 4090 `ren` (job-tuned), shipped to `stimpy`, smoke-tested on both — builds/serves on sm_89 as well as sm_121
+
+## Phase 12 — LB decoupled to the control plane + starsky repurposed (2026-06-10)
+
+Driven by the g.deceiver build (`feat/phase-1-reasoning`): starsky was pulled from the coding cluster to serve g.deceiver's reasoning-llm, and HAProxy moved off a GPU box onto the control plane.
+
+- [x] `load-config.sh`: relaxed the `LB_HOST ∈ REPLICAS` invariant — `LB_HOST` may now be a dedicated host (warns, doesn't error). deploy.sh already treats the LB host and backend list independently.
+- [x] `haproxy.cfg.template` + `deploy.sh`: parameterized the public bind port off `$LB_PORT` (was hardcoded `:8080`; `LB_PORT` had been a no-op for the bind).
+- [x] `cluster.env` (gitignored, local): `LB_HOST=minerva`, `LB_PORT=8888`, `REPLICAS="hutch"` (starsky pulled).
+- [x] `deploy.sh minerva haproxy` → `minerva:8888` fronting hutch; verified `/v1/models` + backend UP. Coding clients repointed `starsky:8080` → `minerva:8888` (no downtime — both LBs ran during cutover).
+- [x] Tore down starsky's HAProxy + coding vLLM; starsky now serves g.deceiver reasoning-llm.
+- [ ] **Replace HAProxy on minerva with a model-aware router.** Today's HAProxy is `balance roundrobin` over coding replicas and ignores the request's `model` field. Swap it for a model-aware router (LiteLLM, or an HAProxy body-ACL on `model`) so one endpoint serves both `qwen3-coder-next` (→ hutch) and g.deceiver's reasoning model (→ starsky). Clients already send an OpenAI `model` field, so no client change beyond base_url. AC: `model: qwen3-coder-next` → coding replica(s); reasoning model → starsky; unknown model → clear 404.
+- [ ] Bring the coding cluster back to two replicas when capacity allows (hutch is currently solo), or formally accept single-replica coding.

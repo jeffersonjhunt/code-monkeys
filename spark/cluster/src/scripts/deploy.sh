@@ -25,7 +25,8 @@ REMOTE_BASE="/home/$REMOTE_USER/spark-deploy"
 COMPOSE_DIR="$(cd "$script_dir/../compose" && pwd)"
 
 # Generate haproxy.cfg from haproxy.cfg.template by expanding $REPLICAS into
-# `server <h> <h>:$VLLM_PORT check` lines on the # __REPLICAS__ marker.
+# `server <h> <h>:$VLLM_PORT check` lines on the # __REPLICAS__ marker, and
+# substituting the public bind port (__LB_PORT__) from $LB_PORT.
 render_haproxy_cfg() {
   local template="$COMPOSE_DIR/haproxy/haproxy.cfg.template"
   local out="$COMPOSE_DIR/haproxy/haproxy.cfg"
@@ -39,9 +40,9 @@ render_haproxy_cfg() {
   done
   # Strip the trailing newline so the inserted block matches the template's indent.
   server_lines="${server_lines%$'\n'}"
-  awk -v block="$server_lines" '
+  awk -v block="$server_lines" -v lb_port="$LB_PORT" '
     /^[[:space:]]*#[[:space:]]*__REPLICAS__[[:space:]]*$/ { print block; next }
-    { print }
+    { gsub(/__LB_PORT__/, lb_port); print }
   ' "$template" > "$out"
 }
 

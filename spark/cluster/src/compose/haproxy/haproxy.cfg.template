@@ -37,7 +37,8 @@ frontend vllm_in
     # Non-privileged port — haproxy:alpine runs as the `haproxy` user and
     # cannot bind <1024 on the host (network_mode: host). If you ever want
     # :80, add `cap_add: [NET_BIND_SERVICE]` in compose.yml and switch back.
-    bind 0.0.0.0:8080
+    # __LB_PORT__ is substituted from $LB_PORT (cluster.env) by deploy.sh at render time.
+    bind 0.0.0.0:__LB_PORT__
     default_backend vllm_pool
 
 backend vllm_pool

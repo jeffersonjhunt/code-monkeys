@@ -42,13 +42,13 @@ if (( ${#_missing[@]} > 0 )); then
   exit 2
 fi
 
-# Sanity: LB_HOST must be one of REPLICAS.
-_lb_ok=0
+# LB_HOST may either be co-located on a replica (the original single-box topology) or a
+# dedicated host outside REPLICAS (e.g. the control plane, decoupling the LB from any GPU
+# box). Both are valid — deploy.sh already treats the LB host and the backend list
+# independently. We only note the standalone case so a typo in LB_HOST doesn't pass silently.
+_lb_standalone=1
 for h in $REPLICAS; do
-  [[ "$h" == "$LB_HOST" ]] && _lb_ok=1
+  [[ "$h" == "$LB_HOST" ]] && _lb_standalone=0
 done
-if (( _lb_ok == 0 )); then
-  echo "error: LB_HOST='$LB_HOST' is not in REPLICAS='$REPLICAS'" >&2
-  exit 2
-fi
-unset _lb_ok _missing _load_config_script_dir
+(( _lb_standalone )) && echo "note: LB_HOST='$LB_HOST' is standalone (not in REPLICAS='$REPLICAS')" >&2
+unset _lb_standalone _missing _load_config_script_dir
