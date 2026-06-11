@@ -2,24 +2,24 @@
 
 Operate / teardown procedures for the spark-cluster vLLM deployment.
 
-> Examples below use the maintainer's host names (`starsky`, `hutch`) and SSH user (`jhunt`). Substitute the values from your `cluster.env` (`$REPLICAS`, `$LB_HOST`, `$SSH_USER`) when running the commands.
+> Examples below use the maintainer's host names and SSH user (`jhunt`). Substitute the values from your `cluster.env` (`$REPLICAS`, `$LB_HOST`, `$LB_PORT`, `$SSH_USER`) when running the commands.
+>
+> **Current topology (2026-06-10):** the LB runs on `minerva:8888` (control plane, standalone — not a replica); `starsky` was pulled from the cluster for g.deceiver reasoning, so `hutch` is the sole coding replica. See `docs/decisions.md`. Examples below reflect this.
 
 ## Endpoints
 
 | Endpoint                      | Where               | Purpose                                  |
 |-------------------------------|---------------------|------------------------------------------|
-| `http://starsky:8080`         | LB (HAProxy)        | OpenAI-compatible API; what clients use  |
-| `http://starsky:8000`         | direct replica A    | Bypass LB; debugging                     |
-| `http://hutch:8000`           | direct replica B    | Bypass LB; debugging                     |
-| `http://127.0.0.1:8404/stats` | starsky (loopback)  | HAProxy live stats UI                    |
-| `http://127.0.0.1:8404/health`| starsky (loopback)  | HAProxy self-healthcheck (`monitor-uri`) |
+| `http://minerva:8888`         | LB (HAProxy)        | OpenAI-compatible API; what clients use  |
+| `http://hutch:8000`           | direct replica      | Bypass LB; debugging                     |
+| `http://127.0.0.1:8404/stats` | minerva (loopback)  | HAProxy live stats UI                    |
+| `http://127.0.0.1:8404/health`| minerva (loopback)  | HAProxy self-healthcheck (`monitor-uri`) |
 
 ## Health check
 
 ```bash
-./src/scripts/smoke-test.sh starsky:8080      # through LB
-./src/scripts/smoke-test.sh starsky           # replica A direct
-./src/scripts/smoke-test.sh hutch             # replica B direct
+./src/scripts/smoke-test.sh minerva:8888      # through LB
+./src/scripts/smoke-test.sh hutch             # replica direct
 ```
 
 The script auto-discovers the served model id from `/v1/models`, so it works against whatever's deployed.
@@ -48,7 +48,7 @@ Enabled via `--enable-prefix-caching` in `compose.yml`. vLLM hashes prompt prefi
 Live stats from a replica:
 
 ```bash
-ssh jhunt@starsky 'curl -s http://127.0.0.1:8000/metrics | grep prefix_cache'
+ssh jhunt@hutch 'curl -s http://127.0.0.1:8000/metrics | grep prefix_cache'
 # vllm:prefix_cache_queries_total — total tokens looked up
 # vllm:prefix_cache_hits_total    — tokens served from cache
 ```
@@ -58,10 +58,10 @@ Hit rate ≈ `hits / queries`. Healthy agent traffic should see ≥ 50 %.
 ## Backend status
 
 ```bash
-ssh jhunt@starsky 'curl -sS "http://127.0.0.1:8404/stats;csv" | awk -F, "/vllm_pool/ {print \$1\"/\"\$2\" \"\$18}"'
+ssh jhunt@minerva 'curl -sS "http://127.0.0.1:8404/stats;csv" | awk -F, "/vllm_pool/ {print \$1\"/\"\$2\" \"\$18}"'
 ```
 
-Or in a browser, tunnel: `ssh -L 8404:127.0.0.1:8404 jhunt@starsky` then open `http://127.0.0.1:8404/stats`.
+Or in a browser, tunnel: `ssh -L 8404:127.0.0.1:8404 jhunt@minerva` then open `http://127.0.0.1:8404/stats`.
 
 ## Start / stop a single replica
 
@@ -84,7 +84,7 @@ After stopping a replica, HAProxy will mark it DOWN within 30 s (3 × 10 s healt
 ## Swap the served model
 
 1. Edit `src/compose/vllm/.env` — change `HF_MODEL_ID` and `VLLM_SERVED_NAME`.
-2. Redeploy on each box: `./src/scripts/deploy.sh starsky vllm` and `./src/scripts/deploy.sh hutch vllm`.
+2. Redeploy on each replica in `$REPLICAS` (currently just `hutch`): `./src/scripts/deploy.sh hutch vllm`.
 3. Pre-stage weights on both boxes (vLLM no longer auto-downloads):
 
    ```bash
@@ -95,36 +95,41 @@ After stopping a replica, HAProxy will mark it DOWN within 30 s (3 × 10 s healt
 4. **Cross-box transfer** — alternative to pulling on both boxes (saves bandwidth and HF rate-limit headroom):
 
    ```bash
-   ssh jhunt@starsky 'tar -C ~/Models -cf - <org>/<repo>' | \
-     ssh jhunt@hutch  'tar -C ~/Models -xpf -'
+   ssh jhunt@<src-host> 'tar -C ~/Models -cf - <org>/<repo>' | \
+     ssh jhunt@<dst-host> 'tar -C ~/Models -xpf -'
    ```
 
-5. Smoke test each box, then re-test through `starsky:8080`.
+5. Smoke test each box, then re-test through `minerva:8888`.
 
 ## Re-deploy HAProxy after editing `haproxy.cfg`
 
-`deploy.sh` uses `--force-recreate`, so editing `src/compose/haproxy/haproxy.cfg` and re-running `./src/scripts/deploy.sh starsky haproxy` is enough — the container is recreated and picks up the new config. Drop in connections during the ~1 s recreate.
+`deploy.sh` uses `--force-recreate`, so editing `src/compose/haproxy/haproxy.cfg` and re-running `./src/scripts/deploy.sh minerva haproxy` is enough — the container is recreated and picks up the new config. Drop in connections during the ~1 s recreate.
 
 For zero-disruption reload of HAProxy specifically, use the in-place reload (config must already be valid):
 
 ```bash
-ssh jhunt@starsky 'docker kill -s HUP haproxy'
+ssh jhunt@minerva 'docker kill -s HUP haproxy'
 ```
 
 This is HAProxy's native graceful reload.
 
 ## Failover drill
 
+> **Single-replica caveat (2026-06-10):** with `starsky` pulled, `hutch` is the only coding
+> replica — there is **no failover** right now; stopping it is a full outage until it restarts.
+> The drill below is the two-replica procedure, kept for when a second replica returns.
+
 ```bash
 # stop one replica
 ssh jhunt@hutch 'docker stop vllm'
 
 # wait ~30s; check stats
-ssh jhunt@starsky 'curl -sS "http://127.0.0.1:8404/stats;csv" | awk -F, "/vllm_pool/ {print \$1\"/\"\$2\" \"\$18}"'
-# expect: hutch DOWN, starsky UP, BACKEND UP
+ssh jhunt@minerva 'curl -sS "http://127.0.0.1:8404/stats;csv" | awk -F, "/vllm_pool/ {print \$1\"/\"\$2\" \"\$18}"'
+# two-replica: expect the stopped one DOWN, the other UP, BACKEND UP
+# single-replica (today): expect hutch DOWN, BACKEND DOWN — the API is down until restore
 
-# requests still serve via the LB
-./src/scripts/smoke-test.sh starsky:8080
+# with a second replica, requests still serve via the LB
+./src/scripts/smoke-test.sh minerva:8888
 
 # restore
 ssh jhunt@hutch 'docker start vllm'
@@ -141,7 +146,7 @@ Per-container logs (compose stacks both use json-file driver with rotation):
 
 ```bash
 ssh jhunt@<host> 'docker logs --tail 200 -f vllm'
-ssh jhunt@starsky 'docker logs --tail 200 -f haproxy'
+ssh jhunt@minerva 'docker logs --tail 200 -f haproxy'
 ```
 
 Rotation: vLLM keeps 3 × 100 MB; HAProxy keeps 3 × 20 MB. Tune in the respective `compose.yml` if needed.
@@ -150,9 +155,9 @@ Rotation: vLLM keeps 3 × 100 MB; HAProxy keeps 3 × 20 MB. Tune in the respecti
 
 ```bash
 # stop and remove containers (keeps images and model weights)
-ssh jhunt@hutch  'cd ~/spark-deploy/vllm    && docker compose down'
-ssh jhunt@starsky 'cd ~/spark-deploy/vllm    && docker compose down'
-ssh jhunt@starsky 'cd ~/spark-deploy/haproxy && docker compose down'
+# one `vllm` line per replica in $REPLICAS (currently just hutch); haproxy is on the LB host (minerva)
+ssh jhunt@hutch   'cd ~/spark-deploy/vllm    && docker compose down'
+ssh jhunt@minerva 'cd ~/spark-deploy/haproxy && docker compose down'
 
 # remove model weights cache (frees disk)
 ssh jhunt@<host> 'rm -rf ~/Models/<org>/<name>'

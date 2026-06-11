@@ -22,6 +22,8 @@ HAProxy on `$LB_HOST`:
 - Health check: `GET /health` on each backend (vLLM exposes this)
 - Failover behavior: HAProxy drains a backend on health-check failure
 
+`$LB_HOST` may be a replica (co-located, the original single-box topology) **or a dedicated host outside `$REPLICAS`** — e.g. the control plane, decoupling the LB from any GPU box. The backend list (`$REPLICAS`) and the LB host are independent; `deploy.sh` targets each separately. **Current deployment (2026-06-10):** `$LB_HOST=minerva` (standalone, control plane), `$LB_PORT=8888`, `$REPLICAS="hutch"` — see `docs/decisions.md`.
+
 Known SPOF: `$LB_HOST` losing power takes the API endpoint down. Accepted for current usage. Upgrade path is active/passive HAProxy via keepalived when availability requirements grow.
 
 ## Why containers
@@ -37,7 +39,7 @@ Two hosts. The "fleet" doesn't justify a control-plane abstraction:
 
 - Compose files are the source of truth — what you read is what runs.
 - `docker compose up -d` is already idempotent; rerunning `deploy.sh` is safe.
-- "`$LB_HOST` runs HAProxy, the others don't" is one extra `deploy.sh` call driven by `cluster.env`, not a templated inventory engine.
+- "`$LB_HOST` runs HAProxy, the replicas don't" is one extra `deploy.sh` call driven by `cluster.env`, not a templated inventory engine.
 - Templating engines (Ansible Jinja2, Helm) would add indirection without leverage at this scale.
 
 We'd revisit if any of these change: fleet grows past ~5 boxes, hosts diverge into meaningfully different roles, or there's pre-existing in-house orchestration tooling we should fit into.
