@@ -15,6 +15,8 @@ flist+=(pmd)
 flist+=(tad)
 flist+=(clamscan)
 flist+=(primate)
+flist+=(primate-session)
+flist+=(primate-kill)
 
 function() {
   for fname in ${flist}; do
@@ -218,6 +220,140 @@ function primate-upgrade() {
       '
     echo "  done: ${__IMAGE}"
   done
+}
+
+# starts (or re-attaches to) a long-lived, detached primate running an
+# in-container tmux session that survives SSH disconnects. The container's
+# PID 1 is `sleep infinity`, so dropping the ssh/exec link leaves the tmux
+# server (and everything inside it) running. Re-run to re-attach.
+#
+#   primate-session <image> [session-name] [--no-workspace] [docker args...]
+#   primate-kill    <image|container-name>
+function primate-session() {
+
+  local __NO_WORKSPACE=false
+  local __args=()
+  for arg in "$@"; do
+    if [[ "$arg" == "--no-workspace" ]]; then
+      __NO_WORKSPACE=true
+    else
+      __args+=("$arg")
+    fi
+  done
+  set -- "${__args[@]}"
+
+  if [[ "$#" -lt 1 ]]; then
+    echo "Usage: primate-session <image> [session-name] [--no-workspace] [docker args...]"
+    return 1
+  fi
+
+  local __IMAGE=$1
+  shift
+
+  # optional session/container name (defaults to <image>-session); only treated
+  # as a name if it doesn't look like a docker flag
+  local __NAME="${__IMAGE}-session"
+  if [[ "$#" -ge 1 && "$1" != -* ]]; then
+    __NAME="$1"
+    shift
+  fi
+
+  local __TMUX_SESSION=main
+  local __TERM="${TERM:-xterm-256color}"
+
+  # already running? just re-attach.
+  if [[ "$(docker inspect --format='{{.State.Running}}' "${__NAME}" 2>/dev/null)" == "true" ]]; then
+    echo "re-attaching to ${__NAME} (tmux: ${__TMUX_SESSION})"
+    docker exec -it -e TERM="${__TERM}" "${__NAME}" tmux new-session -A -s "${__TMUX_SESSION}"
+    return
+  fi
+
+  # exists but stopped? start it, then attach.
+  if docker inspect "${__NAME}" &>/dev/null; then
+    echo "starting stopped container ${__NAME}"
+    docker start "${__NAME}" >/dev/null || return 1
+    docker exec -it -e TERM="${__TERM}" "${__NAME}" tmux new-session -A -s "${__TMUX_SESSION}"
+    return
+  fi
+
+  # otherwise create it detached with the same mounts primate() uses.
+  local __WORKSPACE_MOUNT=()
+  if [[ "$__NO_WORKSPACE" == false ]]; then
+    __WORKSPACE_MOUNT=(--volume "$(pwd):/home/codemonkey/workspace")
+  fi
+
+  local __ZFUNCS_DIR="${${(%):-%x}:A:h}"
+  local __ENV_FILE="${__ZFUNCS_DIR}/env"
+  local __ENV_FILE_MOUNT=()
+  if [[ -f "$__ENV_FILE" ]]; then
+    __ENV_FILE_MOUNT=(--env-file "$__ENV_FILE")
+  fi
+
+  local __GPU_OPTS=()
+  if [[ "$(uname -r)" == *-nvidia ]]; then
+    __GPU_OPTS=(--gpus all)
+  fi
+
+  local __PORT_OPTS=()
+  local __PORTS=$(docker inspect --format='{{range $p, $_ := .Config.ExposedPorts}}{{$p}} {{end}}' "${__IMAGE}:latest" 2>/dev/null)
+  for __PORT in ${=__PORTS}; do
+    __PORT_OPTS+=(-p "${__PORT%/*}:${__PORT%/*}")
+  done
+
+  local __SSH_MOUNT=()
+  if [[ -d ~/.ssh ]]; then
+    __SSH_MOUNT=(--volume "$(cd -P ~/.ssh && pwd):/home/codemonkey/.ssh")
+  fi
+
+  local __AWS_MOUNT=()
+  if [[ -d ~/.aws ]]; then
+    __AWS_MOUNT=(--volume "$(cd -P ~/.aws && pwd):/home/codemonkey/.aws")
+  fi
+
+  local __DOCKER_MOUNT=()
+  if [[ -S /var/run/docker.sock ]]; then
+    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock)
+  fi
+
+  echo "creating detached session ${__NAME} from ${__IMAGE} (home volume ${__IMAGE}-home)"
+  docker run -d \
+    --name "${__NAME}" \
+    --hostname "${__IMAGE}" \
+    "${__ENV_FILE_MOUNT[@]}" \
+    "${__GPU_OPTS[@]}" \
+    "${__PORT_OPTS[@]}" \
+    "${__SSH_MOUNT[@]}" \
+    "${__AWS_MOUNT[@]}" \
+    "${__DOCKER_MOUNT[@]}" \
+    "${__WORKSPACE_MOUNT[@]}" \
+    --volume ${__IMAGE}-home:/home/codemonkey \
+    --user=codemonkey:codemonkey \
+    $@ \
+    ${__IMAGE} sleep infinity >/dev/null || return 1
+
+  echo "attaching (tmux: ${__TMUX_SESSION}) — detach with ctrl-b d, kill with: primate-kill ${__NAME}"
+  docker exec -it -e TERM="${__TERM}" "${__NAME}" tmux new-session -A -s "${__TMUX_SESSION}"
+}
+compdef _primate primate-session
+
+# stops and removes a detached primate session container (home volume persists)
+function primate-kill() {
+  if [[ "$#" -lt 1 ]]; then
+    echo "Usage: primate-kill <image|container-name>"
+    return 1
+  fi
+  local __NAME="$1"
+  if ! docker inspect "${__NAME}" &>/dev/null; then
+    # accept the bare image name too (maps to <image>-session)
+    if docker inspect "${__NAME}-session" &>/dev/null; then
+      __NAME="${__NAME}-session"
+    else
+      echo "no such container: ${1}"
+      return 1
+    fi
+  fi
+  echo "removing ${__NAME} (home volume persists)"
+  docker rm -f "${__NAME}" >/dev/null
 }
 
 # Take A Dump (takes a java heapdump in a running container)

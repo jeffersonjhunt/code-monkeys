@@ -64,6 +64,7 @@ RUN apt-get -y install \
       rsync \
       zip \
       tree \
+      tmux \
       unzip \
       p7zip-full \
       zsh \
