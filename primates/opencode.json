@@ -7,7 +7,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Starsky vLLM",
       "options": {
-        "baseURL": "http://starsky.tworivers:8080/v1",
+        "baseURL": "http://minerva.tworivers:8888/v1",
         "apiKey": "sk-local"
       },
       "models": {
