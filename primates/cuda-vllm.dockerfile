@@ -46,10 +46,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip wheel setuptools
 
-# PyTorch must be present before building vLLM extensions. cu131 wheels do
-# not exist for aarch64; cu130 wheel runs fine on a cu131.x runtime base
-# (same pattern as primates/cuda-comfy.dockerfile). PEP 440 makes
-# torch==2.11.0+cu130 satisfy any subsequent torch==2.11.0 requirement.
+# PyTorch must be present before building vLLM extensions. We pin the cu130
+# (CUDA 13.0) wheel index deliberately: it carries the torch==2.11.0 that
+# vLLM v0.21.0 requires (the cu132 index only ships torch 2.12.x), and cu130
+# matches the cluster's CUDA 13.0 driver (R580). The cu130 wheel runs fine on
+# the CUDA 13.2.1 devel runtime base via same-major minor-version
+# compatibility (same pattern as primates/cuda-comfy.dockerfile). PEP 440
+# makes torch==2.11.0+cu130 satisfy any subsequent torch==2.11.0 requirement.
 RUN pip install torch==${TORCH_VERSION} --index-url ${TORCH_INDEX}
 
 WORKDIR /opt/build
@@ -122,9 +125,9 @@ RUN apt-get update \
 
 COPY --from=build /opt/venv /opt/venv
 
-# Slim the runtime image. The cu131-devel base ships nvcc + headers (kept for
-# Triton/FlashInfer JIT) plus link-time-only static archives and CUDA samples
-# we'll never use.
+# Slim the runtime image. The CUDA 13.2.1 devel base (cuda-base:devel) ships
+# nvcc + headers (kept for Triton/FlashInfer JIT) plus link-time-only static
+# archives and CUDA samples we'll never use.
 #
 # DO NOT pip-uninstall cmake/ninja from the venv — FlashInfer's NVFP4 cutlass
 # GEMM JIT path shells out to ninja at first NVFP4 forward pass.
