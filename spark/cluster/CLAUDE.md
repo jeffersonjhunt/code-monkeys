@@ -11,11 +11,11 @@ vLLM replica cluster across two NVIDIA DGX Spark nodes (Blackwell GB10, ARM64, 1
 The cluster is configured by `cluster.env` at the repo root (gitignored — see `cluster.env.example`). It defines:
 
 - `REPLICAS` — space-separated list of vLLM replica hosts
-- `LB_HOST` — which replica fronts the cluster with HAProxy (must be in `REPLICAS`)
+- `LB_HOST` — the host that fronts the cluster with HAProxy. May be a standalone control-plane host (it need not be in `REPLICAS`)
 - `SSH_USER` — shared user account on every box
 - `VLLM_PORT`, `LB_PORT`, `LB_STATS_PORT` — defaults 8000 / 8080 / 8404
 
-Maintainer's current cluster (worked example): `REPLICAS="starsky hutch"`, `LB_HOST=starsky`, `SSH_USER=jhunt`. starsky and hutch are NVIDIA DGX Spark boxes (Blackwell GB10, ARM64, 128 GB UMA) connected by a ConnectX-7 link (currently unused; reserved for future sharded mode). HAProxy on `$LB_HOST` is an accepted SPOF for the API endpoint.
+Maintainer's current cluster (worked example): `REPLICAS="hutch"`, `LB_HOST=minerva`, `SSH_USER=jhunt`. hutch is an NVIDIA DGX Spark box (Blackwell GB10, ARM64, 128 GB UMA) serving `qwen3-coder-next`; minerva is a standalone control-plane host (not a GPU replica) that fronts it with HAProxy on `LB_PORT=8888`. (starsky, a second GB10 Spark that was previously the LB + a replica, has been repurposed to a separate workload and is no longer in this cluster's replica pool.) HAProxy on `$LB_HOST` is an accepted SPOF for the API endpoint.
 
 When Claude sessions need to refer to hosts, read `cluster.env` rather than assuming names — the project is meant to be portable.
 
