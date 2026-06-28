@@ -18,6 +18,12 @@ services:
       - .env
     volumes:
       - ${MODEL_DIR:-/home/jhunt/Models}:/models:ro
+      # Persist vLLM's JIT/compile caches (torch.compile graphs + FlashInfer
+      # cutlass NVFP4 kernels) across container recreates. Without this, every
+      # image rebuild/restart pays a full cold cutlass compile (~45 min outage);
+      # with it, restarts come up in ~5 min. Both ~/.cache/vllm and
+      # ~/.cache/flashinfer live under this path; container runs as uid 1000.
+      - vllm-jit-cache:/home/codemonkey/.cache
     ports:
       - "${VLLM_PORT:-8000}:8000"
     deploy:
@@ -83,3 +89,10 @@ services:
       options:
         max-size: "100m"
         max-file: "3"
+
+volumes:
+  # Named so compose uses this exact volume (no project-name prefix), which lets
+  # it be pre-seeded once from a warm container to skip the first cold JIT.
+  # Per-host: the compiled kernels are GPU-arch/CUDA/model/vLLM-version specific.
+  vllm-jit-cache:
+    name: vllm-jit-cache

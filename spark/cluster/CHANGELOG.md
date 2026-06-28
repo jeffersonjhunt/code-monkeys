@@ -2,7 +2,13 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-06-07 (latest)
+## 2026-06-28 (latest)
+
+- **hutch migrated to CUDA 13.2.1 + persistent JIT cache.** The `cuda-*` family on hutch was still running the stale **13.1.1** images (the retagged `vllm-spark` from the 2026-06-07 rename — pre-`cuda-base`, no `nvtop`). Rebuilt all three (`cuda-vllm`, `cuda-llama-cpp`, `cuda-comfy`) from current `master` on the **13.2.1** base (`cuda-vllm` → `release 13.2, V13.2.78`, id `34fc705`); `cuda-base:runtime`/`:devel` now materialized and `nvtop` is in every image. **vLLM stays 0.21.0** — only the CUDA base moved, so benchmark baselines hold. Single-replica maintenance window (minerva = LB, hutch = sole replica, starsky = legacy/not in pool), so the build ran with vLLM stopped to free the UMA. Smoke-tested green via the LB (`minerva:8888`) on `qwen3-coder-next`.
+
+  **Outage learning → fix:** the fresh image cold-started for **~45 min** because its JIT caches were empty — FlashInfer cutlass NVFP4 kernels (`~/.cache/flashinfer`, 195 MB of `cicc` compiles) plus torch.compile graphs (`~/.cache/vllm`, 349 MB). The `--force-recreate`-style cold start discards the in-container cache every rebuild (same ~14 min cost noted in the 2026-06-07 entry, worse here on a from-scratch toolkit bump). Fixed in `src/compose/vllm/compose.yml` by mounting a **named volume `vllm-jit-cache` → `/home/codemonkey/.cache`** (both cache dirs live under it; container runs as uid 1000, host jhunt is also uid 1000). Pre-seeded once from the warm container so applying it didn't re-incur the cold compile; future image rebuilds/restarts now come up in ~5 min instead of ~45.
+
+## 2026-06-07
 
 - **GPU primates renamed and unified cross-GPU.** `vllm-spark` → **`cuda-vllm`**, `comfy-ui-spark` → `cuda-comfy`, `llama-cpp-spark` → `cuda-llama-cpp` (the `-spark` suffix no longer fits now that the family builds and runs on x86/sm_89 4090s as well as the aarch64/sm_121 Sparks). `cuda-vllm` now ships **native sm_89/120/121** by default (`TORCH_CUDA_ARCH_LIST="8.9 12.0 12.1+PTX"`, runtime JIT arch matched), and exposes `MAX_JOBS`/`NVCC_THREADS` build-args so it can be built on the 30 GB 4090 boxes (override to `6`/`6` → single parallel cutlass job, ~15 GB peak) as well as the 128 GB Sparks (defaults). The cluster's `compose.yml` default flipped to `${VLLM_IMAGE:-cuda-vllm:latest}`; `.env(.example)`, the vllm/cluster READMEs, `CLAUDE.md`, and the `spark-build` skill were updated to match. **No served-model behavior change** on the Sparks — same sm_121 cutlass, same model. Dated historical docs (parking-lot, decisions, the old build-plan) keep the `vllm-spark` name as the record of what existed then.
 
