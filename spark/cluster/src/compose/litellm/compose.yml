@@ -1,0 +1,45 @@
+# LiteLLM proxy — model-aware router, deployed on $LB_HOST (minerva, no GPU).
+#
+# Drop-in replacement for the HAProxy LB: one OpenAI-compatible endpoint that
+# routes by the request `model` field to the right GPU box (see config.yaml).
+# network_mode: host so it binds the LB port directly on the control-plane host,
+# same as the HAProxy stack it supersedes.
+#
+# Port: ${LITELLM_PORT:-8888}. Stand up alongside the live HAProxy on a spare
+# port for verification (LITELLM_PORT=8889 docker compose up -d), then cut over
+# to 8888 once both models route — zero-downtime, the same pattern used when the
+# LB first moved onto minerva.
+#
+# Bring up:  LITELLM_PORT=8889 docker compose up -d   # staging, alongside haproxy
+#            docker compose up -d                       # cutover (binds 8888)
+# Config:    edit config.yaml (the model -> backend map). Pinned image, no :latest.
+
+name: spark-litellm
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.90.0
+    container_name: litellm
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config.yaml:/etc/litellm/config.yaml:ro
+    command:
+      - --config
+      - /etc/litellm/config.yaml
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "${LITELLM_PORT:-8888}"
+    healthcheck:
+      # LiteLLM's liveness probe; the port is substituted at compose-render time.
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:${LITELLM_PORT:-8888}/health/liveliness\")' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
