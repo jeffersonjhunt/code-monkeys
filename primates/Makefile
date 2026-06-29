@@ -126,6 +126,12 @@ if [ -d "$$SRC/claude" ]; then
   cp "$$SRC/claude/settings.json" "$$HOME/.claude/settings.json"
   cp "$$SRC/claude/commands/"* "$$HOME/.claude/commands/" 2>/dev/null
 fi
+# Image-baked ~/.config files are shadowed by the persistent home volume, so a rebuild alone
+# can't refresh them — sync them here too. opencode.json carries the model + MCP server config.
+if [ "$$PRIMATE" = "opencode" ] && [ -f "$$SRC/primates/opencode.json" ]; then
+  mkdir -p "$$HOME/.config/opencode"
+  cp "$$SRC/primates/opencode.json" "$$HOME/.config/opencode/opencode.json"
+fi
 chown -R codemonkey:codemonkey "$$HOME"
 endef
 export UPGRADE_SCRIPT
@@ -138,6 +144,7 @@ export UPGRADE_SCRIPT
 	else \
 		echo "upgrading $(basename $@)..."; \
 		docker run --rm \
+			--env "PRIMATE=$(basename $@)" \
 			--volume "$(REPO_ROOT):/opt/user-jhunt:ro" \
 			--volume "$$VOL:/home/codemonkey" \
 			codemonkey:latest bash -c "$$UPGRADE_SCRIPT"; \
