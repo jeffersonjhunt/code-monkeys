@@ -90,7 +90,10 @@ if [[ "${1:-}" == "all" ]]; then
   for h in $REPLICAS; do
     deploy_stack "$h" vllm
   done
-  deploy_stack "$LB_HOST" haproxy
+  # The LB host runs the model-aware router (LiteLLM), which replaced the round-robin
+  # HAProxy on 2026-06-28. The haproxy stack is retained for fallback but is deployed
+  # explicitly (`deploy.sh <lb> haproxy`), never by `all`.
+  deploy_stack "$LB_HOST" litellm
 elif [[ $# -ge 2 ]]; then
   host="$1"; shift
   for stack in "$@"; do

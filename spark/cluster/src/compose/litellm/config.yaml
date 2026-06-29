@@ -1,0 +1,46 @@
+# LiteLLM proxy — model-aware router for the spark cluster.
+#
+# Replaces the round-robin HAProxy on the LB host: HAProxy ignored the request
+# `model` field and fanned every request across one backend pool. LiteLLM routes
+# by `model` name, so a single endpoint fronts BOTH GPU boxes serving DIFFERENT
+# models:
+#
+#   model: qwen3-coder-next  -> hutch   (coding cluster / opencode)
+#   model: reasoning         -> starsky (g.deceiver reasoning-llm)
+#
+# Backends are addressed by FQDN; DNS is the source of truth (matches the HAProxy
+# convention). The `hosted_vllm/` provider prefix tells LiteLLM these are
+# OpenAI-compatible vLLM servers; the part after the slash is the model name sent
+# on to the backend, and must match each vLLM's --served-model-name.
+#
+# An unknown `model` is rejected by LiteLLM (no silent fan-out to the wrong box).
+
+model_list:
+  - model_name: qwen3-coder-next
+    litellm_params:
+      model: hosted_vllm/qwen3-coder-next
+      api_base: http://hutch.tworivers:8000/v1
+
+  - model_name: reasoning
+    litellm_params:
+      model: hosted_vllm/reasoning
+      api_base: http://starsky.tworivers:8000/v1
+
+  # Phase 6 (g.deceiver Sees) — the captioning VLM lands on starsky's spare UMA.
+  # Uncomment + set the port when the VLM stack is deployed; same endpoint, third model.
+  # - model_name: caption
+  #   litellm_params:
+  #     model: hosted_vllm/caption
+  #     api_base: http://starsky.tworivers:8002/v1
+
+litellm_settings:
+  # Pass request params through to vLLM unchanged (don't strip provider-specific
+  # extras); the backends are OpenAI-compatible so this is a thin passthrough.
+  drop_params: false
+  # Backends are on the trusted LAN and already healthchecked by compose; keep the
+  # proxy's own per-request retries off so a slow reasoning turn isn't multiplied.
+  num_retries: 0
+  request_timeout: 3600
+
+router_settings:
+  routing_strategy: simple-shuffle

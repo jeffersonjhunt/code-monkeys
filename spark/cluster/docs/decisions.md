@@ -2,6 +2,23 @@
 
 Architectural decision log. Newest first.
 
+## 2026-06-28 — Replaced HAProxy with a model-aware router (LiteLLM) on `minerva`
+
+The 2026-06-10 split left two boxes serving two different models (coder on hutch, reasoning on starsky) behind a round-robin HAProxy that could only front a single pool — it ignored the request `model` field. That meant the reasoning box sat outside the cluster endpoint, and g.deceiver's orchestrator had to call `starsky:8000` directly.
+
+Replaced the HAProxy LB with a **LiteLLM proxy** (`src/compose/litellm/`, pinned `ghcr.io/berriai/litellm:v1.90.0`, `network_mode: host` on `minerva:8888`). It routes by the OpenAI `model` field via a declarative `config.yaml` map:
+
+- `qwen3-coder-next` → `hutch.tworivers:8000` (coding cluster / opencode)
+- `reasoning` → `starsky.tworivers:8000` (g.deceiver reasoning-llm)
+- unknown `model` → HTTP 400 (no silent misroute)
+
+**Why LiteLLM over an HAProxy body-ACL:** model-name routing is its core competency, and we will hang a third model off this same endpoint (the Phase 6 g.deceiver captioning VLM on starsky) — that's one `config.yaml` line, versus a growing pile of HAProxy `req.body` regexes with buffer-size foot-guns. Cost is one lightweight async service on the LB host (no GPU), which already ran HAProxy.
+
+**Cutover was zero-downtime:** stood up LiteLLM on `minerva:8889` alongside the live HAProxy on `:8888`, verified both routes (incl. the reasoning model's thinking-channel surviving the proxy) and the unknown-model 400, then stopped HAProxy and rebound LiteLLM to `:8888`. opencode needed no change (same base_url, same `model`); g.deceiver's orchestrator repointed `REASONING_LLM_URL` `starsky:8000` → `minerva:8888` (g.deceiver `v0.6.9`, scoped orchestrator redeploy).
+
+- `deploy.sh all` now deploys the `litellm` stack to `$LB_HOST` (was `haproxy`). The `haproxy` stack stays in the repo as a documented fallback; deploy it explicitly if ever needed.
+- **Consequence/opening:** with a model-aware endpoint, "both Sparks in one cluster" no longer requires one shared model. A 2nd coder replica becomes a 2nd `qwen3-coder-next` backend in `config.yaml` (LiteLLM load-balances same-name backends); the captioning VLM becomes the `caption` model. Tracked in `TASKS.md`.
+
 ## 2026-06-10 — Moved HAProxy to the control plane (`minerva`) and pulled `starsky` for g.deceiver reasoning
 
 The g.deceiver build needed a dedicated GB10 for its reasoning model (`reasoning-llm`); a dense bf16 32B is memory-bandwidth-bound at ~4 tok/s on a GB10, so it wants a whole box for the A3B-AWQ thinking model. We pulled `starsky` from the coding cluster rather than co-locating (only ~25 GiB was free alongside the coding replica).
