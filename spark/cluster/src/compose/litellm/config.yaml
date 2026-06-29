@@ -26,12 +26,11 @@ model_list:
       model: hosted_vllm/reasoning
       api_base: http://starsky.tworivers:8000/v1
 
-  # Phase 6 (g.deceiver Sees) — the captioning VLM lands on starsky's spare UMA.
-  # Uncomment + set the port when the VLM stack is deployed; same endpoint, third model.
-  # - model_name: caption
-  #   litellm_params:
-  #     model: hosted_vllm/caption
-  #     api_base: http://starsky.tworivers:8002/v1
+  # Phase 6 (g.deceiver Sees) — Qwen2.5-VL captioning VLM, co-resident on starsky's spare UMA.
+  - model_name: caption
+    litellm_params:
+      model: hosted_vllm/caption
+      api_base: http://starsky.tworivers:8001/v1
 
 litellm_settings:
   # Pass request params through to vLLM unchanged (don't strip provider-specific
