@@ -2,7 +2,11 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-06-28 (latest)
+## 2026-06-29 (latest)
+
+- **Third model on the LB: `caption` (Qwen2.5-VL-7B) for g.deceiver Phase 6.** Added a `caption` entry to `litellm/config.yaml` routing to `starsky.tworivers:8001` — a Qwen2.5-VL-7B-Instruct (dense bf16) captioning VLM co-resident with reasoning-llm on starsky (reasoning gpu-util lowered 0.75 → 0.45, VLM at 0.25, sum < 0.9). One OpenAI-compatible multimodal endpoint now fronts three models across both Sparks: `qwen3-coder-next` → hutch, `reasoning` + `caption` → starsky. Verified end-to-end through the LB: a text-bearing test image returned a correct caption + verbatim in-image text (part numbers, pin labels). The VLM stack itself lives in g.deceiver (`infra/compose/starsky.yml`, `v0.6.10`); only the LB map changed here. Demonstrates the model-aware-router payoff — adding a model was one `config.yaml` line + a recreate, no HAProxy body-ACL.
+
+## 2026-06-28
 
 - **Model-aware router: LiteLLM replaced HAProxy on the LB.** The round-robin HAProxy on `minerva:8888` only ever fronted one model pool and ignored the request `model` field, so the reasoning box (starsky, serving g.deceiver) lived outside the cluster endpoint. Replaced it with a **LiteLLM** proxy (`src/compose/litellm/`, pinned `ghcr.io/berriai/litellm:v1.90.0`, `network_mode: host`) that routes by `model`: `qwen3-coder-next` → hutch, `reasoning` → starsky, unknown → HTTP 400. One endpoint now fronts both Sparks. **Zero-downtime cutover:** stood up on `:8889` next to the live HAProxy, verified both routes (incl. the reasoning model's `<think>` channel surviving the hop) + the unknown-model 400, then stopped HAProxy and rebound LiteLLM to `:8888`. opencode unchanged (same base_url + `model`); g.deceiver's orchestrator repointed `REASONING_LLM_URL` `starsky:8000` → `minerva:8888` (g.deceiver `v0.6.9`, scoped orchestrator redeploy). `deploy.sh all` now ships the `litellm` stack to `$LB_HOST`; `haproxy` retained as an explicit-deploy fallback. Decision: `docs/decisions.md` (2026-06-28). Opens the door to a 2nd coder replica (a 2nd `qwen3-coder-next` backend in `config.yaml`) and the Phase 6 captioning VLM (`caption` → starsky) on the same endpoint without a shared single model.
 
