@@ -24,5 +24,12 @@
         }
       }
     }
+  },
+  "mcp": {
+    "corpus": {
+      "type": "remote",
+      "url": "http://minerva.tworivers:8087/mcp",
+      "enabled": true
+    }
   }
 }
