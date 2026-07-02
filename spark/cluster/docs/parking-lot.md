@@ -114,3 +114,25 @@ Possible paths forward:
 1. Reconstruct `src/compose/nim/compose.yml` from git (`git show 4cf2a3a:src/compose/nim/compose.yml > src/compose/nim/compose.yml`), then change `image:` to `nvcr.io/nim/qwen/qwen3-32b-dgx-spark:latest`, drop `NIM_MODEL_PATH` (per-model NIMs come pre-configured with their model), bump `NIM_SERVED_MODEL_NAME` if desired.
 2. Stop starsky vllm to free the GPU; deploy NIM to starsky.
 3. If healthy, deploy to hutch, then update `haproxy.cfg` backends to port 8001 and redeploy haproxy.
+
+## Migrate secrets from the `vault` (openssl + S3) to SOPS + age
+
+**Deferred (2026-07-02).** g.deceiver is adopting **SOPS + age** with encrypted secrets in a new
+CodeCommit repo `hemlighet` (see `g.deceiver/docs/plans/ecr-sops-deploy.md`). code-monkeys currently
+manages secrets via the homegrown `vault` script (openssl-AES tarballs — `.ssh.vault`/`.env.vault`/
+`.aws.vault` — synced to S3). Fold the cluster's secrets (`cluster.env`, per-stack `.env` incl.
+`HF_TOKEN`) into the same SOPS/age model so the fleet has one secrets mechanism.
+
+**Retry trigger:** after g.deceiver Phase 0 lands `hemlighet` + the age-key/`.sops.yaml` scaffolding —
+reuse it here (add `code-monkeys/*.env.sops`, seed each host's age key), then retire `vault` for the
+cluster. The SSH keys the vault also holds are a separate concern — keep or migrate deliberately.
+
+## Dedicated build machine when a 3rd+ Spark arrives
+
+**Deferred (2026-07-02).** Today all images build **native-on-host** (the host that runs an image
+builds + pushes it to ECR; prod hosts therefore carry build toolchains + push creds). When cluster
+capacity grows (more Spark boxes), promote one to a **dedicated builder**: it does all `buildx`/push,
+prod hosts go **pull-only** (tighter blast radius, builds stop competing with inference).
+
+**Retry trigger:** a spare Spark (or any host not needed for serving) becomes available — move the
+push IAM identity + build caches there and downgrade the serving hosts to ECR pull-only.

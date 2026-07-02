@@ -114,3 +114,21 @@ Driven by the g.deceiver build (`feat/phase-1-reasoning`): starsky was pulled fr
 - [x] **Replace HAProxy on minerva with a model-aware router.** (2026-06-28) Replaced the round-robin HAProxy with a **LiteLLM** proxy (`src/compose/litellm/`, pinned `v1.90.0`) on minerva:8888. Routes by `model`: `qwen3-coder-next` → hutch, `reasoning` → starsky; unknown model → HTTP 400. Zero-downtime cutover (stood up on :8889, verified both routes + the reasoning thinking-channel, then took :8888). opencode needed no change (same base_url); g.deceiver's orchestrator repointed `REASONING_LLM_URL` → minerva:8888 (g.deceiver `v0.6.9`). `deploy.sh all` now deploys the `litellm` stack to `$LB_HOST`; the `haproxy` stack is retained as a fallback but is no longer the default LB.
 - [ ] Bring the coding cluster back to two replicas when capacity allows (hutch is currently solo), or formally accept single-replica coding. (Note: with the model-aware router, a 2nd coder replica is just a 2nd `qwen3-coder-next` backend in `litellm/config.yaml`, load-balanced by LiteLLM.)
 - [ ] Phase 6 (g.deceiver Sees): add the captioning VLM as a third model (`caption` → starsky) — one entry in `litellm/config.yaml`, already stubbed there commented.
+
+## Phase (planned) — migrate primates + cuda-vllm to ECR
+
+Part of the fleet-wide unified deploy (build native-on-host → push to a private ECR → pull/run),
+decided with g.deceiver — see `g.deceiver/docs/plans/ecr-sops-deploy.md`. Replaces `ship-image.sh`
+(`docker save | zstd | ssh | docker load`) and, once g.deceiver's compose config comes with images
+from ECR, removes the need for `deploy.sh`'s `tar | ssh` config sync too.
+
+- [ ] Provision ECR repos under the `codemonkeys/*` namespace (`us-east-1`, private) for the primate
+  base images + `cuda-base`/`cuda-vllm`; add a lifecycle policy (expire untagged, keep last N).
+- [ ] **Primates → multi-arch in ECR.** Build each primate **natively per arch** on a fleet host of
+  that arch (x86 + arm64) and assemble a single multi-arch manifest per image in ECR. (QEMU is *not*
+  used — native hosts of both arches exist; it stays a "where possible" fallback only.)
+- [ ] `cuda-vllm`/`cuda-base` build natively on a GPU host of the target arch (Spark for sm_121,
+  drain-one as `spark-build` already does; a 4090 host for sm_89), then push to ECR — no cross-build.
+- [ ] Rewrite `deploy.sh` to `docker compose pull` from ECR + `up -d` (drop the tar-stream + the
+  in-line build/ship); hosts auth via `amazon-ecr-credential-helper`.
+- [ ] Retire `ship-image.sh` once all images are ECR-resident.
