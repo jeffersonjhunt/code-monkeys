@@ -44,6 +44,9 @@ nvidia/cuda:13.2.1-{runtime,devel}-ubuntu24.04
     ├── cuda-llama-cpp   (build stage on raw cuda devel; shipping stages on cuda-base:runtime — full/light/server; cross-GPU sm_89/120/121)
     ├── cuda-comfy       (cuda-base:runtime; ComfyUI node-based Stable Diffusion GUI, cross-GPU via PyTorch wheels)
     └── cuda-vllm        (build stage on raw cuda devel; runtime stage on cuda-base:devel; vLLM v0.21.0 source build with native sm_89/120/121 cutlass — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE on Blackwell, and runs on the 4090s)
+
+alpine:3.21
+└── nyckel           (age + sops ONLY — the fleet's SOPS/age secrets-ops tooling for the `hemlighet` repo. Deliberately NOT FROM codemonkey: a secrets image stays tiny + minimal-surface and builds on any host/arch with no base. Run containerized, never host-installed.)
 ```
 
 `cuda-base` is built in two flavors from a single `cuda-base.dockerfile` via the `CUDA_FLAVOR` build arg: `:runtime` (slim, for images that only run prebuilt binaries) and `:devel` (ships nvcc + headers, for images that JIT-compile CUDA at runtime). The three `cuda-*` `.build` Makefile targets list `cuda-base.build` as a prerequisite, so it is built automatically (and the spark-build skill, which runs `make <img>.build`, picks it up for free). Build stages of the multi-stage images stay on the raw `nvidia/cuda` devel image — they are throwaway, so only the shipping stages extend `cuda-base`.
