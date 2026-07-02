@@ -1,6 +1,6 @@
 # Makefile for primates project
 
-TARGETS := minion embedded miniforge3 claude opencode kiro lamp huggingface
+TARGETS := minion embedded miniforge3 claude opencode kiro lamp huggingface nyckel
 
 MAKEFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 DIR := $(notdir $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))
@@ -33,6 +33,7 @@ help:
 	@echo "  lamp.build             Build LAMP stack (Apache, MariaDB, PHP)"
 	@echo "  huggingface.build      Build Hugging Face environment (python3 venv, hf cli)"
 	@echo "  minion.build           Build minion (bare codemonkey extension)"
+	@echo "  nyckel.build           Build nyckel (Alpine secrets-ops primate: age + sops)"
 	@echo "  cuda-base.build        Build the shared CUDA base (cuda-base:runtime + cuda-base:devel)"
 	@echo "  cuda-llama-cpp.build   Build llama.cpp (cross-GPU sm_89/120/121; requires NVIDIA kernel)"
 	@echo "  cuda-comfy.build       Build ComfyUI (cross-GPU; requires NVIDIA kernel)"
