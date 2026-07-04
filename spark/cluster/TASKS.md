@@ -122,13 +122,15 @@ decided with g.deceiver — see `g.deceiver/docs/plans/ecr-sops-deploy.md`. Repl
 (`docker save | zstd | ssh | docker load`) and, once g.deceiver's compose config comes with images
 from ECR, removes the need for `deploy.sh`'s `tar | ssh` config sync too.
 
-- [ ] Provision ECR repos under the `codemonkeys/*` namespace (`us-east-1`, private) for the primate
-  base images + `cuda-base`/`cuda-vllm`; add a lifecycle policy (expire untagged, keep last N).
-- [ ] **Primates → multi-arch in ECR.** Build each primate **natively per arch** on a fleet host of
-  that arch (x86 + arm64) and assemble a single multi-arch manifest per image in ECR. (QEMU is *not*
-  used — native hosts of both arches exist; it stays a "where possible" fallback only.)
-- [ ] `cuda-vllm`/`cuda-base` build natively on a GPU host of the target arch (Spark for sm_121,
-  drain-one as `spark-build` already does; a 4090 host for sm_89), then push to ECR — no cross-build.
-- [ ] Rewrite `deploy.sh` to `docker compose pull` from ECR + `up -d` (drop the tar-stream + the
-  in-line build/ship); hosts auth via `amazon-ecr-credential-helper`.
+- [x] Provision ECR repos under `codemonkeys/*` (`us-east-1`, private) + lifecycle (expire untagged,
+  keep last 15). Done 2026-07-02 alongside g.deceiver's ECR setup.
+- [x] `cuda-base` (`runtime`+`devel`) + `cuda-vllm` + `nyckel` built **natively per arch** (arm64 on
+  hutch, amd64 on stimpy; `cuda-vllm` drain-safe: stop model → build → restart) and assembled as
+  multi-arch manifests in ECR. Done 2026-07-03.
+- [ ] **Remaining primates → multi-arch in ECR.** The rest of the cluster's images (`codemonkey`,
+  `minion`, `cuda-comfy`, `cuda-llama-cpp`, `embedded`, …) — same native-per-arch → manifest pattern.
+  Use `g.deceiver/infra/build-push.sh` as the reference (containerized `amazon/aws-cli` login).
+- [ ] Rewrite the cluster `deploy.sh` to `docker compose pull` from ECR + `up -d` (drop the tar-stream +
+  the in-line build/ship). Auth via **containerized `amazon/aws-cli` login** (the approach g.deceiver
+  landed on — no host installs), not the ecr-credential-helper.
 - [ ] Retire `ship-image.sh` once all images are ECR-resident.
