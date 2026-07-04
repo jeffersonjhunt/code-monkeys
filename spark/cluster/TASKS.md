@@ -130,7 +130,11 @@ from ECR, removes the need for `deploy.sh`'s `tar | ssh` config sync too.
 - [ ] **Remaining primates → multi-arch in ECR.** The rest of the cluster's images (`codemonkey`,
   `minion`, `cuda-comfy`, `cuda-llama-cpp`, `embedded`, …) — same native-per-arch → manifest pattern.
   Use `g.deceiver/infra/build-push.sh` as the reference (containerized `amazon/aws-cli` login).
-- [ ] Rewrite the cluster `deploy.sh` to `docker compose pull` from ECR + `up -d` (drop the tar-stream +
-  the in-line build/ship). Auth via **containerized `amazon/aws-cli` login** (the approach g.deceiver
-  landed on — no host installs), not the ecr-credential-helper.
-- [ ] Retire `ship-image.sh` once all images are ECR-resident.
+- [x] Rewrite the cluster `deploy.sh`: for the vllm stack it now ECR-logs-in (containerized
+  `amazon/aws-cli`, verify-token) + `docker compose pull` from ECR + `up -d`; config still tar-streams.
+  vllm compose default flipped to the ECR `cuda-vllm` ref. Done 2026-07-04.
+- [x] Retire `ship-image.sh` — removed; images come from ECR. Done 2026-07-04.
+- [x] **SOPS (vault → age) for the cluster's one secret.** `HF_TOKEN` (+ vllm serving config) encrypted
+  into `hemlighet` as `code-monkeys/cluster-vllm.env` (recipients admin + hutch); `deploy.sh` decrypts
+  it on the target into `.env`. `vault`'s **env-secret** role is retired for the cluster; its SSH-key /
+  AWS-creds bundle stays a separate concern (docs/parking-lot.md). Done 2026-07-04.
