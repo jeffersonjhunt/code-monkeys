@@ -127,6 +127,13 @@ manages secrets via the homegrown `vault` script (openssl-AES tarballs — `.ssh
 reuse it here (add `code-monkeys/*.env.sops`, seed each host's age key), then retire `vault` for the
 cluster. The SSH keys the vault also holds are a separate concern — keep or migrate deliberately.
 
+**Update (2026-07-04) — env secrets DONE for the cluster.** The cluster's only real env secret,
+`HF_TOKEN` (in `vllm/.env`, alongside its serving config), is now SOPS/age-encrypted in `hemlighet` as
+`code-monkeys/cluster-vllm.env` (recipients admin + hutch); `deploy.sh` decrypts it on the target at
+deploy. `cluster.env` is config-only (no secret) and stays in git. So `vault`'s **env** role is retired
+for the cluster. **Still on `vault` (deliberately deferred):** the **SSH keys** and **`.aws` creds** it
+bundles — those fold into the separate "off-`jhunt` / per-host IAM + service accounts" effort, not here.
+
 ## Dedicated build machine when a 3rd+ Spark arrives
 
 **Deferred (2026-07-02).** Today all images build **native-on-host** (the host that runs an image

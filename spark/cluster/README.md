@@ -56,16 +56,9 @@ Deploy:
 ./src/scripts/deploy.sh <host> vllm
 ```
 
-`deploy.sh` rsyncs the relevant `src/compose/<stack>/` directory to `~/spark-deploy/<stack>/` on the host and runs `docker compose up -d`. For the haproxy stack it renders `haproxy.cfg` from `haproxy.cfg.template` with one `server` line per replica before syncing.
+`deploy.sh` tar-streams the relevant `src/compose/<stack>/` directory to `~/spark-deploy/<stack>/` on the host and runs `docker compose up -d`. For the **vllm** stack it additionally, on the target: ECR-logs-in, **decrypts the stack `.env`** (HF_TOKEN + serving config) from the `hemlighet` repo, and **`docker compose pull`s `cuda-vllm` from private ECR** — so both the image and the secret arrive without a host-to-host copy or a plaintext `.env`. (Target needs `~/.aws`, an age key, and a `hemlighet` clone.) For haproxy it renders `haproxy.cfg` from the template first.
 
-When the `cuda-vllm` image is rebuilt in `../../primates/`, ship it from the box that built it to the others:
-
-```bash
-./src/scripts/ship-image.sh <src-host> <dst-host> cuda-vllm:latest   # one dest
-./src/scripts/ship-image.sh <src-host> all        cuda-vllm:latest   # every other replica
-```
-
-It streams `docker save | zstd -3 | ssh | docker load` end-to-end (~3.5 min for 6.7 GB compressed over LAN). Then `deploy.sh` to pick up the new image.
+When the `cuda-vllm` image is rebuilt, **push it to ECR** (native-on-host → `codemonkeys/cuda-vllm:latest`; see `g.deceiver/infra/build-push.sh` for the pattern), then `deploy.sh <host> vllm` pulls it. The old host→host `ship-image.sh` (`docker save | zstd | ssh | docker load`) is **retired** — images come from ECR now.
 
 ## Status
 
@@ -89,8 +82,7 @@ spark-cluster/
         ├── lib/load-config.sh  sourced by all scripts to read cluster.env
         ├── preflight.sh        read-only host discovery
         ├── bootstrap.sh        one-time host prep
-        ├── deploy.sh           sync + docker compose up -d
-        ├── ship-image.sh       stream a docker image src->dst via save | zstd | ssh | load
+        ├── deploy.sh           sync config + ECR pull + SOPS-decrypt .env + docker compose up -d
         ├── smoke-test.sh       /health + /v1/models + /v1/chat/completions probe
         ├── bench.py            concurrent-client throughput probe
         └── bench-sweep.sh      c=1..32 sweep wrapper
