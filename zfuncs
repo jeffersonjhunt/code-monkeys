@@ -44,6 +44,26 @@ function setenv() {
   echo "loaded: ${__ENV_FILE}"
 }
 
+# Ensure <image>:latest exists locally; if not, pull it from the fleet ECR and retag to the bare
+# local name the primate functions expect. Lets `primate <name>` work on a host that has never
+# built the image. Creds come from the host ~/.aws (containerized aws-cli — no host install).
+function _primate_ensure_image() {
+  local __img=$1
+  docker image inspect "${__img}:latest" >/dev/null 2>&1 && return 0
+  local __ecr="${CODEMONKEYS_ECR:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
+  local __ref="${__ecr}/codemonkeys/${__img}:latest"
+  echo "  ${__img}:latest not present locally — pulling ${__ref}"
+  docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli \
+    ecr get-login-password --region "${AWS_REGION:-us-east-1}" 2>/dev/null \
+    | docker login --username AWS --password-stdin "$__ecr" >/dev/null 2>&1
+  if docker pull "$__ref"; then
+    docker tag "$__ref" "${__img}:latest"
+  else
+    echo "  ERROR: ${__img} is not local and could not be pulled from ECR (${__ref})" >&2
+    return 1
+  fi
+}
+
 # starts a primate container with a persistent home volume
 function primate() {
 
@@ -65,6 +85,8 @@ function primate() {
 
   local __IMAGE=$1
   shift
+
+  _primate_ensure_image "$__IMAGE" || return 1
 
   local __WORKSPACE_MOUNT=()
   if [[ "$__NO_WORKSPACE" == false ]]; then
@@ -128,17 +150,12 @@ function primate() {
 }
 
 function _primate() {
-  local known_primates=(codemonkey minion embedded miniforge3 claude opencode kiro llama-cpp-spark comfy-ui-spark lamp huggingface)
-  local local_images=(${(f)"$(docker images --format '{{.Repository}}' 2>/dev/null)"})
-  local available=()
-  for name in "${known_primates[@]}"; do
-    if (( ${local_images[(Ie)$name]} )); then
-      available+=("$name")
-    fi
-  done
+  # All fleet primates — any not present locally is pulled from ECR on demand by _primate_ensure_image,
+  # so offer the full set (names match the ECR repos under codemonkeys/*), not just locally-built images.
+  local known_primates=(codemonkey minion embedded miniforge3 claude opencode kiro lamp huggingface spark-bench nyckel cuda-base cuda-vllm cuda-comfy cuda-llama-cpp)
 
   case "$CURRENT" in
-    2) _describe 'primate image' available ;;
+    2) _describe 'primate image' known_primates ;;
     *) _values 'options' '--no-workspace[Do not mount the current directory as workspace]' ;;
   esac
 }
@@ -167,6 +184,8 @@ function primate-upgrade() {
       return 0
     fi
   fi
+
+  _primate_ensure_image codemonkey || return 1
 
   for __IMAGE in "${__IMAGES[@]}"; do
     local __VOL="${__IMAGE}-home"
@@ -249,6 +268,8 @@ function primate-session() {
 
   local __IMAGE=$1
   shift
+
+  _primate_ensure_image "$__IMAGE" || return 1
 
   # optional session/container name (defaults to <image>-session); only treated
   # as a name if it doesn't look like a docker flag
