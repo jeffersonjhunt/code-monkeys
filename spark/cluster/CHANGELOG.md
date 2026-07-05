@@ -2,7 +2,12 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-06-29 (latest)
+## 2026-07-04 (latest)
+
+- **LiteLLM LB restored on minerva (silently down since the bare-metal migration) + now monitored.** The model-aware LB (`minerva:8888`) had been **dead since minerva's VM→bare-metal migration** — its `~/spark-deploy/litellm` was never carried over, and because the LB lives here (not in g.deceiver's `minerva.yml`), no `deploy.sh minerva` ever restored it. g.deceiver's orchestrator routes reasoning **through** the LB (`REASONING_LLM_URL=minerva:8888`), so **reasoning was unreachable** — Gay silently degraded to fast-only (fastpath hits `ren` directly, so the ops dashboard still read "systems nominal"). **Restored** via `./src/scripts/deploy.sh minerva.tworivers litellm` (config.yaml unchanged); verified end-to-end through `:8888`: `reasoning` → starsky and `qwen3-coder-next` → hutch both route. **Recurrence fix:** g.deceiver's dashboard now monitors the LB — `litellm` is a health target (`/health/liveliness`) and the Reasoning/Coder model rows are gated on the LB actually routing them (g.deceiver `v0.7.19`), so a dead router shows **red** instead of a false "nominal." Redeploy the LB after any minerva rebuild (`docs/runbook.md`).
+- **Cluster runs as `gdeceiver`.** Part of the fleet-wide off-`jhunt` service-account migration: `cluster.env SSH_USER=gdeceiver`, deploys land under `/home/gdeceiver/spark-deploy`, images pull from private ECR (both the vllm and litellm restores ran as gdeceiver). The vllm compose default is the ECR `cuda-vllm` ref; models moved to `/srv/models`. See g.deceiver `docs/plans/{iam-least-privilege,os-service-accounts}.md`.
+
+## 2026-06-29
 
 - **Third model on the LB: `caption` (Qwen2.5-VL-7B) for g.deceiver Phase 6.** Added a `caption` entry to `litellm/config.yaml` routing to `starsky.tworivers:8001` — a Qwen2.5-VL-7B-Instruct (dense bf16) captioning VLM co-resident with reasoning-llm on starsky (reasoning gpu-util lowered 0.75 → 0.45, VLM at 0.25, sum < 0.9). One OpenAI-compatible multimodal endpoint now fronts three models across both Sparks: `qwen3-coder-next` → hutch, `reasoning` + `caption` → starsky. Verified end-to-end through the LB: a text-bearing test image returned a correct caption + verbatim in-image text (part numbers, pin labels). The VLM stack itself lives in g.deceiver (`infra/compose/starsky.yml`, `v0.6.10`); only the LB map changed here. Demonstrates the model-aware-router payoff — adding a model was one `config.yaml` line + a recreate, no HAProxy body-ACL.
 

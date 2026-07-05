@@ -5,6 +5,27 @@ Operate / teardown procedures for the spark-cluster vLLM deployment.
 > Examples below use the maintainer's host names and SSH user (`jhunt`). Substitute the values from your `cluster.env` (`$REPLICAS`, `$LB_HOST`, `$LB_PORT`, `$SSH_USER`) when running the commands.
 >
 > **Current topology (2026-06-10):** the LB runs on `minerva:8888` (control plane, standalone — not a replica); `starsky` was pulled from the cluster for g.deceiver reasoning, so `hutch` is the sole coding replica. See `docs/decisions.md`. Examples below reflect this.
+>
+> **The LB is LiteLLM, not HAProxy** (replaced 2026-06-28; see CHANGELOG) and **deploys run as `gdeceiver`**
+> (`cluster.env SSH_USER=gdeceiver`, `~/spark-deploy` under `/home/gdeceiver`). The HAProxy references
+> below are stale fallback docs.
+
+## Restore the LiteLLM LB (after a minerva rebuild)
+
+The LB lives in **this repo** (`src/compose/litellm/`), **not** in g.deceiver's `minerva.yml`, so a minerva
+rebuild / re-migration does **not** bring it back — and its loss is nearly invisible (g.deceiver's
+orchestrator routes reasoning THROUGH `minerva:8888`, so reasoning silently degrades to fast-only; this is
+exactly what happened after the 2026-07-01 bare-metal migration). Restore it (config is idempotent):
+
+```bash
+./src/scripts/deploy.sh minerva.tworivers litellm   # tars config -> /home/gdeceiver/spark-deploy/litellm, up -d
+# verify both routes through the LB:
+curl -s http://minerva.tworivers:8888/v1/models   # expect reasoning, qwen3-coder-next (+ caption)
+```
+
+`restart: unless-stopped` survives reboots, so this is only needed after a host rebuild or an explicit
+teardown. The g.deceiver **ops dashboard now monitors the LB** (a `litellm` health row + the Reasoning/Coder
+rows gated on the LB actually routing them, g.deceiver `v0.7.19`), so a dead router shows red on the wall.
 
 ## Endpoints
 
