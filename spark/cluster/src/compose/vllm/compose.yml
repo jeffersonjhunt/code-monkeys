@@ -17,7 +17,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ${MODEL_DIR:-/home/jhunt/Models}:/models:ro
+      - ${MODEL_DIR:-/srv/models}:/models:ro
       # Persist vLLM's JIT/compile caches (torch.compile graphs + FlashInfer
       # cutlass NVFP4 kernels) across container recreates. Without this, every
       # image rebuild/restart pays a full cold cutlass compile (~45 min outage);
