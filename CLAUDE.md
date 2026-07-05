@@ -59,12 +59,32 @@ Miniforge3-derived images each get a conda environment (`<image>-env`) that is a
 
 The codemonkey/miniforge3 chain is **arch-aware via runtime detection** (`uname -m`, `dpkg --print-architecture`) and **TARGETARCH** — the same dockerfiles build cleanly on both aarch64 (Mjolnir, primary dev) and x86_64 (intel-nuc.tworivers, used for `spark-bench`). The CUDA chain builds from `cuda-base`, whose arch defaults span sm_89 (RTX 4090), sm_120 (RTX 5090), and sm_121 (DGX Spark) so the family runs on x86 NVIDIA boxes as well as Spark. `cuda-vllm` now ships native sm_89 alongside sm_120/sm_121 (so it runs on the 4090s too); pass `--build-arg TORCH_CUDA_ARCH_LIST="12.0 12.1+PTX"` for a slimmer Spark-only build.
 
+## Registry — published to ECR (`codemonkeys/*`)
+
+The whole family is published to the private registry `521147433280.dkr.ecr.us-east-1.amazonaws.com/codemonkeys/*`,
+**multi-arch** (`linux/amd64` + `linux/arm64`) so any fleet host pulls its native arch. Exceptions: **`spark-bench`
+is amd64-only** (SWE-Bench testbed images are x86-only), and **`cuda-base` publishes `:runtime` + `:devel`** (no
+`:latest`). Because the CPU chain `FROM`s local tags, a clean multi-arch build means building the chain **natively
+on one x86_64 host and one aarch64 host**:
+
+```bash
+# on an x86_64 push host (e.g. minerva) AND an aarch64 push host (e.g. hutch):
+primates/build-push.sh                       # CPU chain -> <name>:latest-<amd64|arm64>
+primates/build-push.sh cuda-comfy cuda-llama-cpp   # GPU images, on a GPU host of each arch
+# then once, anywhere with ECR creds:
+primates/manifest-push.sh                     # assemble multi-arch :latest via buildx imagetools
+```
+
+Creds come from the host `~/.aws` (default profile = the scoped `fleet-ecr-push` identity, which covers
+`codemonkeys/*`). The **`primate <name>` shell function pulls from ECR on demand** (`_primate_ensure_image`) and
+retags to the local name, so a fresh host runs any primate without building it first.
+
 ## Key Conventions
 
 - Dockerfiles use `<image-name>.dockerfile` naming; `codemonkey.dockerfile` lives at root, all others in `primates/`
 - Container user is `codemonkey` (UID/GID 1000) with sudo, shell is zsh with Oh-My-Zsh
 - APT cleanup pattern in Dockerfiles: `apt-get autoclean -y && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*`
-- Standard images target aarch64 (ARM64); the `cuda-*` images build from `cuda-base` with cross-GPU arch defaults (sm_89/sm_120/sm_121), including `cuda-vllm` (override its `TORCH_CUDA_ARCH_LIST` for a slimmer single-target build)
+- Standard images are **multi-arch (amd64 + arm64), published to ECR** (`codemonkeys/*`; see Registry above) — `spark-bench` is amd64-only; the `cuda-*` images build from `cuda-base` with cross-GPU arch defaults (sm_89/sm_120/sm_121), including `cuda-vllm` (override its `TORCH_CUDA_ARCH_LIST` for a slimmer single-target build)
 - Shell config is layered: `zshrc.template` sources `~/.zbase` and `~/.zaliases`; functions live in `zfuncs`
 - Git remote is GitHub; main branch is `master`
 - Vault files (`*.vault`) and personal assets (`face`, `gitconfig`) are gitignored — secrets are never committed

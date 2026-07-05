@@ -127,9 +127,11 @@ from ECR, removes the need for `deploy.sh`'s `tar | ssh` config sync too.
 - [x] `cuda-base` (`runtime`+`devel`) + `cuda-vllm` + `nyckel` built **natively per arch** (arm64 on
   hutch, amd64 on stimpy; `cuda-vllm` drain-safe: stop model → build → restart) and assembled as
   multi-arch manifests in ECR. Done 2026-07-03.
-- [ ] **Remaining primates → multi-arch in ECR.** The rest of the cluster's images (`codemonkey`,
-  `minion`, `cuda-comfy`, `cuda-llama-cpp`, `embedded`, …) — same native-per-arch → manifest pattern.
-  Use `g.deceiver/infra/build-push.sh` as the reference (containerized `amazon/aws-cli` login).
+- [x] **Remaining primates → multi-arch in ECR. Done 2026-07-05.** All 15 primates now under
+  `codemonkeys/*`, multi-arch (amd64+arm64) — `spark-bench` amd64-only (SWE-Bench testbeds are x86-only),
+  `cuda-base` as `:runtime`/`:devel`. Native-per-arch build on minerva (amd64) + hutch (arm64) via the new
+  `primates/build-push.sh`, assembled with `primates/manifest-push.sh` (buildx imagetools). `primate <name>`
+  pulls from ECR on demand (`_primate_ensure_image` in `zfuncs`). Verified pull+run on both arches.
 - [x] Rewrite the cluster `deploy.sh`: for the vllm stack it now ECR-logs-in (containerized
   `amazon/aws-cli`, verify-token) + `docker compose pull` from ECR + `up -d`; config still tar-streams.
   vllm compose default flipped to the ECR `cuda-vllm` ref. Done 2026-07-04.
