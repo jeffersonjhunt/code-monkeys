@@ -25,6 +25,42 @@ make clean                  # Remove all built images
 
 All builds use `docker buildx build`. `cuda-llama-cpp` and `cuda-vllm` are multi-stage (`--target`).
 
+## Publishing to ECR (`codemonkeys/*`)
+
+The family is published to the private registry
+`521147433280.dkr.ecr.us-east-1.amazonaws.com/codemonkeys/*`, **multi-arch (amd64 + arm64)** so any fleet
+host pulls its native arch. The `make` targets above only build **local `<name>:latest` for the host arch**;
+two helper scripts publish to ECR.
+
+**Why native-per-arch (not `buildx --platform`):** the CPU chain `FROM`s local tags
+(`codemonkey → miniforge3 → claude`…), so a single emulated multi-platform build is unreliable. Instead
+build the chain **natively on one x86_64 host and one aarch64 host**, push per-arch tags, then assemble the
+manifest.
+
+```bash
+# 1. On an x86_64 push host (minerva) AND an aarch64 push host (hutch):
+./build-push.sh                            # CPU chain, dependency order -> <name>:latest-<amd64|arm64>
+./build-push.sh cuda-comfy cuda-llama-cpp  # GPU images — run on a GPU host of each arch (stimpy amd64, hutch arm64)
+
+# 2. Once, on any host with ECR creds (assembles the multi-arch :latest manifests):
+./manifest-push.sh
+```
+
+- **`build-push.sh`** derives the arch from `uname -m`, logs into ECR (containerized `amazon/aws-cli`, host
+  `~/.aws`), then `make <name>.build FRESH=false` → tag → push `<name>:latest-<arch>` for each primate.
+- **`manifest-push.sh`** combines the per-arch tags into a multi-arch `:latest` via **`docker buildx
+  imagetools create`** (plain `docker manifest create` fails — `docker push` wraps each build in a
+  single-entry manifest list it can't nest). It includes only the arches present, so `spark-bench` (amd64
+  only) still gets a `:latest`.
+- **Creds:** the default `~/.aws` profile is the scoped `fleet-ecr-push` identity, which covers
+  `codemonkeys/*`. **Creating a new repo** needs admin — use the `[jhunt]` fallback profile once
+  (`aws ecr create-repository --profile jhunt --repository-name codemonkeys/<name>`).
+- **Exceptions:** `spark-bench` is **amd64-only** (SWE-Bench testbeds are x86); `cuda-base` ships
+  `:runtime` + `:devel`, no `:latest`.
+
+`primate <name>` (in `../zfuncs`) pulls from ECR on demand and retags to the local name, so a fresh host
+runs any primate without building it first.
+
 ## Image Hierarchy
 
 ```
