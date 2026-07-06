@@ -28,7 +28,7 @@ Phase 1 confirmed driver, CUDA, Docker, and nvidia-container-toolkit are already
 - [x] Run `bootstrap.sh` on hutch (same)
 - [x] Cross-resolution + connectivity verified via DNS (starsky↔hutch ping <2ms)
 - [x] Reverted earlier `/etc/hosts` writes — DNS already resolves both names; managed block removed
-- [ ] Populate `src/compose/vllm/.env` with `HUGGING_FACE_HUB_TOKEN` (carries into Phase 5)
+- [x] ~~Populate `src/compose/vllm/.env` with `HUGGING_FACE_HUB_TOKEN`~~ Obsolete — the vllm `.env` (var `HF_TOKEN`) is now decrypted from `hemlighet` on the target at deploy time; no local `.env` to populate.
 
 ## Phase 4 — Model weights
 
@@ -89,7 +89,7 @@ Track D (validation with known-good model). Long-term target Qwen3-Coder-Next-NV
 
 - [x] `cluster.env` / `cluster.env.example` at project root; gitignored real file
 - [x] `src/scripts/lib/load-config.sh` shared loader; validates required vars; LB_HOST ∈ REPLICAS
-- [x] All seven scripts source the inventory (`deploy.sh`, `ship-image.sh`, `model-pull.sh`, `bootstrap.sh`, `smoke-test.sh`, `bench-sweep.sh`, `bench.py`)
+- [x] All six scripts source the inventory (`deploy.sh`, `model-pull.sh`, `bootstrap.sh`, `smoke-test.sh`, `bench-sweep.sh`, `bench.py`)
 - [x] `haproxy.cfg` → `haproxy.cfg.template` with `# __REPLICAS__` marker; `deploy.sh` renders before sync; generated cfg gitignored
 - [x] Living docs updated (README, CLAUDE.md, architecture.md, runbook.md); historical docs preserved
 - [x] Validated against live cluster: `deploy.sh all` clean, all three containers recovered to healthy, smoke-test PASS through HAProxy + each replica direct
@@ -113,7 +113,7 @@ Driven by the g.deceiver build (`feat/phase-1-reasoning`): starsky was pulled fr
 - [x] Tore down starsky's HAProxy + coding vLLM; starsky now serves g.deceiver reasoning-llm.
 - [x] **Replace HAProxy on minerva with a model-aware router.** (2026-06-28) Replaced the round-robin HAProxy with a **LiteLLM** proxy (`src/compose/litellm/`, pinned `v1.90.0`) on minerva:8888. Routes by `model`: `qwen3-coder-next` → hutch, `reasoning` → starsky; unknown model → HTTP 400. Zero-downtime cutover (stood up on :8889, verified both routes + the reasoning thinking-channel, then took :8888). opencode needed no change (same base_url); g.deceiver's orchestrator repointed `REASONING_LLM_URL` → minerva:8888 (g.deceiver `v0.6.9`). `deploy.sh all` now deploys the `litellm` stack to `$LB_HOST`; the `haproxy` stack is retained as a fallback but is no longer the default LB.
 - [ ] Bring the coding cluster back to two replicas when capacity allows (hutch is currently solo), or formally accept single-replica coding. (Note: with the model-aware router, a 2nd coder replica is just a 2nd `qwen3-coder-next` backend in `litellm/config.yaml`, load-balanced by LiteLLM.)
-- [ ] Phase 6 (g.deceiver Sees): add the captioning VLM as a third model (`caption` → starsky) — one entry in `litellm/config.yaml`, already stubbed there commented.
+- [x] Phase 6 (g.deceiver Sees): add the captioning VLM as a third model (`caption` → starsky) — one entry in `litellm/config.yaml` (`caption` → `starsky:8001`). Done 2026-06-29 (CHANGELOG).
 
 ## Phase (planned) — migrate primates + cuda-vllm to ECR
 
@@ -127,8 +127,8 @@ from ECR, removes the need for `deploy.sh`'s `tar | ssh` config sync too.
 - [x] `cuda-base` (`runtime`+`devel`) + `cuda-vllm` + `nyckel` built **natively per arch** (arm64 on
   hutch, amd64 on stimpy; `cuda-vllm` drain-safe: stop model → build → restart) and assembled as
   multi-arch manifests in ECR. Done 2026-07-03.
-- [x] **Remaining primates → multi-arch in ECR. Done 2026-07-05.** All 15 primates now under
-  `codemonkeys/*`, multi-arch (amd64+arm64) — `spark-bench` amd64-only (SWE-Bench testbeds are x86-only),
+- [x] **Remaining primates → multi-arch in ECR. Done 2026-07-05.** All 16 primates now under
+  `codemonkeys/*` (the `samba` primate was added + published 2026-07-06), multi-arch (amd64+arm64) — `spark-bench` amd64-only (SWE-Bench testbeds are x86-only),
   `cuda-base` as `:runtime`/`:devel`. Native-per-arch build on minerva (amd64) + hutch (arm64) via the new
   `primates/build-push.sh`, assembled with `primates/manifest-push.sh` (buildx imagetools). `primate <name>`
   pulls from ECR on demand (`_primate_ensure_image` in `zfuncs`). Verified pull+run on both arches.

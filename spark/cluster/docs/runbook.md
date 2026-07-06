@@ -2,7 +2,7 @@
 
 Operate / teardown procedures for the spark-cluster vLLM deployment.
 
-> Examples below use the maintainer's host names and SSH user (`jhunt`). Substitute the values from your `cluster.env` (`$REPLICAS`, `$LB_HOST`, `$LB_PORT`, `$SSH_USER`) when running the commands.
+> Examples below use the maintainer's host names and SSH user (`gdeceiver`). Substitute the values from your `cluster.env` (`$REPLICAS`, `$LB_HOST`, `$LB_PORT`, `$SSH_USER`) when running the commands.
 >
 > **Current topology (2026-06-10):** the LB runs on `minerva:8888` (control plane, standalone — not a replica); `starsky` was pulled from the cluster for g.deceiver reasoning, so `hutch` is the sole coding replica. See `docs/decisions.md`. Examples below reflect this.
 >
@@ -29,12 +29,12 @@ rows gated on the LB actually routing them, g.deceiver `v0.7.19`), so a dead rou
 
 ## Endpoints
 
-| Endpoint                      | Where               | Purpose                                  |
-|-------------------------------|---------------------|------------------------------------------|
-| `http://minerva:8888`         | LB (HAProxy)        | OpenAI-compatible API; what clients use  |
-| `http://hutch:8000`           | direct replica      | Bypass LB; debugging                     |
-| `http://127.0.0.1:8404/stats` | minerva (loopback)  | HAProxy live stats UI                    |
-| `http://127.0.0.1:8404/health`| minerva (loopback)  | HAProxy self-healthcheck (`monitor-uri`) |
+| Endpoint                          | Where               | Purpose                                       |
+|-----------------------------------|---------------------|-----------------------------------------------|
+| `http://minerva:8888`             | LB (LiteLLM)        | OpenAI-compatible API; what clients use        |
+| `http://hutch:8000`               | direct replica      | Bypass LB; debugging                           |
+| `http://minerva:8888/v1/models`   | LB (LiteLLM)        | Configured model routes (`reasoning`, `qwen3-coder-next`, `caption`) |
+| `http://minerva:8888/health/liveliness` | LB (LiteLLM)  | LiteLLM router self-healthcheck                |
 
 ## Health check
 
@@ -69,7 +69,7 @@ Enabled via `--enable-prefix-caching` in `compose.yml`. vLLM hashes prompt prefi
 Live stats from a replica:
 
 ```bash
-ssh jhunt@hutch 'curl -s http://127.0.0.1:8000/metrics | grep prefix_cache'
+ssh gdeceiver@hutch 'curl -s http://127.0.0.1:8000/metrics | grep prefix_cache'
 # vllm:prefix_cache_queries_total — total tokens looked up
 # vllm:prefix_cache_hits_total    — tokens served from cache
 ```
@@ -78,29 +78,33 @@ Hit rate ≈ `hits / queries`. Healthy agent traffic should see ≥ 50 %.
 
 ## Backend status
 
+LiteLLM has no `:8404` stats UI. Ask the router which model routes are live, and hit its healthcheck:
+
 ```bash
-ssh jhunt@minerva 'curl -sS "http://127.0.0.1:8404/stats;csv" | awk -F, "/vllm_pool/ {print \$1\"/\"\$2\" \"\$18}"'
+curl -s http://minerva:8888/v1/models          # expect reasoning, qwen3-coder-next, caption
+curl -s http://minerva:8888/health/liveliness   # LiteLLM self-healthcheck
 ```
 
-Or in a browser, tunnel: `ssh -L 8404:127.0.0.1:8404 jhunt@minerva` then open `http://127.0.0.1:8404/stats`.
+Per-backend health is the vLLM `/health` on each replica direct (`http://hutch:8000/health`); LiteLLM
+routes to whatever backend a given `model` name maps to in `config.yaml`.
 
 ## Start / stop a single replica
 
 ```bash
 # stop
-ssh jhunt@<host> 'cd ~/spark-deploy/vllm && docker compose stop'
+ssh gdeceiver@<host> 'cd ~/spark-deploy/vllm && docker compose stop'
 
 # start (does NOT re-pull image or recreate; instant)
-ssh jhunt@<host> 'cd ~/spark-deploy/vllm && docker compose start'
+ssh gdeceiver@<host> 'cd ~/spark-deploy/vllm && docker compose start'
 
 # restart (re-reads bind-mounted files only — does NOT pick up compose.yml command changes)
-ssh jhunt@<host> 'cd ~/spark-deploy/vllm && docker compose restart'
+ssh gdeceiver@<host> 'cd ~/spark-deploy/vllm && docker compose restart'
 
 # pick up compose.yml changes (command flags, env_file, image) — run a full deploy:
 ./src/scripts/deploy.sh <host> vllm   # uses --force-recreate
 ```
 
-After stopping a replica, HAProxy will mark it DOWN within 30 s (3 × 10 s health-check interval).
+After stopping a replica, LiteLLM has no backend to route that model's requests to — the next request for a model mapped to the stopped box fails immediately (no silent fan-out). Confirm with `curl http://minerva:8888/v1/models` and a direct `curl http://<host>:8000/health`.
 
 ## Swap the served model
 
@@ -116,8 +120,8 @@ After stopping a replica, HAProxy will mark it DOWN within 30 s (3 × 10 s healt
 4. **Cross-box transfer** — alternative to pulling on both boxes (saves bandwidth and HF rate-limit headroom):
 
    ```bash
-   ssh jhunt@<src-host> 'tar -C ~/Models -cf - <org>/<repo>' | \
-     ssh jhunt@<dst-host> 'tar -C ~/Models -xpf -'
+   ssh gdeceiver@<src-host> 'tar -C ~/Models -cf - <org>/<repo>' | \
+     ssh gdeceiver@<dst-host> 'tar -C ~/Models -xpf -'
    ```
 
 5. Smoke test each box, then re-test through `minerva:8888`.
@@ -129,7 +133,7 @@ After stopping a replica, HAProxy will mark it DOWN within 30 s (3 × 10 s healt
 For zero-disruption reload of HAProxy specifically, use the in-place reload (config must already be valid):
 
 ```bash
-ssh jhunt@minerva 'docker kill -s HUP haproxy'
+ssh gdeceiver@minerva 'docker kill -s HUP haproxy'
 ```
 
 This is HAProxy's native graceful reload.
@@ -142,10 +146,10 @@ This is HAProxy's native graceful reload.
 
 ```bash
 # stop one replica
-ssh jhunt@hutch 'docker stop vllm'
+ssh gdeceiver@hutch 'docker stop vllm'
 
 # wait ~30s; check stats
-ssh jhunt@minerva 'curl -sS "http://127.0.0.1:8404/stats;csv" | awk -F, "/vllm_pool/ {print \$1\"/\"\$2\" \"\$18}"'
+ssh gdeceiver@minerva 'curl -sS "http://127.0.0.1:8404/stats;csv" | awk -F, "/vllm_pool/ {print \$1\"/\"\$2\" \"\$18}"'
 # two-replica: expect the stopped one DOWN, the other UP, BACKEND UP
 # single-replica (today): expect hutch DOWN, BACKEND DOWN — the API is down until restore
 
@@ -153,7 +157,7 @@ ssh jhunt@minerva 'curl -sS "http://127.0.0.1:8404/stats;csv" | awk -F, "/vllm_p
 ./src/scripts/smoke-test.sh minerva:8888
 
 # restore
-ssh jhunt@hutch 'docker start vllm'
+ssh gdeceiver@hutch 'docker start vllm'
 # (hutch needs ~2 min to reload model from cache before HAProxy marks it UP again)
 ```
 
@@ -166,8 +170,8 @@ Both stacks use `restart: unless-stopped`. After a host reboot, Docker auto-star
 Per-container logs (compose stacks both use json-file driver with rotation):
 
 ```bash
-ssh jhunt@<host> 'docker logs --tail 200 -f vllm'
-ssh jhunt@minerva 'docker logs --tail 200 -f haproxy'
+ssh gdeceiver@<host> 'docker logs --tail 200 -f vllm'
+ssh gdeceiver@minerva 'docker logs --tail 200 -f haproxy'
 ```
 
 Rotation: vLLM keeps 3 × 100 MB; HAProxy keeps 3 × 20 MB. Tune in the respective `compose.yml` if needed.
@@ -177,15 +181,15 @@ Rotation: vLLM keeps 3 × 100 MB; HAProxy keeps 3 × 20 MB. Tune in the respecti
 ```bash
 # stop and remove containers (keeps images and model weights)
 # one `vllm` line per replica in $REPLICAS (currently just hutch); haproxy is on the LB host (minerva)
-ssh jhunt@hutch   'cd ~/spark-deploy/vllm    && docker compose down'
-ssh jhunt@minerva 'cd ~/spark-deploy/haproxy && docker compose down'
+ssh gdeceiver@hutch   'cd ~/spark-deploy/vllm    && docker compose down'
+ssh gdeceiver@minerva 'cd ~/spark-deploy/haproxy && docker compose down'
 
 # remove model weights cache (frees disk)
-ssh jhunt@<host> 'rm -rf ~/Models/<org>/<name>'
+ssh gdeceiver@<host> 'rm -rf ~/Models/<org>/<name>'
 
 # remove images
-ssh jhunt@<host> 'docker image prune -a -f'
+ssh gdeceiver@<host> 'docker image prune -a -f'
 
 # remove deploy dirs entirely
-ssh jhunt@<host> 'rm -rf ~/spark-deploy'
+ssh gdeceiver@<host> 'rm -rf ~/spark-deploy'
 ```
