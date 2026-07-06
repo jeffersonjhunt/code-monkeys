@@ -58,9 +58,16 @@ cat > "$CONF" <<'EOF'
    force create mode = 0664
    directory mask = 0775
    force directory mode = 0775
-   # macOS Finder + Time Machine compatibility (identical to the prior dperson/samba defaults).
+   # macOS Finder + Time Machine compatibility. NOTE: metadata = stream (NOT the old dperson/samba
+   # `netatalk` default) — Apple metadata is stored in an xattr on the file itself instead of a separate
+   # `._name` AppleDouble sidecar. netatalk mode makes the server manage an extra inode per file (stat'd
+   # on every access + directory listing), which crawls on many-small-file Mac copies (a 16k-file backup
+   # ran at ~13 MB/s). Resource forks still go to files (`fruit:resource` defaults to `file`), so there's
+   # no ext4 xattr-size risk. Trade-off: metadata already written as `._` files by the old default is not
+   # read in stream mode (data is unaffected — only pre-existing Finder metadata), acceptable here since
+   # the shares are Linux-written corpus + fresh backups.
    vfs objects = catia fruit recycle streams_xattr
-   fruit:metadata = netatalk
+   fruit:metadata = stream
    fruit:veto_appledouble = no
    fruit:wipe_intentionally_left_blank_rfork = yes
    fruit:delete_empty_adfiles = yes
