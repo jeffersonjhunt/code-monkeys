@@ -21,6 +21,7 @@ Each skill lives in its own directory and follows a standard structure:
 | [review-adversarial](review-adversarial/) | Adversarial code review with state-tracked review loops |
 | [althingi](althingi/) | Roundtable discussions with multiple agent voices (subagent or solo mode) |
 | [docs-issues](docs-issues/) | Manage markdown-based issues in docs/reviews/ and export to GitHub/GitLab/todo.md |
+| [ios-xcodebuild](ios-xcodebuild/) | Bootstrap, build, and deploy iOS apps from a Docker container via SSH to a macOS host |
 
 ## Usage
 
