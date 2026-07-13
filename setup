@@ -100,7 +100,7 @@ create_dot_links() {
     local source="${SRC}/${name}"
 
     if [[ ! -e "$source" && ! -L "$source" ]]; then
-      echo "  skip: ${source} not found (available after vault sync pull)"
+      echo "  skip: ${source} not found (available after ./vault unlock)"
       continue
     fi
 
@@ -406,8 +406,8 @@ else
   if [[ "$DRY_RUN" == false ]]; then
     touch "${SRC}/.configured"
     echo ""
-    if [[ -f "${SRC}/.ssh.vault" || -f "${SRC}/.env.vault" ]]; then
-      echo "Encrypted vaults detected. Run: ./vault unlock"
+    if [[ ! -e "${SRC}/ssh" || ! -f "${SRC}/env" ]]; then
+      echo "Vault items locked. Run: ./vault unlock  (needs ~/hemlighet + this machine's age key)"
     fi
     echo "Setup complete. Restart your shell or run: source ~/.zshrc"
   else

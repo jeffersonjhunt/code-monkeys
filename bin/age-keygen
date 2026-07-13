@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+#
+# age-keygen — containerized age-keygen via the `nyckel` primate
+#
+# age + sops are NEVER installed on a host or a Mac (no brew, ever) — they run
+# from the minimal `nyckel` image. This shim mounts cwd at the same path so
+# `age-keygen -o keys.txt` lands where you'd expect. To seed a host identity:
+#
+#   mkdir -p ~/.config/sops/age && cd ~/.config/sops/age
+#   age-keygen -o keys.txt && chmod 600 keys.txt
+#
+# (Only the public key is printed; the private key goes straight to the file.)
+#
+
+set -e
+
+_TOOL="age-keygen"
+_IMAGE="nyckel"
+_REG="521147433280.dkr.ecr.us-east-1.amazonaws.com"
+
+if ! docker image inspect "${_IMAGE}:latest" >/dev/null 2>&1; then
+  echo "${_TOOL} shim: pulling ${_IMAGE} from ECR..." >&2
+  _tok="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-login-password --region us-east-1)"
+  if [[ -z "$_tok" ]]; then
+    echo "${_TOOL} shim: empty ECR token — check ~/.aws creds (or build locally: cd primates && make nyckel.build)" >&2
+    exit 1
+  fi
+  printf '%s' "$_tok" | docker login --username AWS --password-stdin "$_REG" >/dev/null
+  docker pull -q "${_REG}/codemonkeys/${_IMAGE}:latest" >/dev/null
+  docker tag "${_REG}/codemonkeys/${_IMAGE}:latest" "${_IMAGE}:latest"
+  docker logout "$_REG" >/dev/null 2>&1 || true
+fi
+
+_cwd="$(pwd)"
+
+_tty=(-i)
+if [[ -t 0 && -t 1 ]]; then
+  _tty=(-it)
+fi
+
+exec docker run --rm "${_tty[@]}" \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  --volume "${_cwd}:${_cwd}" \
+  --workdir "${_cwd}" \
+  "${_IMAGE}" "${_TOOL}" "$@"

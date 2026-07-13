@@ -12,7 +12,8 @@ This is a personal development environment repository (dotfiles + containerized 
 - **`codemonkey.dockerfile`**: Base Docker image (debian:13-slim) that all primates inherit from
 - **`primates/`**: Specialized Docker images built on top of codemonkey (see `primates/CLAUDE.md` for details)
 - **`setup`**: Host machine setup script that symlinks dotfiles into `$HOME` and `bin/` shims into `~/.local/bin/`
-- **`bin/`**: Host shim scripts symlinked individually into `~/.local/bin/` (e.g. `aws` — local-first wrapper that falls back to running in the `minion` container if no `aws` binary is on PATH)
+- **`bin/`**: Host shim scripts symlinked individually into `~/.local/bin/` (e.g. `aws` — local-first wrapper that falls back to running in the `minion` container if no `aws` binary is on PATH; `sops`/`age`/`age-keygen` — run in the `nyckel` primate)
+- **`vault`**: Secrets manager — stores `ssh/`, `aws/`, `env`, `face`, `gitconfig` SOPS+age-encrypted (binary mode, one `.sops` file per original) in the private `hemlighet` repo (`~/hemlighet`, under `code-monkeys/personal/`); encrypt/decrypt runs in the containerized `nyckel` primate. `unlock`/`lock`/`status`/`rekey`; sync between machines is hemlighet git push/pull
 - **`zfuncs`**: Shell functions for launching containers (`primate()`, `primate-session()`, `primate-kill()`, `primate-upgrade()`, `clamscan()`, etc.). `primate()` runs a foreground `--rm` container tied to the TTY; `primate-session()` runs a **detached, named, long-lived** container (PID 1 = `sleep infinity`) and `docker exec`s into an in-container `tmux` session, so the session survives SSH disconnects — reconnect and re-run `primate-session <image>` to re-attach. `primate-kill <image|name>` tears it down (the `<image>-home` volume persists).
 - **`env`**: Environment variable definitions (tokens, API keys) — never commit secrets here
 - **`aws/`**: AWS CLI config and credentials — managed by vault, never commit plaintext
@@ -87,6 +88,6 @@ retags to the local name, so a fresh host runs any primate without building it f
 - Standard images are **multi-arch (amd64 + arm64), published to ECR** (`codemonkeys/*`; see Registry above) — `spark-bench` is amd64-only; the `cuda-*` images build from `cuda-base` with cross-GPU arch defaults (sm_89/sm_120/sm_121), including `cuda-vllm` (override its `TORCH_CUDA_ARCH_LIST` for a slimmer single-target build)
 - Shell config is layered: `zshrc.template` sources `~/.zbase` and `~/.zaliases`; functions live in `zfuncs`
 - Git remote is GitHub; main branch is `master`
-- Vault files (`*.vault`) and personal assets (`face`, `gitconfig`) are gitignored — secrets are never committed
+- Vault-managed plaintext (`ssh/`, `aws/`, `env`, `face`, `gitconfig`) is gitignored — this repo is PUBLIC and never holds secrets, plaintext or encrypted; the encrypted copies live only in `hemlighet`
 - `UNSAFE_SSL=true` build arg disables SSL verification for curl, wget, git, conda, npm, and apt HTTPS during build; skips freshclam; sets `TAINTED_BUILD=true` env var in the image (login warning displayed to user). All config changes are reverted at the end of each install RUN so verification is restored at runtime.
 - `FRESH=false` build arg skips `freshclam` (ClamAV signature DB update) on `codemonkey.dockerfile` to speed up builds. Independent of `UNSAFE_SSL` — either knob will skip freshclam.

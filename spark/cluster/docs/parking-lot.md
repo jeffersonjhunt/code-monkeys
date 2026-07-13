@@ -134,6 +134,13 @@ deploy. `cluster.env` is config-only (no secret) and stays in git. So `vault`'s 
 for the cluster. **Still on `vault` (deliberately deferred):** the **SSH keys** and **`.aws` creds** it
 bundles — those fold into the separate "off-`jhunt` / per-host IAM + service accounts" effort, not here.
 
+**RESOLVED (2026-07-13) — migration complete.** The `vault` script itself was rewritten as a SOPS/age
+wrapper (nyckel primate): all five items (ssh/, aws/, env, face, gitconfig) now live per-file,
+binary-mode encrypted in `hemlighet` under `code-monkeys/personal/` (recipients: offline admin +
+mjolnir + hutch; add hosts via `.sops.yaml` + `./vault rekey`). The openssl `.vault` tarballs and the
+S3 sync (`VAULT_BUCKET`) are retired — machine sync is hemlighet git push/pull. One secrets mechanism
+fleet-wide, as this entry wanted.
+
 ## Dedicated build machine when a 3rd+ Spark arrives
 
 **Deferred (2026-07-02).** Today all images build **native-on-host** (the host that runs an image

@@ -11,12 +11,9 @@ cd primates
 make all
 ```
 
-This gives you a working shell environment and Docker images. To pull in secrets from a previous setup:
+This gives you a working shell environment and Docker images. To pull in secrets from a previous setup (needs a `~/hemlighet` clone and this machine's age key — see [Vault](#vault-optional)):
 
 ```bash
-export VAULT_BUCKET=my-vault-bucket   # required
-export VAULT_PROFILE=my-aws-profile   # optional
-./vault sync pull
 ./vault unlock
 ```
 
@@ -164,62 +161,52 @@ make upgrade                 # upgrade all
 
 ## Vault (optional)
 
-The `vault` script encrypts secrets at rest using AES-256-CBC with PBKDF2. It manages five items:
+The `vault` script manages personal secrets as **SOPS + age** encrypted files stored in a separate
+private git repo (`~/hemlighet`, under `code-monkeys/personal/`) — one encrypted `.sops` file per
+original file, binary mode, so everything round-trips byte-for-byte. This public repo never holds
+secrets, plaintext or encrypted. It manages five items:
 
-| Source | Encrypted to | Type |
+| Item | Type | Notes |
 |---|---|---|
-| `ssh/` | `.ssh.vault` | directory |
-| `env` | `.env.vault` | file |
-| `aws/` | `.aws.vault` | directory (excludes `amazonq/`, `sso/`) |
-| `face` | `.face.vault` | file |
-| `gitconfig` | `.gitconfig.vault` | file |
+| `ssh/` | directory | top-level files only; `known_hosts*` excluded (runtime state) |
+| `env` | file | loaded by `primate` via `--env-file` |
+| `aws/` | directory | excludes `amazonq/`, `sso/`, `cli/` |
+| `face` | file | |
+| `gitconfig` | file | |
 
-Both the plaintext files and the encrypted `.vault` files are gitignored.
-
-```bash
-./vault unlock       # decrypt all vaults (prompts for password)
-./vault lock         # encrypt all vaults and remove plaintext
-./vault rekey        # re-encrypt with a new password
-./vault status       # show per-vault lock/unlock + S3 sync state inline
-```
-
-Once unlocked, `setup` symlinks `ssh` → `~/.ssh`, `aws` → `~/.aws`, and `gitconfig` → `~/.gitconfig`. The `env` file is loaded by `primate` via `--env-file`.
-
-### Syncing vault files with S3
-
-Vault files can be backed up and shared across machines using an S3 bucket. Set the `VAULT_BUCKET` environment variable (e.g., in your `env` file or shell profile):
+The plaintext files are gitignored here; the encrypted copies live in hemlighet and travel via git.
 
 ```bash
-export VAULT_BUCKET=my-vault-bucket
-export VAULT_PROFILE=my-aws-profile  # optional, defaults to 'default'
+./vault unlock [item...]   # decrypt from ~/hemlighet into the working tree (--force to overwrite)
+./vault lock   [item...]   # encrypt into ~/hemlighet and remove plaintext (--keep to leave it)
+./vault status             # per-item state + hemlighet git state (--local skips the fetch)
+./vault rekey              # re-wrap data keys after editing recipients in hemlighet's .sops.yaml
 ```
 
-Then use `vault sync`:
+Once unlocked, `setup` symlinks `ssh` → `~/.ssh`, `aws` → `~/.aws`, and `gitconfig` → `~/.gitconfig`.
 
-```bash
-./vault sync push          # upload vault files to S3
-./vault sync pull          # download vault files from S3 (skip files where local is same/newer)
-./vault sync pull --force  # delete local *.vault files and re-download (prompts for confirmation)
-```
+Encryption runs containerized via the `nyckel` primate (age + sops; pulled from ECR on demand) — no
+host installs. `bin/{sops,age,age-keygen}` are matching shims for ad-hoc use. Machine-to-machine
+sync is just git: `lock` on one box, push hemlighet, pull + `unlock` on another. A machine can only
+decrypt if its age key is a recipient — to add one, append its pubkey to the
+`code-monkeys/personal/.*` rule in hemlighet's `.sops.yaml`, run `./vault rekey` on a machine that
+can already decrypt, then commit + push hemlighet.
 
-Uses `aws s3 sync` under the hood — only transfers files that have changed. Requires credentials with read/write access to the bucket. The AWS CLI itself is optional: `vault` prepends the repo's `bin/` to `PATH`, so `bin/aws` (a local-first shim that falls back to running `aws` inside the `minion` container) handles invocations on hosts where the CLI isn't installed.
-
-`vault status` queries S3 (one `aws s3 sync --dryrun` call per direction) and folds the remote state into the per-vault status line, e.g. `aws       UNLOCKED (up to date, s3 LOCAL NEWER — run 'vault sync push')`. Use `--force` on pull when you trust S3 over local — typical case: machine A pushed, machine B was idle, you want machine B to take S3's copy regardless of local mtimes.
-
-### Creating vaults from scratch
+### Creating the vault from scratch
 
 1. Create `ssh/`, `aws/`, and/or `env` with your credentials
-2. Run `./vault lock` to encrypt them (you'll set a password)
-3. Run `./vault sync push` to back them up to S3 (optional)
+2. Clone your secrets repo to `~/hemlighet` and give it a `.sops.yaml` rule for `code-monkeys/personal/.*`
+3. Run `./vault lock` to encrypt, then commit + push hemlighet
 
 ## Repository Layout
 
 ```
 .
 ├── setup                  # host machine setup script (symlinks dotfiles into $HOME)
-├── vault                  # encrypt/decrypt secrets at rest
+├── vault                  # secrets manager (SOPS + age via the nyckel primate; store = ~/hemlighet)
 ├── bin/                   # host shim scripts symlinked into ~/.local/bin/
-│   └── aws                # local-first AWS CLI wrapper (falls back to minion container)
+│   ├── aws                # local-first AWS CLI wrapper (falls back to minion container)
+│   └── sops, age, age-keygen  # shims running the tools in the nyckel primate
 ├── codemonkey.dockerfile  # base Docker image (debian:13-slim)
 ├── primates/              # specialized Docker images built on codemonkey
 │   ├── Makefile
@@ -229,7 +216,7 @@ Uses `aws s3 sync` under the hood — only transfers files that have changed. Re
 ├── zaliases               # shell aliases
 ├── zfuncs                 # shell functions (primate launcher, utilities)
 ├── zprofile               # zsh profile
-├── gitconfig              # global git config (gitignored, managed via vault sync)
+├── gitconfig              # global git config (gitignored, vault-managed)
 ├── gitignore              # global gitignore
 ├── vimrc                  # vim config
 ├── toprc                  # top config

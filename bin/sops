@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+# sops — containerized SOPS via the `nyckel` primate
+#
+# age + sops are NEVER installed on a host or a Mac (no brew, ever) — they run
+# from the minimal `nyckel` image (Alpine + age + sops only). This shim:
+#   - pulls nyckel from ECR on first use (needs ~/.aws creds), like primate()
+#   - mounts ~/.config/sops/age/keys.txt read-only (SOPS_AGE_KEY_FILE)
+#   - mounts the enclosing git repo root (or cwd) at the same path, so sops
+#     finds .sops.yaml in parent dirs and host absolute paths under it work
+#
+# Typical use (from a hemlighet clone):
+#   sops -e --input-type binary --output-type binary secret > secret.sops
+#   sops -d --input-type binary --output-type binary secret.sops > secret
+#   sops updatekeys code-monkeys/personal/env.sops
+#
+
+set -e
+
+_TOOL="sops"
+_IMAGE="nyckel"
+_REG="521147433280.dkr.ecr.us-east-1.amazonaws.com"
+
+if ! docker image inspect "${_IMAGE}:latest" >/dev/null 2>&1; then
+  echo "${_TOOL} shim: pulling ${_IMAGE} from ECR..." >&2
+  _tok="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-login-password --region us-east-1)"
+  if [[ -z "$_tok" ]]; then
+    echo "${_TOOL} shim: empty ECR token — check ~/.aws creds (or build locally: cd primates && make nyckel.build)" >&2
+    exit 1
+  fi
+  printf '%s' "$_tok" | docker login --username AWS --password-stdin "$_REG" >/dev/null
+  docker pull -q "${_REG}/codemonkeys/${_IMAGE}:latest" >/dev/null
+  docker tag "${_REG}/codemonkeys/${_IMAGE}:latest" "${_IMAGE}:latest"
+  docker logout "$_REG" >/dev/null 2>&1 || true
+fi
+
+# Mount the git repo root when inside one (so .sops.yaml in a parent dir is
+# visible), else just cwd. Workdir stays the real cwd either way.
+_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_cwd="$(pwd)"
+
+_key_mount=()
+if [[ -f "$HOME/.config/sops/age/keys.txt" ]]; then
+  _key_mount=(--volume "$HOME/.config/sops/age:/age:ro" -e SOPS_AGE_KEY_FILE=/age/keys.txt)
+fi
+
+_tty=(-i)
+if [[ -t 0 && -t 1 ]]; then
+  _tty=(-it -e EDITOR=vi)
+fi
+
+exec docker run --rm "${_tty[@]}" \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  "${_key_mount[@]}" \
+  --volume "${_root}:${_root}" \
+  --workdir "${_cwd}" \
+  "${_IMAGE}" "${_TOOL}" "$@"

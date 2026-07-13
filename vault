@@ -1,431 +1,435 @@
 #!/usr/bin/env bash
 #
-# vault — encrypt/decrypt secrets at rest
+# vault — encrypt/decrypt personal secrets with SOPS + age (hemlighet-backed)
 #
-# Usage: vault [--no-password] <command>
+# Every secret is stored 1:1 as its own encrypted file (binary mode) in the
+# PRIVATE hemlighet repo under code-monkeys/personal/, mirroring the working
+# tree: env, gitconfig, face, aws/{config,credentials}, ssh/<file>. Runtime
+# state (ssh/known_hosts*, ssh/agent/, aws/cli|amazonq|sso caches) is never
+# stored. This repo is public — no secret, encrypted or not, ever lands here.
 #
-# Commands: lock | unlock | rekey | status | sync <push|pull>
+# Crypto runs in the `nyckel` container (Alpine + age + sops); age/sops are
+# never installed on a host or a Mac (no brew, ever). The image is pulled
+# from ECR on first use.
 #
-# Top-level flags:
-#   --no-password   Explicit no-password mode: refuses to run lock/unlock/rekey
-#                   (which need a password) and lets sync/status proceed
-#                   normally without prompting. Use in automation that only
-#                   moves already-encrypted .vault files around.
+# Usage: vault <command> [flags] [item ...]
 #
-# Manages: ssh/ (directory), env (file), aws/ (directory), face (file), gitconfig (file)
-# Encrypted to: .ssh.vault, .env.vault, .aws.vault, .face.vault, .gitconfig.vault
+#   unlock [--force]           decrypt from the hemlighet clone into the
+#                              working tree (files 600, dirs 700); skips
+#                              files that already exist unless --force
+#   lock [--keep] [--force]    encrypt new/changed files into the hemlighet
+#                              clone, then remove the plaintext; --keep
+#                              leaves the plaintext in place; --force
+#                              re-encrypts even unchanged files
+#   status [--local]           per-item state + hemlighet clone state
+#                              (--local skips the git fetch)
+#   rekey                      run `sops updatekeys` over all stored files
+#                              after editing recipients in hemlighet/.sops.yaml
+#
+# Items: ssh env aws face gitconfig (default: all)
+#
+# Syncing is plain git now: commit + push the hemlighet clone after locking.
+#
+# Environment:
+#   VAULT_HEMLIGHET   hemlighet clone location (default: ~/hemlighet)
+#
+# New-machine setup:
+#   git clone ssh://git-codecommit.us-east-1.amazonaws.com/v1/repos/hemlighet ~/hemlighet
+#   mkdir -p ~/.config/sops/age && cd ~/.config/sops/age \
+#     && age-keygen -o keys.txt && chmod 600 keys.txt          # bin/ shim
+#   # add the printed public key to the code-monkeys/personal rule in
+#   # hemlighet/.sops.yaml, then run './vault rekey' on a machine that can
+#   # already decrypt, and push.
 #
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-NO_PASSWORD=false
+HL="${VAULT_HEMLIGHET:-$HOME/hemlighet}"
+HL_SUB="code-monkeys/personal"
+AGE_DIR="$HOME/.config/sops/age"
+IMAGE="nyckel"
+REG="521147433280.dkr.ecr.us-east-1.amazonaws.com"
 
-# Prefer the repo's bin/ shims (e.g. aws wrapper that falls back to a container).
-PATH="${SCRIPT_DIR}/bin:${PATH}"
+# Display order matches the old vault.
+ITEMS="ssh env aws face gitconfig"
 
-# Each entry: "source:vault_file:type" (type is dir or file)
-VAULTS=(
-  "ssh:.ssh.vault:dir"
-  "env:.env.vault:file"
-  "aws:.aws.vault:dir"
-  "face:.face.vault:file"
-  "gitconfig:.gitconfig.vault:file"
-)
+_type_of() { case "$1" in ssh|aws) echo dir ;; *) echo file ;; esac; }
 
-# Subdirectories to exclude from tar and staleness checks (per source dir)
-_excludes_for() {
+# Working files never stored (runtime state). Directories are excluded
+# implicitly: only top-level regular files of a dir item are considered.
+_excluded() {
   case "$1" in
-    aws) echo "amazonq sso" ;;
-    *)   echo "" ;;
+    ssh/known_hosts|ssh/known_hosts.old|*.tmp) return 0 ;;
   esac
+  return 1
 }
-
-OPENSSL_ARGS=(-aes-256-cbc -salt -pbkdf2 -iter 600000)
-
-# aws cli wrapper that adds --profile if VAULT_PROFILE is set
-_aws() {
-  if [[ -n "${VAULT_PROFILE:-}" ]]; then
-    aws --profile "$VAULT_PROFILE" "$@"
-  else
-    aws "$@"
-  fi
-}
-
-SYNC_INCLUDES=(--exclude "*" --include "*.vault")
 
 usage() {
-  cat <<EOF
-Usage: vault [--no-password] <command>
-
-Commands:
-  unlock    Decrypt all vaults
-  lock      Encrypt all vaults and remove plaintext
-  rekey     Re-encrypt all vaults with a new password
-  status    Show lock/unlock state of each vault and S3 sync state
-  sync      Sync vault files with S3 (push or pull, optional --force on pull)
-
-Top-level flags:
-  --no-password   Refuse password-requiring commands (lock/unlock/rekey)
-                  cleanly; let sync/status proceed normally. For automation
-                  that only moves *.vault files between S3 and local.
-
-Environment:
-  VAULT_BUCKET   S3 bucket name for sync (required for sync command)
-  VAULT_PROFILE  AWS CLI profile to use for sync (optional, defaults to 'default')
-EOF
+  awk 'NR < 2 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
-# Refuse to run a command that needs a password when the user passed
-# --no-password. Called at the top of do_lock/do_unlock/do_rekey.
-require_password() {
-  if $NO_PASSWORD; then
-    local cmd="${1:-this command}"
-    echo "Error: ${cmd} requires a password; cannot run with --no-password." >&2
-    echo "  Either remove --no-password, or use 'sync' / 'status' which don't need one." >&2
-    exit 2
+# ---------------------------------------------------------------- docker ---
+
+DOCKER_CMD=""
+_docker() {
+  if [[ -z "$DOCKER_CMD" ]]; then
+    if docker info >/dev/null 2>&1; then
+      DOCKER_CMD="docker"
+    elif sudo -n docker info >/dev/null 2>&1; then
+      DOCKER_CMD="sudo"
+    else
+      echo "Error: cannot reach a docker daemon (tried 'docker' and 'sudo -n docker')." >&2
+      exit 1
+    fi
   fi
-}
-
-read_password() {
-  local prompt="${1:-Enter vault password:}"
-  local pass
-  if [[ -t 0 ]]; then
-    read -rs -p "$prompt " pass </dev/tty
-    echo "" >/dev/tty
+  if [[ "$DOCKER_CMD" == "sudo" ]]; then
+    sudo -n docker "$@"
   else
-    # Non-interactive: read one line from stdin (lets callers pipe a
-    # password, e.g. `echo "$PW" | vault lock`). Reject empty input —
-    # historically this fell through with `pass=""` and silently
-    # produced empty-password vaults. Use --no-password if you really
-    # want a no-password code path (which refuses lock/unlock/rekey).
-    if ! read -r pass; then
-      echo "Error: no password on stdin and stdin is not a TTY." >&2
-      echo "  Run interactively, or pipe a password (e.g. 'echo \"\$PW\" | vault lock')." >&2
-      exit 2
-    fi
-    if [[ -z "$pass" ]]; then
-      echo "Error: empty password rejected." >&2
-      echo "  Provide a password on stdin, or run interactively." >&2
-      exit 2
-    fi
+    docker "$@"
   fi
-  echo "$pass"
 }
+
+_ensure_image() {
+  if _docker image inspect "${IMAGE}:latest" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "vault: pulling ${IMAGE} from ECR..." >&2
+  local tok
+  tok="$(_docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-login-password --region us-east-1)"
+  if [[ -z "$tok" ]]; then
+    echo "vault: empty ECR token — check ~/.aws creds (or build locally: cd primates && make nyckel.build)" >&2
+    exit 1
+  fi
+  printf '%s' "$tok" | _docker login --username AWS --password-stdin "$REG" >/dev/null
+  _docker pull -q "${REG}/codemonkeys/${IMAGE}:latest" >/dev/null
+  _docker tag "${REG}/codemonkeys/${IMAGE}:latest" "${IMAGE}:latest"
+  _docker logout "$REG" >/dev/null 2>&1 || true
+}
+
+# Run a command in nyckel with the hemlighet clone at /hl (rw), the repo at
+# /repo (ro or rw), and this host's age identity mounted if present.
+_nyckel() {
+  local repo_mode="$1"; shift
+  _ensure_image
+  local key_mount=()
+  if [[ -f "$AGE_DIR/keys.txt" ]]; then
+    key_mount=(-v "$AGE_DIR:/age:ro" -e SOPS_AGE_KEY_FILE=/age/keys.txt)
+  fi
+  _docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp \
+    ${key_mount[@]+"${key_mount[@]}"} \
+    -v "$HL:/hl" \
+    -v "$SCRIPT_DIR:/repo:$repo_mode" \
+    -w /hl \
+    "${IMAGE}:latest" "$@"
+}
+
+# ---------------------------------------------------------------- checks ---
+
+_require_hl() {
+  if [[ ! -d "$HL/.git" || ! -f "$HL/.sops.yaml" ]]; then
+    echo "Error: hemlighet clone not found at $HL" >&2
+    echo "  git clone ssh://git-codecommit.us-east-1.amazonaws.com/v1/repos/hemlighet $HL" >&2
+    exit 1
+  fi
+}
+
+_require_key() {
+  if [[ ! -f "$AGE_DIR/keys.txt" ]]; then
+    echo "Error: no age identity at $AGE_DIR/keys.txt — see the new-machine setup in 'vault --help'." >&2
+    exit 1
+  fi
+}
+
+_select_items() {
+  if [[ $# -eq 0 ]]; then
+    echo "$ITEMS"
+    return 0
+  fi
+  local sel="" i k ok
+  for i in "$@"; do
+    ok=false
+    for k in $ITEMS; do
+      [[ "$i" == "$k" ]] && ok=true
+    done
+    if ! $ok; then
+      echo "Unknown item: $i (valid: $ITEMS)" >&2
+      return 2
+    fi
+    sel="$sel $i"
+  done
+  echo "$sel"
+}
+
+# ------------------------------------------------------------ enumeration ---
+
+# Stored files of an item: relative paths (without .sops), one per line.
+_stored() {
+  local item="$1" type p b
+  type=$(_type_of "$item")
+  if [[ "$type" == "file" ]]; then
+    [[ -f "$HL/$HL_SUB/$item.sops" ]] && echo "$item"
+    return 0
+  fi
+  [[ -d "$HL/$HL_SUB/$item" ]] || return 0
+  find "$HL/$HL_SUB/$item" -maxdepth 1 -type f -name '*.sops' 2>/dev/null | sort | \
+    while IFS= read -r p; do
+      b="$(basename "$p")"
+      echo "$item/${b%.sops}"
+    done
+}
+
+# Lockable working files of an item: relative paths, one per line.
+_working() {
+  local item="$1" type p b
+  type=$(_type_of "$item")
+  if [[ "$type" == "file" ]]; then
+    [[ -f "$SCRIPT_DIR/$item" ]] && echo "$item"
+    return 0
+  fi
+  [[ -d "$SCRIPT_DIR/$item" ]] || return 0
+  find "$SCRIPT_DIR/$item" -maxdepth 1 -type f 2>/dev/null | sort | \
+    while IFS= read -r p; do
+      b="$(basename "$p")"
+      _excluded "$item/$b" && continue
+      echo "$item/$b"
+    done
+}
+
+# -------------------------------------------------------------- commands ---
 
 do_unlock() {
-  require_password "unlock"
-  local password
-  password=$(read_password "Enter vault password:")
+  local force=false sel=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force) force=true ;;
+      -*) echo "Unknown flag for unlock: $1" >&2; exit 2 ;;
+      *) sel+=("$1") ;;
+    esac
+    shift
+  done
+  local items
+  items=$(_select_items ${sel[@]+"${sel[@]}"})
+  _require_hl
+  _require_key
 
-  local failed=false
-  for entry in "${VAULTS[@]}"; do
-    local source="${entry%%:*}"
-    local rest="${entry#*:}"
-    local vault_file="${rest%%:*}"
-    local type="${rest##*:}"
-    local vault_path="${SCRIPT_DIR}/${vault_file}"
-    local source_path="${SCRIPT_DIR}/${source}"
+  local to_dec=() skipped=0 item f
+  for item in $items; do
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      if [[ -f "$SCRIPT_DIR/$f" ]] && ! $force; then
+        skipped=$((skipped + 1))
+        continue
+      fi
+      to_dec+=("$f")
+    done < <(_stored "$item")
+  done
 
-    if [[ "$type" == "dir" && -d "$source_path" ]] || [[ "$type" == "file" && -f "$source_path" ]]; then
-      echo "  skip: ${source} already exists"
-      continue
-    fi
-
-    if [[ ! -f "$vault_path" ]]; then
-      echo "  skip: ${vault_file} not found"
-      continue
-    fi
-
-    if ! openssl enc -d "${OPENSSL_ARGS[@]}" -pass pass:"$password" -in "$vault_path" | tar xf - -C "$SCRIPT_DIR"; then
-      echo "  FAILED: ${source}"
-      failed=true
-      continue
-    fi
-
-    if [[ "$type" == "dir" ]]; then
-      chmod 700 "$source_path"
-      find "$source_path" -type f -exec chmod 600 {} +
-      echo "  unlocked: ${source}/ ($(find "$source_path" -type f | wc -l | tr -d ' ') files)"
+  if [[ ${#to_dec[@]} -eq 0 ]]; then
+    if [[ $skipped -gt 0 ]]; then
+      echo "  nothing to unlock ($skipped file(s) already present — use --force to overwrite)"
     else
-      chmod 600 "$source_path"
-      echo "  unlocked: ${source}"
+      echo "  nothing to unlock (no stored files for: ${items# })"
+    fi
+    return 0
+  fi
+
+  for item in $items; do
+    if [[ "$(_type_of "$item")" == "dir" && ! -d "$SCRIPT_DIR/$item" ]]; then
+      mkdir -p "$SCRIPT_DIR/$item"
     fi
   done
 
-  $failed && exit 1
+  if ! _nyckel rw sh -c '
+        set -e
+        for f in "$@"; do
+          sops -d --input-type binary --output-type binary \
+            --output "/repo/$f.tmp" "/hl/'"$HL_SUB"'/$f.sops"
+        done' sops-batch "${to_dec[@]}"; then
+    for f in "${to_dec[@]}"; do rm -f "$SCRIPT_DIR/$f.tmp"; done
+    echo "  FAILED: decrypt error — is this host's age key a recipient in hemlighet/.sops.yaml?" >&2
+    exit 1
+  fi
+
+  for f in "${to_dec[@]}"; do
+    mv -f "$SCRIPT_DIR/$f.tmp" "$SCRIPT_DIR/$f"
+    chmod 600 "$SCRIPT_DIR/$f"
+    # Align mtimes so status can spot local edits made after unlock.
+    touch -r "$HL/$HL_SUB/$f.sops" "$SCRIPT_DIR/$f"
+    echo "  unlocked: $f"
+  done
+  for item in $items; do
+    [[ "$(_type_of "$item")" == "dir" && -d "$SCRIPT_DIR/$item" ]] && chmod 700 "$SCRIPT_DIR/$item"
+  done
+  [[ $skipped -gt 0 ]] && echo "  skipped $skipped existing file(s) (use --force to overwrite)"
   return 0
 }
 
 do_lock() {
-  require_password "lock"
-  local password
-  password=$(read_password "Enter vault password:")
-  local verify
-  verify=$(read_password "Verify password:")
+  local keep=false force=false sel=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --keep)  keep=true ;;
+      --force) force=true ;;
+      -*) echo "Unknown flag for lock: $1" >&2; exit 2 ;;
+      *) sel+=("$1") ;;
+    esac
+    shift
+  done
+  local items
+  items=$(_select_items ${sel[@]+"${sel[@]}"})
+  _require_hl
 
-  if [[ "$password" != "$verify" ]]; then
-    echo "Passwords do not match."
-    exit 1
-  fi
-
-  local found=false
-  for entry in "${VAULTS[@]}"; do
-    local source="${entry%%:*}"
-    local rest="${entry#*:}"
-    local vault_file="${rest%%:*}"
-    local type="${rest##*:}"
-    local vault_path="${SCRIPT_DIR}/${vault_file}"
-    local source_path="${SCRIPT_DIR}/${source}"
-
-    if [[ "$type" == "dir" && ! -d "$source_path" ]] || [[ "$type" == "file" && ! -f "$source_path" ]]; then
-      echo "  skip: ${source} not found"
-      continue
-    fi
-
-    found=true
-    local tar_excludes=()
-    local _excl_list
-    _excl_list=$(_excludes_for "$source")
-    if [[ "$type" == "dir" && -n "$_excl_list" ]]; then
-      for excl in $_excl_list; do
-        tar_excludes+=(--exclude="${source}/${excl}")
-      done
-    fi
-    tar cf - "${tar_excludes[@]}" -C "$SCRIPT_DIR" "$source" | openssl enc "${OPENSSL_ARGS[@]}" -pass pass:"$password" -out "$vault_path"
-
-    if [[ "$type" == "dir" ]]; then
-      rm -rf "$source_path"
-    else
-      rm -f "$source_path"
-    fi
-    echo "  locked: ${source} → ${vault_file}"
+  local to_enc=() working=() item f sopsf unchanged=0
+  for item in $items; do
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      working+=("$f")
+      sopsf="$HL/$HL_SUB/$f.sops"
+      if ! $force && [[ -f "$sopsf" ]] && ! [[ "$SCRIPT_DIR/$f" -nt "$sopsf" ]]; then
+        unchanged=$((unchanged + 1))
+        continue
+      fi
+      to_enc+=("$f")
+    done < <(_working "$item")
+    # Stored files whose plaintext is gone: flag, never silently drop.
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      if [[ ! -f "$SCRIPT_DIR/$f" ]]; then
+        echo "  note: $f.sops is in hemlighet but $f is gone locally (git rm it there if intentional)"
+      fi
+    done < <(_stored "$item")
   done
 
-  if ! $found; then
+  if [[ ${#working[@]} -eq 0 ]]; then
     echo "Nothing to lock."
     exit 1
   fi
+
+  if [[ ${#to_enc[@]} -gt 0 ]]; then
+    _nyckel ro sh -c '
+      set -e
+      for f in "$@"; do
+        mkdir -p "$(dirname "/hl/'"$HL_SUB"'/$f.sops")"
+        sops -e --input-type binary --output-type binary \
+          --filename-override "'"$HL_SUB"'/$f" \
+          --output "/hl/'"$HL_SUB"'/$f.sops" "/repo/$f"
+      done' sops-batch "${to_enc[@]}"
+    for f in "${to_enc[@]}"; do
+      echo "  locked: $f -> $HL_SUB/$f.sops"
+    done
+  fi
+  [[ $unchanged -gt 0 ]] && echo "  unchanged: $unchanged file(s) already current in hemlighet (--force to re-encrypt)"
+
+  if ! $keep; then
+    for f in ${working[@]+"${working[@]}"}; do
+      rm -f "$SCRIPT_DIR/$f"
+    done
+    echo "  plaintext removed (${#working[@]} file(s)) — 'vault unlock' to restore"
+  fi
+
+  echo ""
+  if [[ -n "$(git -C "$HL" status --porcelain -- "$HL_SUB" 2>/dev/null)" ]]; then
+    git -C "$HL" status --short -- "$HL_SUB" | sed 's/^/  /'
+    echo "  hemlighet has uncommitted changes — commit and push:"
+    echo "    git -C $HL add $HL_SUB && git -C $HL commit -m 'personal: lock' && git -C $HL push"
+  else
+    echo "  hemlighet unchanged"
+  fi
+  return 0
 }
 
 do_rekey() {
-  require_password "rekey"
-  local old_password
-  old_password=$(read_password "Enter current password:")
-  local new_password
-  new_password=$(read_password "Enter new password:")
-  local verify
-  verify=$(read_password "Verify new password:")
-
-  if [[ "$new_password" != "$verify" ]]; then
-    echo "Passwords do not match."
-    exit 1
-  fi
-
-  local tmp
-  tmp=$(mktemp)
-  trap 'rm -f "$tmp"' EXIT
-
-  for entry in "${VAULTS[@]}"; do
-    local source="${entry%%:*}"
-    local rest="${entry#*:}"
-    local vault_file="${rest%%:*}"
-    local vault_path="${SCRIPT_DIR}/${vault_file}"
-
-    if [[ ! -f "$vault_path" ]]; then
-      echo "  skip: ${vault_file} not found"
-      continue
-    fi
-
-    openssl enc -d "${OPENSSL_ARGS[@]}" -pass pass:"$old_password" -in "$vault_path" -out "$tmp"
-    openssl enc "${OPENSSL_ARGS[@]}" -pass pass:"$new_password" -in "$tmp" -out "$vault_path"
-    echo "  rekeyed: ${vault_file}"
-  done
+  _require_hl
+  _require_key
+  echo "Re-wrapping data keys for recipients in $HL/.sops.yaml..."
+  _nyckel ro sh -c '
+    set -e
+    find "/hl/'"$HL_SUB"'" -type f -name "*.sops" | sort | while IFS= read -r f; do
+      sops updatekeys -y "$f" >/dev/null 2>&1 || { echo "  FAILED: ${f#/hl/}"; exit 1; }
+      echo "  rekeyed: ${f#/hl/}"
+    done'
+  echo ""
+  echo "  commit and push hemlighet to publish the new recipients."
+  return 0
 }
 
 do_status() {
-  # Pre-fetch S3 dryrun output once if a bucket is configured. The dryrun
-  # tells us per-file what `aws s3 sync` would do in each direction:
-  # a "download:" line in the pull dryrun means S3 has the file and local
-  # doesn't, or S3 is newer; an "upload:" line in the push dryrun means
-  # local has the file and S3 doesn't, or local is newer.
-  local s3_state="disabled"
-  local pull_dry="" push_dry="" s3_err=""
-  if [[ -n "${VAULT_BUCKET:-}" ]]; then
-    local s3_uri="s3://${VAULT_BUCKET}"
-    pull_dry=$(_aws s3 sync "$s3_uri" "$SCRIPT_DIR" "${SYNC_INCLUDES[@]}" --dryrun 2>&1) || true
-    push_dry=$(_aws s3 sync "$SCRIPT_DIR" "$s3_uri" "${SYNC_INCLUDES[@]}" --dryrun 2>&1) || true
-    if echo "$pull_dry" | grep -qiE "^(fatal|An error occurred)"; then
-      s3_state="error"
-      s3_err="$pull_dry"
-    else
-      s3_state="ok"
-    fi
-  fi
-
-  for entry in "${VAULTS[@]}"; do
-    local source="${entry%%:*}"
-    local rest="${entry#*:}"
-    local vault_file="${rest%%:*}"
-    local type="${rest##*:}"
-    local vault_path="${SCRIPT_DIR}/${vault_file}"
-    local source_path="${SCRIPT_DIR}/${source}"
-
-    local has_vault=false
-    local has_source=false
-    [[ -f "$vault_path" ]] && has_vault=true
-    if [[ "$type" == "dir" ]]; then
-      [[ -d "$source_path" ]] && has_source=true
-    else
-      [[ -f "$source_path" ]] && has_source=true
-    fi
-
-    # Local verdict.
-    local local_verdict=""
-    if $has_source && $has_vault; then
-      local stale=""
-      if [[ "$type" == "dir" ]]; then
-        local newer
-        local _excl_list
-        _excl_list=$(_excludes_for "$source")
-        local find_cmd=(find "$source_path")
-        if [[ -n "$_excl_list" ]]; then
-          for excl in $_excl_list; do
-            find_cmd+=(-path "${source_path}/${excl}" -prune -o)
-          done
-        fi
-        find_cmd+=(-newer "$vault_path" -type f ! -name "known_hosts" ! -name "known_hosts.old" -print)
-        newer=$("${find_cmd[@]}" 2>/dev/null | head -1)
-        [[ -n "$newer" ]] && stale="STALE — source changed since last lock"
-      else
-        [[ "$source_path" -nt "$vault_path" ]] && stale="STALE — source changed since last lock"
-      fi
-      if [[ -n "$stale" ]]; then
-        local_verdict="UNLOCKED ($stale)"
-      else
-        local_verdict="UNLOCKED (up to date)"
-      fi
-    elif $has_source; then
-      local_verdict="UNLOCKED (no vault file — run 'vault lock' to create)"
-    elif $has_vault; then
-      local_verdict="LOCKED"
-    else
-      local_verdict="NO VAULT"
-    fi
-
-    # S3 verdict.
-    local s3_verdict=""
-    case "$s3_state" in
-      ok)
-        local would_pull would_push
-        would_pull=$(echo "$pull_dry" | grep -F "$vault_file" || true)
-        would_push=$(echo "$push_dry" | grep -F "$vault_file" || true)
-        if [[ "$would_pull" == *"download:"* && "$would_push" == *"upload:"* ]]; then
-          s3_verdict="s3 DIVERGED — manual review needed"
-        elif [[ "$would_pull" == *"download:"* ]]; then
-          s3_verdict="s3 NEWER — run 'vault sync pull'"
-        elif [[ "$would_push" == *"upload:"* ]]; then
-          s3_verdict="s3 LOCAL NEWER — run 'vault sync push'"
-        else
-          s3_verdict="s3 in sync"
-        fi
-        ;;
-      error) s3_verdict="s3 unreachable" ;;
+  local do_fetch=true sel=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --local) do_fetch=false ;;
+      -*) echo "Unknown flag for status: $1" >&2; exit 2 ;;
+      *) sel+=("$1") ;;
     esac
+    shift
+  done
+  local items
+  items=$(_select_items ${sel[@]+"${sel[@]}"})
+  _require_hl
 
-    # Combine: splice s3 verdict into existing parens, or add new parens.
-    if [[ -n "$s3_verdict" ]]; then
-      if [[ "$local_verdict" == *"("*")" ]]; then
-        local_verdict="${local_verdict%)}, ${s3_verdict})"
-      else
-        local_verdict="${local_verdict} (${s3_verdict})"
+  local item f sopsf verdict
+  local n_work n_stored n_stale n_orphan
+  for item in $items; do
+    n_work=0 n_stored=0 n_stale=0 n_orphan=0
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      n_work=$((n_work + 1))
+      sopsf="$HL/$HL_SUB/$f.sops"
+      if [[ ! -f "$sopsf" || "$SCRIPT_DIR/$f" -nt "$sopsf" ]]; then
+        n_stale=$((n_stale + 1))
       fi
-    fi
+    done < <(_working "$item")
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      n_stored=$((n_stored + 1))
+      [[ -f "$SCRIPT_DIR/$f" ]] || n_orphan=$((n_orphan + 1))
+    done < <(_stored "$item")
 
-    printf "  %-9s %s\n" "${source}" "$local_verdict"
+    if [[ $n_work -eq 0 && $n_stored -eq 0 ]]; then
+      verdict="NO VAULT"
+    elif [[ $n_work -eq 0 ]]; then
+      verdict="LOCKED ($n_stored file(s) in hemlighet)"
+    elif [[ $n_stale -gt 0 ]]; then
+      verdict="UNLOCKED (STALE — $n_stale of $n_work file(s) new/changed since last lock)"
+    else
+      verdict="UNLOCKED (up to date)"
+    fi
+    if [[ $n_orphan -gt 0 && $n_work -gt 0 ]]; then
+      verdict="${verdict} [$n_orphan stored file(s) gone locally]"
+    fi
+    printf "  %-9s %s\n" "$item" "$verdict"
   done
 
-  # Trailer: bucket / sync errors / last-synced timestamp.
   echo ""
-  if [[ "$s3_state" == "disabled" ]]; then
-    echo "  S3 sync disabled (VAULT_BUCKET not set)"
-    return
+  if [[ ! -f "$AGE_DIR/keys.txt" ]]; then
+    echo "  age key: MISSING ($AGE_DIR/keys.txt) — unlock will fail; see 'vault --help'"
   fi
-  if [[ "$s3_state" == "error" ]]; then
-    echo "  S3 sync error (bucket: ${VAULT_BUCKET}) — check credentials/network:"
-    echo "$s3_err" | sed 's/^/    /' | head -3
-  fi
-  local sync_file="${SCRIPT_DIR}/.vault-synced"
-  if [[ -f "$sync_file" ]]; then
-    echo "  last synced: $(cat "$sync_file")"
+  local fetch_note="" head dirty upstream ahead_behind
+  if $do_fetch; then
+    git -C "$HL" fetch -q 2>/dev/null || fetch_note=", fetch failed (offline?)"
   else
-    echo "  last synced: never"
+    fetch_note=", --local (no fetch)"
   fi
+  head=$(git -C "$HL" rev-parse --short HEAD 2>/dev/null || echo "?")
+  dirty=$({ git -C "$HL" status --porcelain 2>/dev/null || true; } | wc -l | tr -d ' ')
+  local state="clean"
+  [[ "$dirty" != "0" ]] && state="$dirty uncommitted change(s)"
+  upstream=$(git -C "$HL" rev-parse --abbrev-ref '@{u}' 2>/dev/null || true)
+  if [[ -n "$upstream" ]]; then
+    ahead_behind=$(git -C "$HL" rev-list --left-right --count "HEAD...@{u}" 2>/dev/null || echo "? ?")
+    set -- $ahead_behind
+    local ahead="${1:-?}" behind="${2:-?}"
+    if [[ "$ahead" == "0" && "$behind" == "0" ]]; then
+      state="$state, in sync with $upstream"
+    else
+      state="$state, ahead $ahead / behind $behind of $upstream"
+    fi
+  fi
+  echo "  hemlighet: $HL @ $head ($state$fetch_note)"
 }
 
-do_sync() {
-  local direction="$1"
-  shift
-
-  local force=false
-  for arg in "$@"; do
-    case "$arg" in
-      --force) force=true ;;
-      *) echo "Unknown option for sync: $arg"; exit 1 ;;
-    esac
-  done
-
-  if [[ -z "${VAULT_BUCKET:-}" ]]; then
-    echo "Error: VAULT_BUCKET environment variable is not set."
-    echo "  export VAULT_BUCKET=<your-s3-bucket-name>"
-    exit 1
-  fi
-
-  local s3_uri="s3://${VAULT_BUCKET}"
-
-  case "$direction" in
-    push)
-      if $force; then
-        echo "Note: --force is a no-op for push (push always uploads newer/missing files)."
-      fi
-      _aws s3 sync "$SCRIPT_DIR" "$s3_uri" "${SYNC_INCLUDES[@]}"
-      ;;
-    pull)
-      if $force; then
-        echo "WARNING: --force will delete local *.vault files and re-download from S3."
-        echo "  Any local-only changes (locked but not yet pushed) will be lost."
-        if [[ -t 0 ]]; then
-          read -r -p "Continue? [y/N] " ans
-          [[ "$ans" =~ ^[Yy] ]] || { echo "Aborted."; exit 1; }
-        fi
-        for entry in "${VAULTS[@]}"; do
-          local rest="${entry#*:}"
-          local vault_file="${rest%%:*}"
-          rm -f "${SCRIPT_DIR}/${vault_file}"
-        done
-      fi
-      _aws s3 sync "$s3_uri" "$SCRIPT_DIR" "${SYNC_INCLUDES[@]}"
-      ;;
-    *)
-      echo "Usage: vault sync <push|pull> [--force]"
-      exit 1
-      ;;
-  esac
-
-  date "+%Y-%m-%d %H:%M:%S %Z" > "${SCRIPT_DIR}/.vault-synced"
-}
-
-# Parse top-level flags (currently just --no-password). Stop at the first
-# non-flag arg, which is the subcommand.
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --no-password) NO_PASSWORD=true; shift ;;
-    -h|--help)     usage; exit 0 ;;
-    --)            shift; break ;;
-    -*)            echo "Unknown top-level flag: $1" >&2; usage; exit 2 ;;
-    *)             break ;;
-  esac
-done
+# ------------------------------------------------------------------ main ---
 
 if [[ $# -lt 1 ]]; then
   usage
@@ -433,17 +437,15 @@ if [[ $# -lt 1 ]]; then
 fi
 
 case "$1" in
-  unlock) do_unlock ;;
-  lock)   do_lock ;;
-  rekey)  do_rekey ;;
-  status) do_status ;;
+  -h|--help) usage; exit 0 ;;
+  unlock) shift; do_unlock "$@" ;;
+  lock)   shift; do_lock "$@" ;;
+  rekey)  shift; do_rekey "$@" ;;
+  status) shift; do_status "$@" ;;
   sync)
-    if [[ -z "${2:-}" ]]; then
-      echo "Usage: vault sync <push|pull> [--force]"
-      exit 1
-    fi
-    shift
-    do_sync "$@"
+    echo "vault sync is retired — hemlighet is a git repo now:" >&2
+    echo "  git -C $HL pull / push" >&2
+    exit 2
     ;;
-  *)      usage; exit 1 ;;
+  *) usage; exit 1 ;;
 esac

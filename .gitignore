@@ -1,8 +1,6 @@
 ssh/
 env
 aws/
-*.vault
-.vault-synced
 face
 gitconfig
 openvpn/logs/

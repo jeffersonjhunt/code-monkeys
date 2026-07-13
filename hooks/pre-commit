@@ -5,11 +5,11 @@
 
 REPO_DIR="$(git rev-parse --show-toplevel)"
 
-if stale=$("$REPO_DIR/vault" status 2>/dev/null | grep "STALE"); then
+if stale=$("$REPO_DIR/vault" status --local 2>/dev/null | grep "STALE"); then
   echo ""
   echo "WARNING: vault may be stale:"
   echo "$stale"
-  echo "  Run './vault lock' to re-encrypt before syncing."
+  echo "  Run './vault lock --keep' to re-encrypt into ~/hemlighet, then commit+push there."
   echo ""
 fi
 
