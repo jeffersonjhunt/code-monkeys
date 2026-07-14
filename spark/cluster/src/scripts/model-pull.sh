@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# model-pull.sh — fetch a HuggingFace repo into the flat ~/Models/<org>/<name>
-# layout that the vLLM compose expects. Idempotent.
+# model-pull.sh — fetch a HuggingFace repo into the flat $MODEL_DIR/<org>/<name>
+# layout that the vLLM compose expects (default /srv/models). Idempotent.
 #
 # Hosts come from cluster.env ($REPLICAS, $SSH_USER).
 #
@@ -37,18 +37,27 @@ HOST="$1"; REPO="$2"
 
 pull_one() {
   local host="$1"
-  echo ">> [$host] pull $REPO into ~/Models/$REPO"
+  echo ">> [$host] pull $REPO into $MODEL_DIR/$REPO"
   ssh "$REMOTE_USER@$host" "
     set -e
-    mkdir -p ~/Models
+    # Stage into the SAME directory the vllm stack mounts at /models. This used to pull into
+    # ~/Models while vLLM served \$MODEL_DIR, so a freshly pulled model was invisible to the
+    # server. Never re-derive the path here — it comes from cluster.env via load-config.sh.
+    if [ ! -d '$MODEL_DIR' ]; then
+      echo \"error: $MODEL_DIR does not exist on $host — run bootstrap.sh on it first\" >&2
+      exit 1
+    fi
+    # \$SSH_USER often cannot write \$MODEL_DIR directly (it belongs to the admin user), but it
+    # is in the docker group — so download as the directory's own uid:gid rather than assuming.
+    owner=\$(stat -c '%u:%g' '$MODEL_DIR')
     docker run --rm \
-      --user 1000:1000 \
+      --user \"\$owner\" \
       --entrypoint hf \
-      -v ~/Models:/models \
+      -v '$MODEL_DIR':/models \
       --env-file ~/spark-deploy/vllm/.env \
       cuda-vllm:latest \
       download '$REPO' --local-dir '/models/$REPO' --quiet
-    du -sh ~/Models/$REPO | sed 's/^/   /'
+    du -sh '$MODEL_DIR/$REPO' | sed 's/^/   /'
   "
 }
 

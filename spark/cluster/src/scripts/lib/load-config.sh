@@ -8,7 +8,7 @@
 # Required variables:
 #   SSH_USER, REPLICAS, LB_HOST
 # Optional with defaults:
-#   VLLM_PORT=8000, LB_PORT=8080, LB_STATS_PORT=8404
+#   VLLM_PORT=8000, LB_PORT=8080, LB_STATS_PORT=8404, MODEL_DIR=/srv/models
 
 # This file is sourced, not executed; do not `set -e` here.
 
@@ -28,6 +28,10 @@ set -a; . "$CLUSTER_ENV"; set +a
 : "${VLLM_PORT:=8000}"
 : "${LB_PORT:=8080}"
 : "${LB_STATS_PORT:=8404}"
+# Where the weights live on each replica. MUST match the vllm stack's MODEL_DIR (compose.yml
+# mounts it at /models:ro) — model-pull.sh stages into the same directory vLLM reads from, and
+# they drifted apart once already (weights pulled to ~/Models, vLLM serving /srv/models).
+: "${MODEL_DIR:=/srv/models}"
 
 # Convenience derived value for tools that want the public endpoint without
 # re-deriving it (notably bench.py, which reads CLUSTER_TARGET from the env).
