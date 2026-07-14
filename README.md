@@ -31,7 +31,8 @@ What it does:
 - Installs Oh-My-Zsh if it isn't already there, and sets zsh as the default shell
 - Symlinks `gitconfig` (if present), `gitignore`, `vimrc`, `toprc`, `zaliases`, `zbase`, `zfuncs`, `zprofile` as dotfiles in `$HOME`
 - Symlinks `ssh` and `aws` if present (created by `vault unlock`)
-- Symlinks `fastfetch` into `~/.config/`, `jjh.zsh-theme` into `~/.oh-my-zsh/custom/themes/`, and `claude` into `~/.claude/` (i.e. the link lands at `~/.claude/claude` — see the note in `CLAUDE.md`)
+- Symlinks `fastfetch` into `~/.config/` and `jjh.zsh-theme` into `~/.oh-my-zsh/custom/themes/`
+- Links `claude/settings.json` and `claude/commands` **into** `~/.claude` (which stays a real directory — it holds Claude Code's live state). Existing real files there are left alone, not overwritten
 - Symlinks each script in `bin/` individually into `~/.local/bin/` (creates the directory if missing — files from other installers are left alone)
 - Installs `zbase` as `~/.zshrc` (copy, not symlink)
 - Clones oh-my-zsh plugins: `zsh-autosuggestions`, `zsh-completions`, `zsh-syntax-highlighting`
