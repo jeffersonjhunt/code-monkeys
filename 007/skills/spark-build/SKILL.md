@@ -11,11 +11,11 @@ metadata:
 
 The spark-class primate images can only build on an NVIDIA-kernel host with a Blackwell GPU — in practice, one of the spark cluster replicas. Building from source while a vLLM container is loaded will exhaust the 128 GB unified memory and OOM the build. This skill handles the cluster-aware orchestration:
 
-1. Drain the target node from the cluster (stop `vllm` so HAProxy marks it DOWN)
-2. Verify another replica is still UP so the API stays available
+1. **Check capacity first** — verify a *peer* replica is still serving (its own vLLM `/health`), before anything is stopped
+2. Drain the target node (stop `vllm`, freeing the unified memory) and confirm it actually stopped
 3. Sync the working tree to the build host (`rsync` by default, or `git pull` of a named ref)
 4. Build the requested spark images on the host (each `make <img>.build` builds the shared `cuda-base` base — `:runtime` + `:devel` — first as a prerequisite; it carries `nvtop` and the codemonkey user, and is cached after the first run)
-5. Restart the vLLM container so HAProxy marks the node back UP
+5. Restart the vLLM container and wait for it to serve again (~2 min cold weight load)
 
 ## When to Use
 
@@ -28,15 +28,14 @@ Do NOT use for the standard primates (claude / opencode / kiro / etc.) — those
 ## Prerequisites
 
 - Passwordless SSH to the build host as `$SSH_USER` from `spark/cluster/cluster.env`
-- `$SSH_USER` has NOPASSWD sudo on the host
-- `$SSH_USER` is in the `docker` group on the host (so `make` works without sudo)
+- `$SSH_USER` is in the `docker` group on the host (so `make` works without sudo). **Root is not needed** — the build is a `docker build`. The service account (`gdeceiver`) deliberately has no sudo.
 - `spark/cluster/cluster.env` exists locally (gitignored — copy `cluster.env.example` and fill in)
 
 ## Topology Assumptions
 
 The skill reads `spark/cluster/cluster.env`:
 - `REPLICAS` — space-separated cluster hosts
-- `LB_HOST` — replica running HAProxy
+- `LB_HOST` — the host fronting the cluster (LiteLLM router; may be a standalone control-plane box, not a replica)
 - `SSH_USER`, `VLLM_PORT`, `LB_PORT`, `LB_STATS_PORT`
 
 Default build target is the first replica that is **not** `LB_HOST` (so draining it doesn't take the API down). Override with `--host`.
@@ -79,7 +78,8 @@ When `--host` is an FQDN and `LB_HOST` from `cluster.env` is bare, the skill aut
 | `--sync rsync\|git` | `rsync` | How to get code onto the host |
 | `--ref REF` | current branch | Git ref for `--sync git` |
 | `--dry-run` | off | Print every step without executing |
-| `--skip-drain` | off | Don't stop vLLM before building |
+| `--skip-drain` | off | Don't stop vLLM before building (skips the capacity gate; the build then competes with the server for unified memory) |
+| `--allow-outage` | off | Proceed when draining leaves **no** serving replica (single-replica cluster). Without it the script refuses rather than silently taking the model offline |
 | `--no-restart` | off | Don't restart vLLM after building |
 | `--force` | off | Allow targeting `LB_HOST` (takes the API down) |
 | `--help` | — | Show usage |
@@ -89,10 +89,27 @@ When `--host` is an FQDN and `LB_HOST` from `cluster.env` is bare, the skill aut
 If the build is interrupted (Ctrl-C, network drop), an EXIT trap attempts to restart vLLM on the drained host so the cluster recovers. If the trap doesn't fire (kill -9, host crash), restart manually:
 
 ```bash
-ssh jhunt@hutch.tworivers 'cd ~/spark-deploy/vllm && docker compose up -d'
+ssh gdeceiver@hutch.tworivers 'cd ~/spark-deploy/vllm && docker compose up -d'
 ```
 
-HAProxy will mark the replica UP again ~2 min after vLLM's `/health` passes (model cold-load time).
+The replica serves again ~2 min after restart (model cold-load); the script polls its `/health` and tells you when it's back.
+
+## ⚠️ Today the cluster has ONE replica — a "drain" is an outage
+
+This skill's premise — drain a node, the others keep serving — assumed a multi-replica pool.
+Since `starsky` was repurposed (2026-06-10), `REPLICAS="hutch.tworivers"` is the whole coding
+cluster. Stopping vLLM on hutch therefore takes `qwen3-coder-next` **offline for the entire
+build**, with nothing to fail over to.
+
+The script no longer pretends otherwise: it refuses to drain a sole replica unless you pass
+`--allow-outage`, and it refuses **before** stopping anything. Your options:
+
+- **`--allow-outage`** — accept the downtime (fastest build; the model is unavailable meanwhile).
+- **`--skip-drain`** — leave vLLM running and build alongside it. No downtime, but the build
+  competes with the server for the 128 GB unified memory, so it is slower and can OOM.
+
+When a second coding replica returns, the original drain semantics resume automatically — the
+capacity gate simply finds a healthy peer and proceeds.
 
 ## What This Skill Doesn't Do
 

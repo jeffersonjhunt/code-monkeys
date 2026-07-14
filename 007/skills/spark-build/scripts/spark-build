@@ -26,12 +26,15 @@ Options:
   --ref REF         Git ref for --sync git. Default: current branch.
   --dry-run         Print every step without executing (no network).
   --skip-drain      Do not stop vLLM on the host before building.
+  --allow-outage    Proceed even when draining leaves the cluster with no serving
+                    replica (i.e. a single-replica cluster). Without this, the
+                    build refuses rather than silently taking the model offline.
   --no-restart      Do not restart vLLM on the host after building.
   --force           Allow targeting the LB host (takes the cluster API down).
   --help            Show this help.
 
 Reads spark/cluster/cluster.env for REPLICAS, LB_HOST, SSH_USER,
-VLLM_PORT, LB_PORT, LB_STATS_PORT.
+VLLM_PORT and LB_PORT.
 EOF
 }
 
@@ -45,6 +48,7 @@ DRY_RUN=0
 SKIP_DRAIN=0
 NO_RESTART=0
 FORCE=0
+ALLOW_OUTAGE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --ref)         GIT_REF="$2"; shift 2 ;;
     --dry-run)     DRY_RUN=1; shift ;;
     --skip-drain)  SKIP_DRAIN=1; shift ;;
+    --allow-outage) ALLOW_OUTAGE=1; shift ;;
     --no-restart)  NO_RESTART=1; shift ;;
     --force)       FORCE=1; shift ;;
     --help|-h)     usage; exit 0 ;;
@@ -103,7 +108,10 @@ fi
 : "${SSH_USER:?cluster.env must set SSH_USER}"
 : "${REPLICAS:?cluster.env must set REPLICAS}"
 : "${LB_HOST:?cluster.env must set LB_HOST}"
-: "${LB_STATS_PORT:=8404}"
+: "${VLLM_PORT:=8000}"
+: "${LB_PORT:=8080}"
+# LB_STATS_PORT is vestigial: it belonged to the retired HAProxy stack. LiteLLM exposes no
+# stats port, which is exactly why the old drain check (a curl to :8404) could never succeed.
 
 # pick a default host (first non-LB replica)
 if [[ -z "$HOST" ]]; then
@@ -174,40 +182,92 @@ echo "    dry-run    : ${DRY_RUN}"
 echo
 
 # ---- pre-flight on host -------------------------------------------------
+# Checks what the build actually needs: a usable Docker daemon and a visible GPU. It used to
+# also demand `sudo -n true`, which hard-failed the whole script the moment the cluster moved to
+# the `gdeceiver` service account — that account is in `docker` and `users`, deliberately NOT in
+# `sudo`. Nothing here needs root: `make <img>.build` is a docker build, and docker-group
+# membership is exactly what buys you that without sudo.
 log "Pre-flight on $HOST"
-sshx 'set -e; sudo -n true; docker version --format "{{.Server.Version}}" >/dev/null; nvidia-smi --query-gpu=name --format=csv,noheader | head -1'
+sshx 'set -e; docker version --format "{{.Server.Version}}" >/dev/null; nvidia-smi --query-gpu=name --format=csv,noheader | head -1'
 
-# ---- drain --------------------------------------------------------------
-if (( ! SKIP_DRAIN )); then
-  log "Draining $HOST from cluster (docker compose stop vllm)"
-  sshx 'cd ~/spark-deploy/vllm && docker compose stop'
-  DRAINED=1
+# ---- capacity check -- BEFORE we stop anything ---------------------------
+# This used to run AFTER the drain, and against HAProxy's stats CSV on :8404. Both were wrong:
+# the LB is LiteLLM now (no stats port at all — the curl just fails), so the check counted zero
+# UP replicas and exit 1'd *after* vLLM had already been stopped. Every normal run aborted.
+#
+# Ask the replicas themselves instead. Their vLLM /health is the ground truth, it does not
+# depend on the LB, and it works whatever the LB happens to be.
+PEERS=()
+for r in $REPLICAS; do
+  [[ "$r" != "$HOST" ]] && PEERS+=("$r")
+done
 
-  log "Waiting up to 60s for HAProxy on $LB_TARGET to mark $HOST DOWN"
-  if (( ! DRY_RUN )); then
-    state=""
-    for _ in $(seq 1 12); do
-      sleep 5
-      state=$(ssh -o BatchMode=yes "${SSH_USER}@${LB_TARGET}" \
-        "curl -sS 'http://127.0.0.1:${LB_STATS_PORT}/stats;csv' | awk -F, -v h='${HOST%%.*}' '\$1==\"vllm_pool\" && \$2==h {print \$18}'" 2>/dev/null || true)
-      [[ "$state" == "DOWN" || "$state" == "MAINT" ]] && break
-    done
-    if [[ "$state" != "DOWN" && "$state" != "MAINT" ]]; then
-      warn "$HOST status is '$state' after 60s (expected DOWN). Proceeding anyway."
+# Is a replica serving? (0 = healthy). Quiet: callers decide what a failure means.
+replica_healthy() {
+  ssh -o BatchMode=yes -o ConnectTimeout=5 "${SSH_USER}@$1" \
+    "curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:${VLLM_PORT}/health" 2>/dev/null
+}
+
+if (( ! SKIP_DRAIN && ! DRY_RUN )); then
+  if (( ${#PEERS[@]} == 0 )); then
+    # Single-replica cluster: "drain" is not a drain, it is an outage. Say so plainly and make
+    # the operator opt in, rather than pretending the cluster is still served.
+    if (( ! ALLOW_OUTAGE )); then
+      warn "$HOST is the ONLY replica in REPLICAS='$REPLICAS'."
+      warn "Stopping vLLM on it takes the served model OFFLINE for the whole build — there is"
+      warn "nothing to fail over to. This is an outage, not a drain."
+      warn "Re-run with --allow-outage to accept that, or --skip-drain to build without stopping"
+      warn "vLLM (slower, and the build competes with the server for unified memory)."
+      exit 1
     fi
+    warn "Single-replica cluster — the served model will be OFFLINE for this build (--allow-outage)."
+  else
+    log "Checking peer capacity before draining $HOST (need >=1 healthy peer)"
+    healthy=()
+    for p in "${PEERS[@]}"; do
+      if replica_healthy "$p"; then healthy+=("$p"); echo "    $p  serving"
+      else                          echo "    $p  NOT serving"; fi
+    done
+    if (( ${#healthy[@]} == 0 )); then
+      warn "No peer replica is serving — draining $HOST would leave zero serving capacity."
+      warn "Wait for a peer to recover, or pass --allow-outage / --skip-drain deliberately."
+      exit 1   # nothing has been stopped yet: the cluster is exactly as we found it
+    fi
+    log "Peers still serving: ${healthy[*]}"
   fi
 fi
 
-# ---- verify another replica is UP --------------------------------------
-log "Cluster backend status (need >=1 UP that is not $HOST)"
-sshl "curl -sS 'http://127.0.0.1:${LB_STATS_PORT}/stats;csv' | awk -F, '\$1==\"vllm_pool\" && \$2!=\"BACKEND\" && \$2!=\"FRONTEND\" {print \"    \"\$2,\$18}'"
-if (( ! DRY_RUN && ! SKIP_DRAIN )); then
-  up=$(ssh -o BatchMode=yes "${SSH_USER}@${LB_TARGET}" \
-    "curl -sS 'http://127.0.0.1:${LB_STATS_PORT}/stats;csv' | awk -F, -v h='${HOST%%.*}' '\$1==\"vllm_pool\" && \$2!=\"BACKEND\" && \$2!=\"FRONTEND\" && \$2!=h && \$18==\"UP\" {n++} END {print n+0}'")
-  if [[ "$up" == "0" ]]; then
-    warn "No other replica is UP — building anyway would leave the cluster with zero serving capacity."
-    warn "Use --skip-drain if you really mean to do this, or wait for another replica to recover."
-    exit 1
+# ---- drain --------------------------------------------------------------
+if (( ! SKIP_DRAIN )); then
+  log "Draining $HOST (docker compose stop vllm — frees the unified memory the build needs)"
+  sshx 'cd ~/spark-deploy/vllm && docker compose stop'
+  DRAINED=1
+
+  if (( ! DRY_RUN )); then
+    # Confirm it is actually down. LiteLLM has no per-backend stats to observe (that was the
+    # old :8404 poll), so verify at the source: the replica's own vLLM must stop answering.
+    log "Confirming vLLM stopped on $HOST"
+    for _ in $(seq 1 12); do
+      replica_healthy "$HOST" || break
+      sleep 5
+    done
+    if replica_healthy "$HOST"; then
+      warn "vLLM on $HOST is STILL serving after 60s — it did not stop. Aborting before the build"
+      warn "competes with it for unified memory. (The EXIT trap will restore the stack.)"
+      exit 1
+    fi
+    log "vLLM on $HOST is down"
+
+    # The endpoint should still be alive for everyone else (unless we knowingly took it down).
+    if (( ${#PEERS[@]} > 0 )); then
+      if ssh -o BatchMode=yes -o ConnectTimeout=5 "${SSH_USER}@${LB_TARGET}" \
+           "curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:${LB_PORT}/health/liveliness" 2>/dev/null; then
+        log "LB on $LB_TARGET:$LB_PORT still live"
+      else
+        warn "LB on $LB_TARGET:$LB_PORT is not answering /health/liveliness — the cluster endpoint"
+        warn "may be down independently of this build. Continuing; check the LB."
+      fi
+    fi
   fi
 fi
 
@@ -238,8 +298,25 @@ if (( ! NO_RESTART )); then
   log "Restarting vLLM on $HOST (docker compose up -d)"
   sshx 'cd ~/spark-deploy/vllm && docker compose up -d'
   DRAINED=0  # cleanup trap no-op now
-  log "vLLM cold-load is ~2 min; HAProxy marks UP after /health passes."
-  log "Watch: ssh ${SSH_USER}@${LB_TARGET} 'curl -sS http://127.0.0.1:${LB_STATS_PORT}/stats;csv | awk -F, \"\\\$1==\\\"vllm_pool\\\" {print \\\$2,\\\$18}\"'"
+
+  # Wait for it to actually come back rather than just claiming it will. The weights mmap-load
+  # cold in ~2 min, and LiteLLM has no backend-state view to watch, so poll the replica itself.
+  if (( ! DRY_RUN )); then
+    log "Waiting up to 5 min for vLLM on $HOST to serve again (cold weight load)"
+    back=0
+    for _ in $(seq 1 30); do
+      if replica_healthy "$HOST"; then back=1; break; fi
+      sleep 10
+    done
+    if (( back )); then
+      log "vLLM on $HOST is serving again"
+    else
+      warn "vLLM on $HOST is not serving after 5 min. Check it:"
+      warn "  ssh ${SSH_USER}@${HOST} 'cd ~/spark-deploy/vllm && docker compose logs --tail=50'"
+    fi
+  else
+    log "Watch: ssh ${SSH_USER}@${HOST} 'curl -sS http://127.0.0.1:${VLLM_PORT}/health'"
+  fi
 fi
 
 log "Done."
