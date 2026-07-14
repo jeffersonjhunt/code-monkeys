@@ -8,10 +8,26 @@
 
 set -euo pipefail
 
-MODEL_DIR="$HOME/Models"
+# Where the weights live. This MUST be the directory the vllm stack mounts at /models
+# (src/compose/vllm/compose.yml: ${MODEL_DIR:-/srv/models}) — bootstrap used to create
+# ~/Models, which nothing mounted, so a freshly bootstrapped host had no weights directory
+# at all and vLLM failed to load. Piped in like CLUSTER_PEERS; this script is `bash -s`'d
+# onto a bare host, so it cannot source load-config.sh — keep the default in sync with it.
+MODEL_DIR="${MODEL_DIR:-/srv/models}"
 
-echo ">> create $MODEL_DIR (owned by $USER)"
-mkdir -p "$MODEL_DIR"
+if [[ ! -d "$MODEL_DIR" ]]; then
+  # /srv is root-owned, so creating under it needs sudo. Hand it to the invoking admin user
+  # and make it group-writable: model-pull.sh downloads as the directory's owner, and vLLM
+  # mounts it read-only.
+  echo ">> create $MODEL_DIR (owner $(id -un):$(id -gn), 775)"
+  sudo mkdir -p "$MODEL_DIR"
+  sudo chown "$(id -u):$(id -g)" "$MODEL_DIR"
+  sudo chmod 775 "$MODEL_DIR"
+else
+  # Never re-chown an existing tree: on a live replica this is tens of GB of weights owned by
+  # whoever staged them, and stealing it from under vLLM would be a great way to break serving.
+  echo ">> $MODEL_DIR exists (owner $(stat -c '%U:%G' "$MODEL_DIR")) — leaving ownership alone"
+fi
 
 # Defensive cleanup: an earlier version of this script wrote a managed block to
 # /etc/hosts. DNS handles resolution; we don't shadow it here. Remove the block

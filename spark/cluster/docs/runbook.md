@@ -116,12 +116,12 @@ After stopping a replica, LiteLLM has no backend to route that model's requests 
    ./src/scripts/model-pull.sh all <org>/<repo>
    ```
 
-   First fetch takes ~10–30 min for tens of GB; subsequent vLLM starts mmap-load from `~/Models/<org>/<name>` in ~2 min.
+   First fetch takes ~10–30 min for tens of GB; subsequent vLLM starts mmap-load from `/srv/models/<org>/<name>` in ~2 min.
 4. **Cross-box transfer** — alternative to pulling on both boxes (saves bandwidth and HF rate-limit headroom):
 
    ```bash
-   ssh gdeceiver@<src-host> 'tar -C ~/Models -cf - <org>/<repo>' | \
-     ssh gdeceiver@<dst-host> 'tar -C ~/Models -xpf -'
+   ssh gdeceiver@<src-host> 'tar -C /srv/models -cf - <org>/<repo>' | \
+     ssh gdeceiver@<dst-host> 'tar -C /srv/models -xpf -'
    ```
 
 5. Smoke test each box, then re-test through `minerva:8888`.
@@ -163,7 +163,7 @@ ssh gdeceiver@hutch 'docker start vllm'
 
 ## Reboot survival
 
-Both stacks use `restart: unless-stopped`. After a host reboot, Docker auto-starts the containers. vLLM containers reload the model from `~/Models/<org>/<name>` (~2 min); HAProxy comes up immediately and marks backends DOWN until vLLM healthchecks pass.
+Both stacks use `restart: unless-stopped`. After a host reboot, Docker auto-starts the containers. vLLM containers reload the model from `/srv/models/<org>/<name>` (~2 min); HAProxy comes up immediately and marks backends DOWN until vLLM healthchecks pass.
 
 ## Logs
 
@@ -185,7 +185,7 @@ ssh gdeceiver@hutch   'cd ~/spark-deploy/vllm    && docker compose down'
 ssh gdeceiver@minerva 'cd ~/spark-deploy/haproxy && docker compose down'
 
 # remove model weights cache (frees disk)
-ssh gdeceiver@<host> 'rm -rf ~/Models/<org>/<name>'
+ssh gdeceiver@<host> 'rm -rf /srv/models/<org>/<name>'
 
 # remove images
 ssh gdeceiver@<host> 'docker image prune -a -f'

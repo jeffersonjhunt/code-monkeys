@@ -36,8 +36,8 @@ Plain Docker Compose + SSH + small shell scripts. **No Ansible, no Kubernetes.**
 - `src/compose/vllm/` — vLLM stack (deployed identically on every replica)
 - `src/compose/litellm/` — LiteLLM model-aware router (`$LB_HOST` only) — the current LB. `config.yaml` is the `model -> backend` map and is the file you edit
 - `src/compose/haproxy/` — retired round-robin HAProxy stack, kept as a fallback (`$LB_HOST` only; deploy it explicitly, never via `deploy.sh all`)
-- `src/scripts/bootstrap.sh` — one-time host prep (`~/Models`; DNS handles resolution)
-- `src/scripts/model-pull.sh` — fetch a HF repo into `~/Models/<org>/<name>` on one or all hosts
+- `src/scripts/bootstrap.sh` — one-time host prep (creates `$MODEL_DIR`, default `/srv/models`; DNS handles resolution)
+- `src/scripts/model-pull.sh` — fetch a HF repo into `$MODEL_DIR/<org>/<name>` on one or all hosts
 - `src/scripts/deploy.sh` — tar-stream a compose stack to a host and `docker compose up -d` (no `rsync` dependency); for `vllm` it also ECR-logs-in, SOPS-decrypts the stack `.env` from `hemlighet` on the target, and `docker compose pull`s
 
 If the fleet ever grows past ~5 boxes or roles diverge meaningfully, revisit (Ansible/Salt/k8s would earn their keep then; today they don't).
@@ -55,7 +55,7 @@ If the fleet ever grows past ~5 boxes or roles diverge meaningfully, revisit (An
 
 - All scripts must be idempotent and safe to re-run
 - Container image tags are pinned (no `:latest`)
-- Model weights live at `~/Models/<org>/<name>` (flat HF org/name layout, not the `models--<org>--<name>/snapshots/<sha>/` HF cache layout) on each box; never bake them into images. Pre-stage via `model-pull.sh` — vLLM is launched with `--model /models/${HF_MODEL_ID}` and does not auto-download.
+- Model weights live at `/srv/models/<org>/<name>` (flat HF org/name layout, not the `models--<org>--<name>/snapshots/<sha>/` HF cache layout) on each box; never bake them into images. Pre-stage via `model-pull.sh` — vLLM is launched with `--model /models/${HF_MODEL_ID}` and does not auto-download.
 - `.env` files (real, with secrets) are gitignored; commit only `.env.example`
 - Update `TASKS.md` (check off items) and `CHANGELOG.md` (append dated entry) as part of any material change — they are the project's working memory
 - Discovery / inspection scripts must be read-only on the remote hosts; provisioning is via `bootstrap.sh` / `deploy.sh` only

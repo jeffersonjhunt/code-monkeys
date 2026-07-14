@@ -31,7 +31,7 @@ Known SPOF: `$LB_HOST` losing power takes the API endpoint down. Accepted for cu
 - The locally-built `cuda-vllm` image (pulled from private ECR; compose default `…/codemonkeys/cuda-vllm:latest`) bundles the right CUDA + Python + vLLM stack with native sm_89/120/121 support
 - Image rollback is just a container restart with a different tag
 - Pinned tags make environment drift impossible
-- Weights live outside the image at `~/Models/<org>/<name>`, so model changes don't trigger image rebuilds
+- Weights live outside the image at `/srv/models/<org>/<name>`, so model changes don't trigger image rebuilds
 
 ## Why plain Docker Compose (no Ansible, no Kubernetes)
 
