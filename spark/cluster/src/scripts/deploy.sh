@@ -5,11 +5,12 @@
 #
 # Usage:
 #   ./deploy.sh <host> <stack>...     # one host, one or more stacks
-#   ./deploy.sh all                   # vllm on every replica, haproxy on LB_HOST
+#   ./deploy.sh all                   # vllm on every replica, litellm on LB_HOST
 #
 # Examples:
-#   ./deploy.sh starsky vllm haproxy
 #   ./deploy.sh hutch   vllm
+#   ./deploy.sh minerva litellm       # the LB (LiteLLM replaced HAProxy 2026-06-28)
+#   ./deploy.sh minerva haproxy       # retired fallback LB — never deployed by `all`
 #   ./deploy.sh all
 #
 # Requires: tar, ssh keys to $SSH_USER@<host>.

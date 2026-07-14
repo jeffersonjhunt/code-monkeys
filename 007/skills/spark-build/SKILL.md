@@ -11,11 +11,34 @@ metadata:
 
 The spark-class primate images can only build on an NVIDIA-kernel host with a Blackwell GPU — in practice, one of the spark cluster replicas. Building from source while a vLLM container is loaded will exhaust the 128 GB unified memory and OOM the build. This skill handles the cluster-aware orchestration:
 
-1. Drain the target node from the cluster (stop `vllm` so HAProxy marks it DOWN)
-2. Verify another replica is still UP so the API stays available
+1. Drain the target node from the cluster (stop `vllm`)
+2. Verify capacity remains before building
 3. Sync the working tree to the build host (`rsync` by default, or `git pull` of a named ref)
 4. Build the requested spark images on the host (each `make <img>.build` builds the shared `cuda-base` base — `:runtime` + `:devel` — first as a prerequisite; it carries `nvtop` and the codemonkey user, and is cached after the first run)
-5. Restart the vLLM container so HAProxy marks the node back UP
+5. Restart the vLLM container
+
+> **⚠️ The drain/verify steps are stale and currently break the script (as of the June 2026 LB migration).**
+> Steps 1–2 and 5 were written for HAProxy: the script polls the HAProxy stats CSV on
+> `$LB_STATS_PORT` (8404) to watch a replica go DOWN/UP and to confirm a *second* replica is still
+> serving. Two things changed:
+> - **The LB is LiteLLM now** (`minerva:8888`), and it exposes **no `:8404` stats UI** at all
+>   (`spark/cluster/docs/runbook.md` — "Backend status"). Every stats poll now hits a closed port.
+> - **There is only one coding replica** (`REPLICAS="hutch.tworivers"`). There is no "remaining
+>   replica" to drain to — stopping vLLM on hutch is a full outage for `qwen3-coder-next` until it
+>   restarts, and that is unavoidable if you want to build on it.
+>
+> Net effect: the "verify another replica is UP" gate sees zero UP replicas and **exits 1 after
+> draining** (the EXIT trap does restart vLLM). Until the script is fixed, build with
+> **`--skip-drain`** — and stop vLLM yourself first, because the build needs the memory:
+>
+> ```bash
+> ssh gdeceiver@hutch.tworivers 'cd ~/spark-deploy/vllm && docker compose stop'
+> ./scripts/spark-build --host hutch.tworivers --image cuda-vllm --skip-drain --no-restart
+> ssh gdeceiver@hutch.tworivers 'cd ~/spark-deploy/vllm && docker compose up -d'
+> ```
+>
+> Expect the coding API to be down for the duration of the build. Verify recovery with
+> `curl http://hutch.tworivers:8000/health` and `curl http://minerva.tworivers:8888/v1/models`.
 
 ## When to Use
 
@@ -35,17 +58,17 @@ Do NOT use for the standard primates (claude / opencode / kiro / etc.) — those
 ## Topology Assumptions
 
 The skill reads `spark/cluster/cluster.env`:
-- `REPLICAS` — space-separated cluster hosts
-- `LB_HOST` — replica running HAProxy
-- `SSH_USER`, `VLLM_PORT`, `LB_PORT`, `LB_STATS_PORT`
+- `REPLICAS` — space-separated cluster hosts (currently one: `hutch.tworivers`)
+- `LB_HOST` — the host running the LB. Today that is `minerva.tworivers`, a standalone control-plane box running **LiteLLM** — not a replica, and not something you ever build on
+- `SSH_USER`, `VLLM_PORT`, `LB_PORT`, `LB_STATS_PORT` (the last is vestigial — it was HAProxy's stats port; LiteLLM has none)
 
-Default build target is the first replica that is **not** `LB_HOST` (so draining it doesn't take the API down). Override with `--host`.
+Default build target is the first replica that is **not** `LB_HOST`. With `LB_HOST` off the replica list, that is simply the first entry of `$REPLICAS` (hutch). Override with `--host`.
 
 ## DNS / Hostname Notes
 
 The cluster scripts use bare hostnames (e.g. `hutch`) which resolve on the workstation and on each cluster box. When run from **inside a primate container**, bare names may not resolve — pass the FQDN (e.g. `--host hutch.tworivers`).
 
-When `--host` is an FQDN and `LB_HOST` from `cluster.env` is bare, the skill auto-suffixes the LB SSH target with the same domain (so `--host hutch.tworivers` + `LB_HOST=starsky` → LB target `starsky.tworivers`). Override explicitly with `--lb-host`.
+When `--host` is an FQDN and `LB_HOST` from `cluster.env` is bare, the skill auto-suffixes the LB SSH target with the same domain (so `--host hutch.tworivers` + `LB_HOST=minerva` → LB target `minerva.tworivers`). Override explicitly with `--lb-host`. The current `cluster.env` already uses FQDNs, so this is a no-op there.
 
 ## Usage
 
@@ -89,10 +112,10 @@ When `--host` is an FQDN and `LB_HOST` from `cluster.env` is bare, the skill aut
 If the build is interrupted (Ctrl-C, network drop), an EXIT trap attempts to restart vLLM on the drained host so the cluster recovers. If the trap doesn't fire (kill -9, host crash), restart manually:
 
 ```bash
-ssh jhunt@hutch.tworivers 'cd ~/spark-deploy/vllm && docker compose up -d'
+ssh gdeceiver@hutch.tworivers 'cd ~/spark-deploy/vllm && docker compose up -d'
 ```
 
-HAProxy will mark the replica UP again ~2 min after vLLM's `/health` passes (model cold-load time).
+The replica serves again ~2 min later, once vLLM has reloaded the model from disk and `/health` passes. LiteLLM has no backend-state machine to wait on — it routes to whatever `config.yaml` maps the model to, so the endpoint recovers the moment vLLM does. Confirm with `curl http://hutch.tworivers:8000/health`.
 
 ## What This Skill Doesn't Do
 
@@ -110,7 +133,9 @@ HAProxy will mark the replica UP again ~2 min after vLLM's `/health` passes (mod
 
 When the user asks to rebuild a spark-class image or roll a vLLM update through the cluster:
 
-1. Confirm which images and which host they want (default to the non-LB replica)
-2. Run the script — let its output stream so the user sees the drain/build/restore progression
-3. After a vLLM rebuild, remind the user to test tool-calling and (if relevant) update the Qwen3-Coder-Next-NVFP4 bug memory note
-4. If they need to roll the new image across all replicas, run the skill once per replica sequentially — never drain both at once
+1. Confirm which images and which host they want (default to the non-LB replica — today, hutch)
+2. **Warn that building takes the coding API down**: there is one replica, so there is nothing to fail over to. Get explicit agreement before draining
+3. Because the HAProxy-era drain/verify gate is broken (see the warning at the top), use the `--skip-drain` path with a manual `docker compose stop` / `up -d` around the build
+4. Let the script's output stream so the user sees the build progression
+5. After a vLLM rebuild, remind the user to test tool-calling and (if relevant) update the Qwen3-Coder-Next-NVFP4 bug memory note
+6. If a second replica ever returns, roll the build one replica at a time — never drain both at once

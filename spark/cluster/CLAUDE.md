@@ -4,18 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-vLLM replica cluster across two NVIDIA DGX Spark nodes (Blackwell GB10, ARM64, 128 GB unified memory). Currently serves `RedHatAI/Qwen3-Coder-Next-NVFP4` (Qwen3-Coder-Next 80B-A3B MoE, NVFP4 quant) via an OpenAI-compatible HTTP API behind HAProxy — unblocked 2026-05-08 by the locally-built `cuda-vllm` image (native sm_89/120/121 cutlass; formerly `vllm-spark`). The community AWQ `QuantTrio/Qwen3.6-35B-A3B-AWQ` remains a validated fallback canary. See `docs/parking-lot.md` for the resolved write-ups.
+vLLM replica cluster on NVIDIA DGX Spark nodes (Blackwell GB10, ARM64, 128 GB unified memory). Currently serves `RedHatAI/Qwen3-Coder-Next-NVFP4` (Qwen3-Coder-Next 80B-A3B MoE, NVFP4 quant) via an OpenAI-compatible HTTP API behind a **LiteLLM** model-aware router — unblocked 2026-05-08 by the locally-built `cuda-vllm` image (native sm_89/120/121 cutlass; formerly `vllm-spark`). The community AWQ `QuantTrio/Qwen3.6-35B-A3B-AWQ` remains a validated fallback canary. See `docs/parking-lot.md` for the resolved write-ups.
 
 ## Topology
 
 The cluster is configured by `cluster.env` at the repo root (gitignored — see `cluster.env.example`). It defines:
 
 - `REPLICAS` — space-separated list of vLLM replica hosts
-- `LB_HOST` — the host that fronts the cluster with HAProxy. May be a standalone control-plane host (it need not be in `REPLICAS`)
+- `LB_HOST` — the host that fronts the cluster with the LiteLLM router. May be a standalone control-plane host (it need not be in `REPLICAS`)
 - `SSH_USER` — shared user account on every box
-- `VLLM_PORT`, `LB_PORT`, `LB_STATS_PORT` — defaults 8000 / 8080 / 8404
+- `VLLM_PORT`, `LB_PORT`, `LB_STATS_PORT` — 8000 / 8888 / 8404 in the maintainer's `cluster.env` (`LB_STATS_PORT` is vestigial: it belongs to the retired HAProxy stack; LiteLLM exposes no stats port)
 
-Maintainer's current cluster (worked example): `REPLICAS="hutch"`, `LB_HOST=minerva`, `SSH_USER=jhunt`. hutch is an NVIDIA DGX Spark box (Blackwell GB10, ARM64, 128 GB UMA) serving `qwen3-coder-next`; minerva is a standalone control-plane host (not a GPU replica) that fronts it with HAProxy on `LB_PORT=8888`. (starsky, a second GB10 Spark that was previously the LB + a replica, has been repurposed to a separate workload and is no longer in this cluster's replica pool.) HAProxy on `$LB_HOST` is an accepted SPOF for the API endpoint.
+Maintainer's current cluster (worked example): `REPLICAS="hutch.tworivers"`, `LB_HOST=minerva.tworivers`, `SSH_USER=gdeceiver`. hutch is an NVIDIA DGX Spark box (Blackwell GB10, ARM64, 128 GB UMA) serving `qwen3-coder-next`; minerva is a standalone control-plane host (not a GPU replica) that fronts it with **LiteLLM on `LB_PORT=8888`**. starsky — a second GB10 Spark that was previously the LB *and* a replica — was repurposed for g.deceiver reasoning on 2026-06-10 and is no longer in this cluster's replica pool (LiteLLM still *routes* the `reasoning` and `caption` models to it; it is just not a coding replica). The router on `$LB_HOST` is an accepted SPOF for the API endpoint, and with one coding replica there is currently **no failover**.
+
+**The LB is LiteLLM, not HAProxy** (cut over 2026-06-28 — see `CHANGELOG.md` and `src/scripts/deploy.sh`). HAProxy round-robins across replicas of *one* model and ignores the request body; LiteLLM routes on the OpenAI `model` field, which is what lets a single endpoint front boxes serving different models. The `haproxy` stack is retained on disk as a fallback but is never deployed by `deploy.sh all`. `docs/runbook.md` is the current operational reference.
 
 When Claude sessions need to refer to hosts, read `cluster.env` rather than assuming names — the project is meant to be portable.
 
@@ -28,20 +30,21 @@ When Claude sessions need to refer to hosts, read `cluster.env` rather than assu
 
 ## Orchestration approach
 
-Plain Docker Compose + SSH + small shell scripts. **No Ansible, no Kubernetes.** Each compose file is the actual source of truth — what you read is what runs. The one exception: `haproxy.cfg` is generated from `haproxy.cfg.template` at deploy time so the backend `server` list tracks `$REPLICAS` automatically. Edit the template, not the generated file.
+Plain Docker Compose + SSH + small shell scripts. **No Ansible, no Kubernetes.** Each compose file is the actual source of truth — what you read is what runs. The LiteLLM `config.yaml` is likewise hand-edited and shipped as-is. The one exception: the fallback stack's `haproxy.cfg` is generated from `haproxy.cfg.template` at deploy time so the backend `server` list tracks `$REPLICAS` automatically. Edit the template, not the generated file.
 
 - `cluster.env` — inventory (hosts, roles, ports); sourced by every script via `src/scripts/lib/load-config.sh`
 - `src/compose/vllm/` — vLLM stack (deployed identically on every replica)
-- `src/compose/haproxy/` — HAProxy stack (`$LB_HOST` only)
+- `src/compose/litellm/` — LiteLLM model-aware router (`$LB_HOST` only) — the current LB. `config.yaml` is the `model -> backend` map and is the file you edit
+- `src/compose/haproxy/` — retired round-robin HAProxy stack, kept as a fallback (`$LB_HOST` only; deploy it explicitly, never via `deploy.sh all`)
 - `src/scripts/bootstrap.sh` — one-time host prep (`~/Models`; DNS handles resolution)
 - `src/scripts/model-pull.sh` — fetch a HF repo into `~/Models/<org>/<name>` on one or all hosts
-- `src/scripts/deploy.sh` — `rsync` a compose stack to a host and `docker compose up -d`
+- `src/scripts/deploy.sh` — tar-stream a compose stack to a host and `docker compose up -d` (no `rsync` dependency); for `vllm` it also ECR-logs-in, SOPS-decrypts the stack `.env` from `hemlighet` on the target, and `docker compose pull`s
 
 If the fleet ever grows past ~5 boxes or roles diverge meaningfully, revisit (Ansible/Salt/k8s would earn their keep then; today they don't).
 
 ## Repo layout
 
-- `src/compose/{vllm,haproxy}/` — compose stacks, each with its own `compose.yml`, supporting files, and README
+- `src/compose/{vllm,litellm,haproxy}/` — compose stacks, each with its own `compose.yml`, supporting files, and README (`litellm` is the live LB; `haproxy` is the retired fallback)
 - `src/scripts/` — `preflight.sh` (read-only discovery), `bootstrap.sh` (one-time), `deploy.sh` (sync + up)
 - `docs/` — architecture, decisions, inventory, runbook, parking-lot
 - `docs/parking-lot.md` — deferred items with retry triggers (notably: NIM serving the original Qwen3-Coder-Next-NVFP4)

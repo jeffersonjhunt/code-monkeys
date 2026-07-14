@@ -21,6 +21,8 @@ Each skill lives in its own directory and follows a standard structure:
 | [review-adversarial](review-adversarial/) | Adversarial code review with state-tracked review loops |
 | [althingi](althingi/) | Roundtable discussions with multiple agent voices (subagent or solo mode) |
 | [docs-issues](docs-issues/) | Manage markdown-based issues in docs/reviews/ and export to GitHub/GitLab/todo.md |
+| [spark-bench](spark-bench/) | Run LLM eval harnesses (AIME 25, GPQA, LiveCodeBench v6, tau2-bench, SWE-Bench Verified) against the spark-cluster from the x86 bench host |
+| [spark-build](spark-build/) | Build the `cuda-*` primate images on a spark-cluster node, draining it from the cluster first |
 
 ## Usage
 

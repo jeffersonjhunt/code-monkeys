@@ -12,7 +12,7 @@ Two hosts that:
 
 ## Configure your hosts
 
-Cluster scripts read host details from `cluster.env`. The example uses placeholder names `A` and `B`:
+Cluster scripts read host details from `cluster.env`. The example uses the placeholder FQDNs `hostA.example` and `hostB.example` (with `LB_HOST=hostA.example`, i.e. the router co-located on the first replica):
 
 ```bash
 cp cluster.env.example cluster.env

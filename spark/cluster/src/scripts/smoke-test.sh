@@ -4,12 +4,13 @@
 # Auto-discovers the served model id from /v1/models, so the script always
 # tests whatever is actually deployed — no need to keep model names in sync.
 #
-# Default target comes from cluster.env ($LB_HOST:$LB_PORT — through HAProxy).
-# Bare hostnames get $VLLM_PORT appended for direct-replica testing.
+# Default target comes from cluster.env ($LB_HOST:$LB_PORT — through the LB,
+# which is LiteLLM as of 2026-06-28). Bare hostnames get $VLLM_PORT appended
+# for direct-replica testing.
 #
 # Usage:
-#   ./smoke-test.sh                 # → $LB_HOST:$LB_PORT (through HAProxy)
-#   ./smoke-test.sh starsky         # → starsky:$VLLM_PORT (direct replica)
+#   ./smoke-test.sh                 # → $LB_HOST:$LB_PORT (through the LB)
+#   ./smoke-test.sh hutch           # → hutch:$VLLM_PORT (direct replica)
 #   ./smoke-test.sh host:port       # explicit
 #
 # Exits non-zero on any failure.

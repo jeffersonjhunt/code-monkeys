@@ -9,10 +9,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-make all                    # Build codemonkey base + all targets (minion, embedded, miniforge3, claude, opencode, kiro, lamp, huggingface)
+make all                    # Build codemonkey base + all targets (minion, embedded, miniforge3, claude, opencode, kiro, lamp, huggingface, nyckel, samba)
 make codemonkey.build       # Build the codemonkey base image (from parent directory)
 make <name>.build           # Build a specific image, e.g. make claude.build
-make cuda-base.build        # Build the shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the spark targets
+make cuda-base.build        # Build the shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the cuda-* targets
 make cuda-llama-cpp.build   # Build llama.cpp, cross-GPU sm_89/120/121 (requires NVIDIA kernel)
 make cuda-comfy.build       # Build ComfyUI, cross-GPU (requires NVIDIA kernel)
 make cuda-vllm.build        # Build vLLM v0.21.0, native sm_89/120/121 cutlass (requires NVIDIA kernel)
