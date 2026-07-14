@@ -28,13 +28,16 @@ The `setup` script symlinks dotfiles from this repo into `$HOME`:
 ```
 
 What it does:
+- Installs Oh-My-Zsh if it isn't already there, and sets zsh as the default shell
 - Symlinks `gitconfig` (if present), `gitignore`, `vimrc`, `toprc`, `zaliases`, `zbase`, `zfuncs`, `zprofile` as dotfiles in `$HOME`
 - Symlinks `ssh` and `aws` if present (created by `vault unlock`)
-- Symlinks `fastfetch` into `~/.config/`, `jjh.zsh-theme` into `~/.oh-my-zsh/custom/themes/`, and `claude` into `~/.claude`
+- Symlinks `fastfetch` into `~/.config/` and `jjh.zsh-theme` into `~/.oh-my-zsh/custom/themes/`
+- Links `claude/settings.json` and `claude/commands` **into** `~/.claude` (which stays a real directory — it holds Claude Code's live state). Existing real files there are left alone, not overwritten
 - Symlinks each script in `bin/` individually into `~/.local/bin/` (creates the directory if missing — files from other installers are left alone)
 - Installs `zbase` as `~/.zshrc` (copy, not symlink)
 - Clones oh-my-zsh plugins: `zsh-autosuggestions`, `zsh-completions`, `zsh-syntax-highlighting`
 - Installs git hooks from `hooks/` into `.git/hooks/`
+- Installs the agent skills library (`make -C 007/skills install`) — symlinks each skill into `~/.claude/skills/` and `~/.kiro/skills/`
 - On macOS: installs custom key bindings to `~/Library/KeyBindings`
 - Warns (non-fatal) if optional tools `aws` or `fastfetch` are not installed (the `bin/aws` shim covers a missing AWS CLI by running it in the `minion` container)
 
@@ -57,6 +60,7 @@ Primates are purpose-built Docker images for different development domains. They
 debian:13-slim → codemonkey → miniforge3 → claude
                              │            → opencode
                              │            → kiro
+                             │            → spark-bench   (x86-only)
                              → embedded
                              → lamp
                              → huggingface
@@ -65,6 +69,9 @@ debian:13-slim → codemonkey → miniforge3 → claude
 nvidia/cuda:13.2.1 → cuda-base → cuda-llama-cpp  (multi-stage: full/light/server)
                               → cuda-comfy
                               → cuda-vllm       (vLLM with native sm_89/120/121 cutlass)
+
+alpine:3.21        → nyckel    (standalone — age + sops only)
+debian:trixie-slim → samba     (standalone — file-server daemon)
 ```
 
 | Image | Purpose |
@@ -72,12 +79,15 @@ nvidia/cuda:13.2.1 → cuda-base → cuda-llama-cpp  (multi-stage: full/light/se
 | **codemonkey** | Base image — Debian 13, zsh, oh-my-zsh, git, vim, build-essential, cmake, python3, nodejs, nmap, clamav, AWS CLI v2 |
 | **miniforge3** | Adds Miniforge3 (conda for aarch64 and x86_64), creates `miniforge3-env`, installs `uv` in the conda base env |
 | **claude** | Adds Claude Code via native installer, creates `claude-env` |
-| **opencode** | Adds opencode via the curl installer (binary in `/usr/local/bin`), creates `opencode-env`, pre-configured for the spark-cluster vLLM (`starsky:8080`, model `qwen3-coder-next`) |
+| **opencode** | Adds opencode via the curl installer (binary in `/usr/local/bin`), creates `opencode-env`, pre-configured for the spark-cluster LiteLLM router (`minerva.tworivers:8888`, model `qwen3-coder-next`) |
 | **kiro** | Adds Amazon Kiro CLI via native installer, creates `kiro-env` |
+| **spark-bench** | LLM eval harnesses (AIME, GPQA, LiveCodeBench, tau2-bench, SWE-Bench via SWE-agent) run against the cluster endpoint. **amd64-only** (SWE-Bench testbeds are x86) — runs on `intel-nuc.tworivers`; see `007/skills/spark-bench/` |
 | **embedded** | Adds libfmt, libboost, cc65, vasm 6502 assembler |
 | **lamp** | Adds Apache, MariaDB, PHP |
 | **huggingface** | Adds python3 venv and huggingface-cli |
 | **minion** | Bare codemonkey extension (general-purpose runner) |
+| **nyckel** | Standalone (from `alpine:3.21`, not codemonkey) — age + sops only; the containerized secrets-ops tooling behind `vault` and the `bin/{sops,age,age-keygen}` shims |
+| **samba** | Standalone (from `debian:trixie-slim`) — Samba file-server daemon with the macOS/Time-Machine VFS modules |
 | **cuda-base** | Shared CUDA base for the GPU images (one dockerfile, two flavors — `cuda-base:runtime` + `cuda-base:devel`). Adds `nvtop`, the codemonkey user, and cross-GPU arch defaults (sm_89 RTX 4090 / sm_120 RTX 5090 / sm_121 DGX Spark) so the family runs on x86 NVIDIA boxes as well as Spark |
 | **cuda-llama-cpp** | llama.cpp for NVIDIA GPUs (from `cuda-base`; cross-GPU default arch sm_89/120/121) |
 | **cuda-comfy** | ComfyUI for NVIDIA GPUs (from `cuda-base:runtime`; cross-GPU via PyTorch wheels) |
@@ -211,6 +221,9 @@ can already decrypt, then commit + push hemlighet.
 ├── primates/              # specialized Docker images built on codemonkey
 │   ├── Makefile
 │   └── *.dockerfile
+├── 007/                   # agent skills library (installed by setup via `make -C 007/skills install`)
+│   ├── Makefile           # `make test` runs the skill test suite
+│   └── skills/            # one directory per skill (SKILL.md + scripts/assets/references)
 ├── zshrc.template         # zsh config for containers (sources zbase)
 ├── zbase                  # main zsh config (oh-my-zsh, plugins, PATH)
 ├── zaliases               # shell aliases
@@ -235,4 +248,4 @@ can already decrypt, then commit + push hemlighet.
 
 ## Spark cluster
 
-`spark/cluster/` runs a vLLM replica cluster that consumes the `cuda-vllm` primate. Hosts and roles come from a gitignored `cluster.env` (copy `cluster.env.example` and edit), so the same scripts work for the maintainer's two DGX Sparks or any other pair of SSH-reachable GPU boxes. See `spark/cluster/README.md` and `spark/cluster/CLAUDE.md`.
+`spark/cluster/` runs a vLLM replica cluster that consumes the `cuda-vllm` primate, fronted by a model-aware **LiteLLM** router. Hosts and roles come from a gitignored `cluster.env` (copy `cluster.env.example` and edit), so the same scripts work for any set of SSH-reachable GPU boxes plus an LB host. The maintainer's current deployment is one DGX Spark replica (`hutch.tworivers`) with the router on the control plane (`minerva.tworivers:8888`); `starsky` was repurposed out of the pool in June 2026. See `spark/cluster/README.md` and `spark/cluster/CLAUDE.md`.

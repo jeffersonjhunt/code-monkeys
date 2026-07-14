@@ -18,9 +18,11 @@
 # Environment overrides:
 #   SPARK_BENCH_HOST       default: intel-nuc.tworivers
 #   SPARK_BENCH_USER       default: jhunt
-#   VLLM_BASE_URL          default: http://starsky.tworivers:8080/v1
-#                          (override to http://hutch.tworivers:8001/v1 for the
-#                           GLM-4.7-Flash test endpoint)
+#   VLLM_BASE_URL          default: http://minerva.tworivers:8888/v1
+#                          (the cluster LB — LiteLLM; replaced HAProxy on
+#                           starsky:8080 in June 2026. Override to e.g.
+#                           http://hutch.tworivers:8001/v1 for an ad-hoc
+#                           test endpoint)
 #   SPARK_BENCH_MODEL      default: qwen3-coder-next
 #   SPARK_BENCH_IMAGE      default: spark-bench:latest
 #   SPARK_BENCH_RESULTS    default: /home/jhunt/spark-bench/results (on bench host)
@@ -33,7 +35,7 @@ set -euo pipefail
 
 BENCH_HOST="${SPARK_BENCH_HOST:-intel-nuc.tworivers}"
 BENCH_USER="${SPARK_BENCH_USER:-jhunt}"
-VLLM_BASE_URL="${VLLM_BASE_URL:-http://starsky.tworivers:8080/v1}"
+VLLM_BASE_URL="${VLLM_BASE_URL:-http://minerva.tworivers:8888/v1}"
 MODEL="${SPARK_BENCH_MODEL:-qwen3-coder-next}"
 IMAGE="${SPARK_BENCH_IMAGE:-spark-bench:latest}"
 RESULTS="${SPARK_BENCH_RESULTS:-/home/${BENCH_USER}/spark-bench/results}"

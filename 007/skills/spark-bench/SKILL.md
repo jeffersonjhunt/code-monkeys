@@ -13,9 +13,9 @@ Benchmark orchestration for the spark-cluster.
 
 Three things matter and the rest follows:
 
-1. **Bench host is x86** (intel-nuc.tworivers). SWE-Bench's testbed Docker images are published as `swebench/sweb.eval.x86_64.*` — they qemu-emulate badly on aarch64. The bench harness runs here; vLLM stays on the GPU cluster (hutch / starsky).
+1. **Bench host is x86** (intel-nuc.tworivers). SWE-Bench's testbed Docker images are published as `swebench/sweb.eval.x86_64.*` — they qemu-emulate badly on aarch64. The bench harness runs here; vLLM stays on the GPU box (hutch).
 2. **Bench host needs the host Docker daemon** for SWE-Bench's sandbox spawning. Pattern is Docker-out-of-Docker — mount `/var/run/docker.sock`, add the matching group GID. The `spark-bench` wrapper does this automatically.
-3. **Endpoint URL switches the model under test.** Default points at the cluster LB (`http://starsky.tworivers:8080/v1`, currently serving `qwen3-coder-next`). Override `VLLM_BASE_URL` and `SPARK_BENCH_MODEL` to point at any other OpenAI-compatible endpoint (e.g. an ad-hoc `vllm serve` on `http://hutch.tworivers:8001/v1`).
+3. **Endpoint URL switches the model under test.** Default points at the cluster LB — the **LiteLLM router** at `http://minerva.tworivers:8888/v1`, which routes the `qwen3-coder-next` model to hutch. (The old HAProxy LB on `starsky:8080` was retired in June 2026; that endpoint is dead.) Override `VLLM_BASE_URL` and `SPARK_BENCH_MODEL` to point at any other OpenAI-compatible endpoint (e.g. an ad-hoc `vllm serve` on `http://hutch.tworivers:8001/v1`).
 
 ## When to Use
 
@@ -31,7 +31,7 @@ Do NOT use for:
 
 - Passwordless SSH to `intel-nuc.tworivers` as `jhunt`, with NOPASSWD sudo.
 - `codemonkey:latest`, `miniforge3:latest`, `spark-bench:latest` built on the bench host (see [Build](#build)).
-- Cluster reachable from bench host (`curl http://starsky.tworivers:8080/v1/models` returns JSON).
+- Cluster reachable from bench host (`curl http://minerva.tworivers:8888/v1/models` returns JSON).
 - The `bin/spark-bench` workstation shim on PATH (the `setup` script symlinks this into `~/.local/bin/` automatically).
 
 ## Build
@@ -122,7 +122,7 @@ spark-bench sweagent run-batch \
 
 - **`docker: permission denied`** — `--group-add` failed. Run `stat -c '%g' /var/run/docker.sock` on the host to find the actual GID; export `SPARK_BENCH_DOCKER_GID` (not implemented yet) or fall back to `sudo` inside the container.
 - **SWE-Bench testbed image pull is slow/fails** — first run downloads ~50-100 GB of `swebench/sweb.eval.x86_64.*` images. Pre-pull manually on the bench host with `docker pull swebench/sweb.eval.x86_64.<problem_id>` if needed.
-- **Cluster endpoint 502/503 mid-bench** — HAProxy returned no healthy backend (one replica is draining for a build, etc.). The bench harness should retry with backoff; if it doesn't, abort the bench and resume after the cluster is back to 2/2 UP.
+- **Cluster endpoint errors mid-bench** — LiteLLM has no healthy backend for the requested `model` (the replica is draining for a build, etc.); with a single coding replica there is no failover, so this is a hard outage until it returns. Check `curl http://minerva:8888/v1/models` and the replica's own `curl http://hutch:8000/health`, then resume once vLLM is back up.
 - **Out of disk on intel-nuc** — SWE-Bench testbed cache + cloned repos can grow to ~150 GB. `rm -rf ~/spark-bench/cache/swebench` to reset.
 
 ## Results Layout
@@ -149,7 +149,7 @@ rsync -av jhunt@intel-nuc.tworivers:~/spark-bench/results/ ./bench-results/
 
 When the user asks to run a benchmark or compare two models:
 
-1. Confirm which endpoint(s) and model name(s) — production LB (`starsky:8080`, model `qwen3-coder-next`) is the default baseline; test endpoints are ad-hoc per investigation.
+1. Confirm which endpoint(s) and model name(s) — the cluster LB (LiteLLM on `minerva:8888`, model `qwen3-coder-next`) is the default baseline; test endpoints are ad-hoc per investigation.
 2. Default to **subsets first** (e.g. `--instances.slice=:20` for SWE-Bench, `--num_tasks 20` for tau2-bench) — full runs take hours-to-days on the 4-core bench host.
 3. After each run, summarise the headline metric and save raw output for rsync-back. Do not commit raw output to the repo.
 4. For A/B comparisons, run the **same harness invocation** against both endpoints back-to-back so sampling parameters and prompt templates are identical.

@@ -21,7 +21,9 @@ RUN export HOME=/tmp/oc \
   && install -m 0755 "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode \
   && rm -rf "$HOME"
 
-# Point opencode at the spark-cluster vLLM (HAProxy on starsky:8080).
+# Point opencode at the spark-cluster vLLM via the LiteLLM router
+# (minerva.tworivers:8888 — see opencode.json's baseURL; it replaced the old
+# HAProxy LB on starsky:8080 in June 2026).
 # apiKey is hardcoded in the json (vLLM ignores it; OpenAI-compatible SDK
 # just requires non-empty). To use a real provider key, drop a project-
 # local opencode.json in the working dir or edit ~/.config/opencode/.

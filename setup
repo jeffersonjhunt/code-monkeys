@@ -12,7 +12,17 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 # --- Configuration ---
 
 DOT_LINKS="ssh aws gitconfig gitignore toprc vimrc zaliases zbase zfuncs zprofile"
-DIR_LINKS="fastfetch::config jjh.zsh-theme::oh-my-zsh/custom/themes claude::claude"
+DIR_LINKS="fastfetch::config jjh.zsh-theme::oh-my-zsh/custom/themes"
+
+# Individual items linked INTO an existing directory under $HOME: "<path-under-SRC>::<parent>"
+# links to $HOME/.<parent>/<basename>.
+#
+# This exists because ~/.claude cannot be a symlink. It is Claude Code's live state directory
+# (credentials, history, projects, daemon, cache), so it must stay a real directory that we link
+# individual files *into*. DIR_LINKS used to carry a `claude::claude` entry, but its rule is
+# "$HOME/.<parent>/<name>" — which produced ~/.claude/claude -> repo/claude, a path nothing reads.
+# The settings and commands never actually reached ~/.claude from setup at all.
+CHILD_LINKS="claude/settings.json::claude claude/commands::claude"
 BIN_DIR="${HOME}/.local/bin"
 GIT_REPOS=(
   "https://github.com/zsh-users/zsh-autosuggestions.git::${HOME}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
@@ -151,6 +161,59 @@ remove_dir_links() {
     local src_name="${entry%%::*}"
     local parent_dir="${entry##*::}"
     local target="${HOME}/.${parent_dir}/${src_name}"
+
+    if [[ -L "$target" ]]; then
+      run rm "$target"
+    else
+      echo "  skip: ${target} is not a symlink"
+    fi
+  done
+
+  # Clean up the link the old `claude::claude` DIR_LINKS entry used to create. Harmless, but it
+  # is ours and it points at the repo, so uninstall should take it with us.
+  if [[ -L "${HOME}/.claude/claude" ]]; then
+    echo "  (legacy) removing ${HOME}/.claude/claude"
+    run rm "${HOME}/.claude/claude"
+  fi
+}
+
+create_child_links() {
+  echo "Linking items into existing \$HOME directories..."
+  for entry in ${CHILD_LINKS}; do
+    local src_path="${entry%%::*}"
+    local parent_dir="${entry##*::}"
+    local source="${SRC}/${src_path}"
+    local target="${HOME}/.${parent_dir}/$(basename "$src_path")"
+
+    if [[ ! -e "$source" ]]; then
+      echo "  skip: ${source} does not exist"
+      continue
+    fi
+
+    # The parent must be a real directory we can link into — never replace it.
+    if [[ ! -d "${HOME}/.${parent_dir}" ]]; then
+      run mkdir -p "${HOME}/.${parent_dir}"
+    fi
+
+    if [[ -L "$target" ]]; then
+      echo "  skip: ${target} already linked"
+    elif [[ -e "$target" ]]; then
+      # A real file/dir is already there (e.g. a copy made by hand, or settings you wrote
+      # yourself). Do NOT clobber it — say what to do instead.
+      echo "  skip: ${target} exists and is not a symlink"
+      echo "        (remove it if you want setup to manage it: rm -rf ${target})"
+    else
+      run ln -s "$source" "$target"
+    fi
+  done
+}
+
+remove_child_links() {
+  echo "Removing \$HOME directory item links..."
+  for entry in ${CHILD_LINKS}; do
+    local src_path="${entry%%::*}"
+    local parent_dir="${entry##*::}"
+    local target="${HOME}/.${parent_dir}/$(basename "$src_path")"
 
     if [[ -L "$target" ]]; then
       run rm "$target"
@@ -369,6 +432,7 @@ if [[ "$UNINSTALL" == true ]]; then
 
   remove_dot_links
   remove_dir_links
+  remove_child_links
   remove_bin_links
   remove_zshrc
   remove_repos
@@ -394,6 +458,7 @@ else
   install_ohmyzsh
   create_dot_links
   create_dir_links
+  create_child_links
   create_bin_links
   install_zshrc
   clone_repos

@@ -12,7 +12,7 @@ Two hosts that:
 
 ## Configure your hosts
 
-Cluster scripts read host details from `cluster.env`. The example uses placeholder names `A` and `B`:
+Cluster scripts read host details from `cluster.env`. The example uses the placeholder FQDNs `hostA.example` and `hostB.example` (with `LB_HOST=hostA.example`, i.e. the router co-located on the first replica):
 
 ```bash
 cp cluster.env.example cluster.env
@@ -27,7 +27,7 @@ Worked example (the maintainer's current cluster): `REPLICAS="hutch.tworivers"`,
 client ──► $LB_HOST:$LB_PORT (LiteLLM) ──► <replica>:$VLLM_PORT (vLLM), routed by model name
 ```
 
-Each replica is independent: same compose, same model, full copy of weights at `~/Models/<org>/<name>` (flat HF org/name layout, pre-staged via `src/scripts/model-pull.sh`). Why replicas (not sharded)? See `docs/architecture.md`.
+Each replica is independent: same compose, same model, full copy of weights at `/srv/models/<org>/<name>` (flat HF org/name layout, pre-staged via `src/scripts/model-pull.sh`). Why replicas (not sharded)? See `docs/architecture.md`.
 
 ## Deploy
 

@@ -8,7 +8,7 @@ proxy that routes by the OpenAI `model` field. One endpoint, multiple backends s
 |--------------------|---------|----------|
 | `qwen3-coder-next` | `hutch.tworivers:8000`   | coding cluster / opencode |
 | `reasoning`        | `starsky.tworivers:8000` | g.deceiver reasoning-llm |
-| `caption` *(Phase 6)* | `starsky.tworivers:8002` | g.deceiver Sees VLM (commented until deployed) |
+| `caption` *(Phase 6)* | `starsky.tworivers:8001` | g.deceiver Sees VLM (Qwen2.5-VL, co-resident on starsky's spare UMA) |
 
 An unknown `model` is rejected rather than fanned out to the wrong box.
 
@@ -34,32 +34,34 @@ it replaces; to require auth, add `general_settings: { master_key: sk-... }` to
 
 ## Deploy
 
-Zero-downtime cutover from the live HAProxy (stand up on a spare port first, verify, then
-take 8888):
+The cutover from HAProxy happened on 2026-06-28; this stack now binds 8888 on `$LB_HOST` and is
+what `deploy.sh all` puts there. Routine deploy / restore (idempotent):
 
 ```bash
-# from spark/cluster, after syncing this stack to the LB host (deploy.sh minerva litellm
-# uses LITELLM_PORT's default 8888 — for the staged stand-up, run compose by hand):
-ssh jhunt@minerva 'cd ~/spark-deploy/litellm && LITELLM_PORT=8889 docker compose up -d'
+./src/scripts/deploy.sh minerva.tworivers litellm   # tars this dir to ~/spark-deploy/litellm, up -d
 
-# verify both models route + unknown model is rejected:
-curl -s http://minerva:8889/v1/models
-curl -s http://minerva:8889/v1/chat/completions -H 'content-type: application/json' \
+# verify the routes (expect qwen3-coder-next, reasoning, caption):
+curl -s http://minerva:8888/v1/models
+curl -s http://minerva:8888/v1/chat/completions -H 'content-type: application/json' \
   -d '{"model":"reasoning","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
-curl -s http://minerva:8889/v1/chat/completions -H 'content-type: application/json' \
-  -d '{"model":"qwen3-coder-next","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
-
-# cutover: stop HAProxy, bring LiteLLM up on 8888 (clients need no change — same port).
-ssh jhunt@minerva 'cd ~/spark-deploy/haproxy && docker compose down'
-ssh jhunt@minerva 'cd ~/spark-deploy/litellm && docker compose up -d'   # binds 8888
 ```
 
-After cutover, point g.deceiver's orchestrator `REASONING_URL` at `http://minerva:8888/v1`
-(model `reasoning`); opencode already targets `minerva:8888` and sends `qwen3-coder-next`,
-so it needs no change.
+To try a config change without touching the live endpoint, stand a second instance up on a spare
+port and probe it before re-deploying 8888:
+
+```bash
+ssh gdeceiver@minerva 'cd ~/spark-deploy/litellm && LITELLM_PORT=8889 docker compose up -d'
+```
+
+Clients: g.deceiver's orchestrator `REASONING_URL` points at `http://minerva:8888/v1` (model
+`reasoning`); opencode targets `minerva:8888` and sends `qwen3-coder-next` (`primates/opencode.json`).
 
 ## Health
 
 - `GET /health/liveliness` — process up (used by the compose healthcheck).
 - `GET /health/readiness` — proxy ready.
-- `GET /v1/models` — lists the routable model names (`qwen3-coder-next`, `reasoning`).
+- `GET /v1/models` — lists the routable model names. All three entries in `config.yaml` are
+  active, so expect `qwen3-coder-next`, `reasoning`, and `caption`.
+
+There is no `:8404`-style stats UI (that was HAProxy's). Per-backend health is the vLLM `/health`
+on each box direct; `/v1/models` is how you ask the router what it will route.

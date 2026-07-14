@@ -98,6 +98,33 @@ Replaced `/srv/models` (HF auto-cache layout, `models--<org>--<name>/snapshots/<
 
 **Trade-off:** no auto-download from inside the container. vLLM is now invoked with `--model /models/${HF_MODEL_ID}` (local path), and weights must be pre-staged via `src/scripts/model-pull.sh <host>|all <repo>`. This is arguably a feature: no surprise 30 min downloads on container start, explicit step in the runbook.
 
+**Partially superseded 2026-07-13** — the *layout* stuck, the *location* did not. See below.
+
+## 2026-07-13 — `MODEL_DIR` is `/srv/models`, and it is one setting
+
+The 2026-05-11 decision changed two things at once — the **layout** (flat `<org>/<name>`) and the
+**location** (`/srv/models` → `~/Models`). Only the layout ever landed. On the live replica the
+weights are at **`/srv/models/<org>/<name>`**, flat layout, owned by `jhunt` — and `~/Models` does
+not exist at all. The tooling never caught up, and had drifted into three different answers:
+
+- `compose.yml` mounted `${MODEL_DIR:-/srv/models}` — what vLLM actually serves from.
+- `bootstrap.sh` created `$HOME/Models` — a directory nothing mounts, so a freshly bootstrapped
+  host got **no `/srv/models` at all** and vLLM would fail to load.
+- `model-pull.sh` downloaded into `~/Models` and mounted it — so a newly pulled model landed
+  somewhere the server never reads. The only reason this was not noticed is that nobody had pulled
+  a new model since the weights were staged at `/srv/models` by hand.
+
+**Decision: `/srv/models` is the location, and it is declared once** — `MODEL_DIR` in `cluster.env`
+(default in `load-config.sh`), consumed by `bootstrap.sh`, `model-pull.sh`, and the vllm stack.
+
+**Why `/srv` and not `~`:** it is where the weights already are (moving ~100 GB on a serving box to
+satisfy a doc is a bad trade), it is not inside a home directory that a user rename or an
+`os-service-accounts` change could move, and the SSH user (`gdeceiver`, uid 1001) is deliberately
+*not* the owner — `model-pull.sh` downloads as the directory's own uid, and vLLM mounts it `:ro`.
+
+**Kept from 2026-05-11:** the flat `<org>/<name>` layout and no-auto-download, both of which were
+the actual point of that decision and are unaffected.
+
 Also lose HF cache's blob dedup across snapshots — irrelevant in practice since we keep one revision per repo.
 
 ## 2026-05-05 — Reverted: plain Docker Compose, no Ansible

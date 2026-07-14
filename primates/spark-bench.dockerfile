@@ -2,7 +2,7 @@
 #
 # Benchmark orchestration primate. Runs LLM evals (AIME, GPQA, LiveCodeBench,
 # tau2-bench, SWE-Bench Verified via SWE-agent) against an OpenAI-compatible
-# endpoint — by default the spark-cluster LB on starsky.tworivers:8080.
+# endpoint — by default the spark-cluster LB (LiteLLM) on minerva.tworivers:8888.
 #
 # x86_64-only: SWE-Bench's testbed images are published as
 # `swebench/sweb.eval.x86_64.*` — qemu-emulating them on aarch64 is slow and
@@ -94,7 +94,7 @@ ENV SWE_BENCH_CACHE_DIR=/cache/swebench
 ENV HF_HOME=/cache/hf
 ENV PIP_CACHE_DIR=/cache/pip
 # Default endpoint — override at run time with -e VLLM_BASE_URL=...
-ENV VLLM_BASE_URL=http://starsky.tworivers:8080/v1
+ENV VLLM_BASE_URL=http://minerva.tworivers:8888/v1
 ENV OPENAI_API_BASE=${VLLM_BASE_URL}
 ENV OPENAI_API_KEY=spark-cluster-no-auth
 
