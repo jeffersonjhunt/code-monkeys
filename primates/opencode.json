@@ -21,6 +21,17 @@
             "context": 131072,
             "output": 32768
           }
+        },
+        "reasoning": {
+          "name": "Qwen3.6 Reasoning A3B (vLLM)",
+          "tool_call": true,
+          "reasoning": true,
+          "temperature": true,
+          "attachment": false,
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
         }
       }
     }
