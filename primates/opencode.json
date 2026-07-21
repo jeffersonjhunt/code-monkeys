@@ -1,11 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": false,
-  "model": "starsky/qwen3-coder-next",
+  "model": "spark/qwen3-coder-next",
+  "enabled_providers": ["spark"],
   "provider": {
-    "starsky": {
+    "spark": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Starsky vLLM",
+      "name": "Spark vLLM",
       "options": {
         "baseURL": "http://minerva.tworivers:8888/v1",
         "apiKey": "sk-local"
