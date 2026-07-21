@@ -2,7 +2,21 @@
 
 Reverse-chronological log of material changes. Append a dated entry whenever a phase completes, a decision changes, or production state changes.
 
-## 2026-07-13 (latest)
+## 2026-07-21 (latest)
+
+- **`gdeceiver-reasoning` alias added; opencode `reasoning` throttled to protect the live co-host.**
+  starsky's reasoning backend was bumped to 128k (`REASONING_MAX_MODEL_LEN=131072`; native ctx is
+  256k so no rope scaling) and opencode gained a selectable `reasoning` model. To keep gay from being
+  starved when opencode runs an agentic loop against the *same* starsky vLLM, `config.yaml` now
+  exposes two aliases onto that one backend: **`reasoning`** (opencode/dev-facing, full 128k, but
+  `rpm: 60` + `max_parallel_requests: 3` so it can occupy at most ~3 of starsky's ~10 batch slots) and
+  **`gdeceiver-reasoning`** (gay-facing, unthrottled, capped to the light 32k/8k profile via
+  `model_info` + `enable_pre_call_checks`). The g.deceiver orchestrator is repointed from `reasoning`
+  to `gdeceiver-reasoning`. In-memory throttle only (DB-less LiteLLM, no Redis priority queue) — it
+  caps opencode's footprint, it does not give gay a reserved GPU. Validated in a throwaway litellm on
+  a spare port before cutover; live `/v1/models` now lists all four aliases.
+
+## 2026-07-13
 
 - **`MODEL_DIR` is one setting, and it is `/srv/models` — `bootstrap.sh` and `model-pull.sh` were both staging weights where nothing reads them.** The 2026-07-04 move to `/srv/models` (below) updated the vllm compose mount but not the two scripts that *populate* it, so the toolchain held three different answers at once: `compose.yml` served `${MODEL_DIR:-/srv/models}`, `bootstrap.sh` created `$HOME/Models`, and `model-pull.sh` downloaded into `~/Models` and mounted *that*. Consequences: a freshly bootstrapped host got **no `/srv/models` at all** (vLLM would fail to load), and **any newly pulled model would have been invisible to the server** — latent only because nothing had been pulled since the weights were staged by hand. Verified on hutch: `/srv/models` holds the flat `<org>/<name>` weights (`jhunt:jhunt`, 775) and the running container mounts `/srv/models → /models`; `/home/jhunt/Models` **does not exist**. Fixed by declaring `MODEL_DIR` once in `cluster.env` (default in `load-config.sh`) and consuming it from `bootstrap.sh`, `model-pull.sh`, and the vllm stack. `bootstrap.sh` now creates `/srv/models` with `sudo` (it is root-owned territory) and **never re-chowns an existing tree** — stealing a live weights dir from vLLM would be an outage. `model-pull.sh` now **fails loudly** if `MODEL_DIR` is missing instead of silently `mkdir`-ing the wrong path, and downloads as the directory's *own* uid rather than a hardcoded `1000:1000` (the SSH user `gdeceiver` is uid 1001 and cannot write it directly). Bootstrap re-run against live hutch: took the non-destructive branch, ownership unchanged, weights and serving unaffected. See `docs/decisions.md` 2026-07-13.
 

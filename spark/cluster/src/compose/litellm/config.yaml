@@ -5,8 +5,17 @@
 # by `model` name, so a single endpoint fronts BOTH GPU boxes serving DIFFERENT
 # models:
 #
-#   model: qwen3-coder-next  -> hutch   (coding cluster / opencode)
-#   model: reasoning         -> starsky (g.deceiver reasoning-llm)
+#   model: qwen3-coder-next     -> hutch   (coding cluster / opencode)
+#   model: reasoning            -> starsky (dev/opencode-facing, full 128k)
+#   model: gdeceiver-reasoning  -> starsky (gay/g.deceiver-facing, SAME backend, light 32k/8k)
+#
+# `reasoning` and `gdeceiver-reasoning` are two aliases onto the ONE starsky vLLM
+# (served-name `reasoning`, booted at 128k). The split exists to protect the live
+# co-host: opencode's `reasoning` is throttled so an agentic loop can't monopolise
+# the shared backend and starve gay mid-stream, while gay's `gdeceiver-reasoning`
+# is unthrottled and capped to the light 32k/8k profile she actually uses. This is
+# an in-memory throttle, not a reserved instance — it caps opencode's footprint;
+# it does not give gay a separate GPU. (DB-less LiteLLM: no Redis priority queue.)
 #
 # Backends are addressed by FQDN; DNS is the source of truth (matches the HAProxy
 # convention). The `hosted_vllm/` provider prefix tells LiteLLM these are
@@ -21,10 +30,26 @@ model_list:
       model: hosted_vllm/qwen3-coder-next
       api_base: http://hutch.tworivers:8000/v1
 
+  # Dev / opencode-facing reasoning: full 128k, but rate- and concurrency-limited so
+  # it can never occupy more than a few of starsky's ~10 batch slots — the rest stay
+  # free for gay. Tune rpm / max_parallel_requests if opencode feels choked off-stream.
   - model_name: reasoning
     litellm_params:
       model: hosted_vllm/reasoning
       api_base: http://starsky.tworivers:8000/v1
+      rpm: 60
+      max_parallel_requests: 3
+
+  # Gay / g.deceiver-facing reasoning: SAME starsky backend, unthrottled so the live
+  # co-host always wins contention. Capped to the light 32k/8k profile; the input cap
+  # is enforced by enable_pre_call_checks below (a >32k request is rejected, not sent).
+  - model_name: gdeceiver-reasoning
+    litellm_params:
+      model: hosted_vllm/reasoning
+      api_base: http://starsky.tworivers:8000/v1
+    model_info:
+      max_input_tokens: 32768
+      max_output_tokens: 8192
 
   # Phase 6 (g.deceiver Sees) — Qwen2.5-VL captioning VLM, co-resident on starsky's spare UMA.
   - model_name: caption
@@ -40,6 +65,11 @@ litellm_settings:
   # proxy's own per-request retries off so a slow reasoning turn isn't multiplied.
   num_retries: 0
   request_timeout: 3600
+  # Enforce gdeceiver-reasoning's 32k input cap: a request whose context exceeds the
+  # alias's max_input_tokens is rejected (ContextWindowExceededError) instead of being
+  # forwarded. Models without a max_input_tokens (coding, opencode-reasoning) are
+  # unaffected — vLLM enforces their real 128k window.
+  enable_pre_call_checks: true
 
 router_settings:
   routing_strategy: simple-shuffle
