@@ -51,6 +51,18 @@ model_list:
       max_input_tokens: 32768
       max_output_tokens: 8192
 
+  # Dev / opencode-facing fastpath: Gay's quick-response model (Qwen3-30B-A3B-Instruct,
+  # 8k ctx) on the dedicated ren box. Gay reaches ren DIRECTLY (not via this router) so her
+  # fast path stays router-independent — this alias exists ONLY to give opencode a throttled
+  # route to the same box, so an agentic loop can't starve Gay's fastpath. No gdeceiver-fastpath
+  # twin: routing Gay through here would add a hop + SPOF to her latency-critical path.
+  - model_name: fastpath
+    litellm_params:
+      model: hosted_vllm/fastpath
+      api_base: http://ren.tworivers:8000/v1
+      rpm: 60
+      max_parallel_requests: 3
+
   # Phase 6 (g.deceiver Sees) — Qwen2.5-VL captioning VLM, co-resident on starsky's spare UMA.
   - model_name: caption
     litellm_params:

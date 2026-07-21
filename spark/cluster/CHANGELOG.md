@@ -4,6 +4,14 @@ Reverse-chronological log of material changes. Append a dated entry whenever a p
 
 ## 2026-07-21 (latest)
 
+- **`fastpath` alias added for opencode (throttled); Gay stays direct-to-ren.** Gay's quick-response
+  model (Qwen3-30B-A3B-Instruct, 8k, on the dedicated ren box) is reached by the orchestrator
+  DIRECTLY, not through this router — deliberately, so her fast path survives a router outage. The
+  new `fastpath` alias (`rpm: 60`, `max_parallel_requests: 3`) exists only to give opencode a
+  throttled route to the same box so an agentic loop can't starve her. No `gdeceiver-fastpath` twin:
+  routing Gay through here would add a hop + SPOF to her latency-critical path (unlike reasoning,
+  which was already router-fronted). opencode gains a "Qwen3-30B-A3B Instruct (fast, 8k)" model.
+
 - **`gdeceiver-reasoning` alias added; opencode `reasoning` throttled to protect the live co-host.**
   starsky's reasoning backend was bumped to 128k (`REASONING_MAX_MODEL_LEN=131072`; native ctx is
   256k so no rope scaling) and opencode gained a selectable `reasoning` model. To keep gay from being

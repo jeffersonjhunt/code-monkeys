@@ -33,6 +33,17 @@
             "context": 131072,
             "output": 32768
           }
+        },
+        "fastpath": {
+          "name": "Qwen3-30B-A3B Instruct (fast, 8k)",
+          "tool_call": true,
+          "reasoning": false,
+          "temperature": true,
+          "attachment": false,
+          "limit": {
+            "context": 8192,
+            "output": 4096
+          }
         }
       }
     }
