@@ -35,14 +35,14 @@
           }
         },
         "fastpath": {
-          "name": "Qwen3-30B-A3B Instruct (fast, 8k)",
-          "tool_call": true,
+          "name": "Qwen3-30B-A3B (fast chat, 8k, no tools)",
+          "tool_call": false,
           "reasoning": false,
           "temperature": true,
           "attachment": false,
           "limit": {
             "context": 8192,
-            "output": 4096
+            "output": 1024
           }
         }
       }
