@@ -8,23 +8,12 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Spark vLLM",
       "options": {
-        "baseURL": "http://minerva.tworivers:8888/v1",
+        "baseURL": "http://LITELLM_HOST:8888/v1",
         "apiKey": "sk-local"
       },
       "models": {
         "qwen3-coder-next": {
           "name": "Qwen3 Coder (vLLM)",
-          "tool_call": true,
-          "reasoning": true,
-          "temperature": true,
-          "attachment": false,
-          "limit": {
-            "context": 131072,
-            "output": 32768
-          }
-        },
-        "reasoning": {
-          "name": "Qwen3.6 Reasoning A3B (vLLM)",
           "tool_call": true,
           "reasoning": true,
           "temperature": true,
@@ -40,8 +29,8 @@
   "mcp": {
     "corpus": {
       "type": "remote",
-      "url": "http://minerva.tworivers:8087/mcp",
-      "enabled": true
+      "url": "http://CORPUS_MCP_HOST:8087/mcp",
+      "enabled": false
     }
   }
 }

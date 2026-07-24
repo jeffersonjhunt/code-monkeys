@@ -1,0 +1,25 @@
+# aichat — generic OpenAI-compatible chat REPL (sigoden/aichat).
+#
+# THIS IS A PLACEHOLDER shipped in the PUBLIC image. It intentionally knows nothing:
+# no real endpoint, no real models, no roles/persona. It exists only so `aichat` starts
+# and to document the injection point.
+#
+# The REAL configuration is provided at RUNTIME, never baked here: point AICHAT_CONFIG_DIR
+# at an external config directory (mounted read-only from the PRIVATE g.deceiver repo) that
+# supplies the LiteLLM endpoint, the served model list, and the `gay` role. That keeps every
+# g.deceiver-specific detail — above all Gay's persona prompt — out of this public image.
+#
+#   AICHAT_CONFIG_DIR=/path/to/private/aichat aichat -m <client>:<model>
+#
+# Or override just the base URL via env without a full config dir:
+#   AICHAT_CLIENTS_OPENAI_COMPATIBLE_0_API_BASE=http://<litellm-host>:8888/v1
+model: openai-compatible:placeholder
+clients:
+  - type: openai-compatible
+    name: openai-compatible
+    # Placeholder host — replaced at runtime via AICHAT_CONFIG_DIR (see above).
+    api_base: http://LITELLM_HOST/v1
+    api_key: sk-local
+    models:
+      - name: placeholder
+        max_input_tokens: 8192

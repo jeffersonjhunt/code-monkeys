@@ -3,6 +3,9 @@ env
 aws/
 face
 gitconfig
+# opencode primate: the PUBLIC repo ships only opencode.json.example; the real config
+# (real LiteLLM host + g.deceiver-facing models + corpus MCP URL) is SOPS+age in hemlighet.
+primates/opencode.json
 openvpn/logs/
 **/*.DS_Store
 .DS_Store

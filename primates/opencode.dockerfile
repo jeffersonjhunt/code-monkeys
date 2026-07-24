@@ -21,13 +21,14 @@ RUN export HOME=/tmp/oc \
   && install -m 0755 "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode \
   && rm -rf "$HOME"
 
-# Point opencode at the spark-cluster vLLM via the LiteLLM router
-# (minerva.tworivers:8888 — see opencode.json's baseURL; it replaced the old
-# HAProxy LB on starsky:8080 in June 2026).
-# apiKey is hardcoded in the json (vLLM ignores it; OpenAI-compatible SDK
-# just requires non-empty). To use a real provider key, drop a project-
-# local opencode.json in the working dir or edit ~/.config/opencode/.
-COPY opencode.json /home/codemonkey/.config/opencode/opencode.json
+# Ship the PLACEHOLDER config (opencode.json.example) — this PUBLIC image is generic and
+# buildable by anyone. The real config (real LiteLLM host, the g.deceiver-facing model list,
+# and the corpus MCP URL) is gitignored here and lives SOPS+age-encrypted in the private
+# hemlighet repo; `make opencode.upgrade` decrypts + syncs it into the opencode-home volume
+# at runtime (which shadows this baked file anyway). apiKey is a non-empty placeholder (vLLM
+# ignores it; the OpenAI-compatible SDK just requires it be set). To use a different endpoint,
+# edit the config in ~/.config/opencode/ or drop a project-local opencode.json in the cwd.
+COPY opencode.json.example /home/codemonkey/.config/opencode/opencode.json
 RUN chown -R codemonkey:codemonkey /home/codemonkey/.config
 
 # Clean up APT when done.

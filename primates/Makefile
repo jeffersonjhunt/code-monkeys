@@ -1,6 +1,6 @@
 # Makefile for primates project
 
-TARGETS := minion embedded miniforge3 claude opencode kiro lamp huggingface nyckel samba
+TARGETS := minion embedded miniforge3 claude opencode aichat kiro lamp huggingface nyckel samba
 
 MAKEFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 DIR := $(notdir $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))
@@ -28,6 +28,7 @@ help:
 	@echo "  miniforge3.build       Build Miniforge3 (conda for aarch64)"
 	@echo "  claude.build           Build claude-code environment"
 	@echo "  opencode.build         Build opencode-ai environment"
+	@echo "  aichat.build           Build aichat (generic OpenAI-compatible chat REPL)"
 	@echo "  kiro.build             Build Amazon Kiro CLI environment"
 	@echo "  embedded.build         Build embedded development environment (cc65, vasm, libfmt, libboost)"
 	@echo "  lamp.build             Build LAMP stack (Apache, MariaDB, PHP)"
@@ -129,7 +130,10 @@ if [ -d "$$SRC/claude" ]; then
   cp "$$SRC/claude/commands/"* "$$HOME/.claude/commands/" 2>/dev/null
 fi
 # Image-baked ~/.config files are shadowed by the persistent home volume, so a rebuild alone
-# can't refresh them — sync them here too. opencode.json carries the model + MCP server config.
+# can't refresh them — sync them here too. opencode.json carries the real model + MCP server
+# config; it is gitignored and lives SOPS+age-encrypted in hemlighet (the public image ships
+# only opencode.json.example). Decrypt it first (see README) — the [ -f ] guard means this is
+# skipped and the image's placeholder stands if the real file isn't present.
 if [ "$$PRIMATE" = "opencode" ] && [ -f "$$SRC/primates/opencode.json" ]; then
   mkdir -p "$$HOME/.config/opencode"
   cp "$$SRC/primates/opencode.json" "$$HOME/.config/opencode/opencode.json"

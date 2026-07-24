@@ -22,7 +22,7 @@ case "$(uname -m)" in
 esac
 
 # Dependency-ordered CPU chain (base first). GPU primates (cuda-*) build on a GPU host — pass explicitly.
-DEFAULT=(codemonkey minion embedded miniforge3 lamp huggingface claude opencode kiro spark-bench)
+DEFAULT=(codemonkey minion embedded miniforge3 lamp huggingface claude opencode aichat kiro spark-bench)
 if [ "$#" -gt 0 ]; then PRIMATES=("$@"); else PRIMATES=("${DEFAULT[@]}"); fi
 
 # ECR login (containerized aws-cli — no host aws install; fail closed on an empty token).

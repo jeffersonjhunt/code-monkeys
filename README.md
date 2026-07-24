@@ -79,7 +79,8 @@ debian:trixie-slim → samba     (standalone — file-server daemon)
 | **codemonkey** | Base image — Debian 13, zsh, oh-my-zsh, git, vim, build-essential, cmake, python3, nodejs, nmap, clamav, AWS CLI v2 |
 | **miniforge3** | Adds Miniforge3 (conda for aarch64 and x86_64), creates `miniforge3-env`, installs `uv` in the conda base env |
 | **claude** | Adds Claude Code via native installer, creates `claude-env` |
-| **opencode** | Adds opencode via the curl installer (binary in `/usr/local/bin`), creates `opencode-env`, pre-configured for the spark-cluster LiteLLM router (`minerva.tworivers:8888`, model `qwen3-coder-next`) |
+| **opencode** | Adds opencode via the curl installer (binary in `/usr/local/bin`), creates `opencode-env`. Ships a placeholder `opencode.json.example`; the real config (LiteLLM router + model + corpus MCP) is gitignored and SOPS+age-encrypted in `hemlighet`, synced into the home volume by `make opencode.upgrade` |
+| **aichat** | Adds [aichat](https://github.com/sigoden/aichat) (generic OpenAI-compatible chat REPL, static binary in `/usr/local/bin`), creates `aichat-env`. Deliberately **provider-agnostic** — ships only a placeholder config; point `AICHAT_CONFIG_DIR` at an external config dir (endpoint, models, roles) at runtime |
 | **kiro** | Adds Amazon Kiro CLI via native installer, creates `kiro-env` |
 | **spark-bench** | LLM eval harnesses (AIME, GPQA, LiveCodeBench, tau2-bench, SWE-Bench via SWE-agent) run against the cluster endpoint. **amd64-only** (SWE-Bench testbeds are x86) — runs on `intel-nuc.tworivers`; see `007/skills/spark-bench/` |
 | **embedded** | Adds libfmt, libboost, cc65, vasm 6502 assembler |
