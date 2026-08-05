@@ -36,9 +36,16 @@ The project directory is bind-mounted so the host sees file changes immediately.
 - macOS host with Xcode CLI tools (`xcode-select --install`)
 - iOS Simulator SDK installed (`xcodebuild -downloadPlatform iOS`)
 - SSH access from container to host (key-based, no password)
+- The macOS host trusted in `known_hosts` — host key verification stays on, so
+  do this once from the container:
+  ```bash
+  ssh-keyscan -H "$HOST_IP" >> ~/.ssh/known_hosts
+  ```
 - Project directory bind-mounted between container and host
 
 ## Usage
+
+All three scripts take `--help`.
 
 ### Bootstrap a new project
 
@@ -104,7 +111,7 @@ MyApp/
 Swift Package Manager with `.executableTarget` produces a bare binary, NOT a `.app` bundle. The build script must:
 
 1. Compile with `xcodebuild`
-2. Create `Avatel.app/` directory
+2. Create `<AppName>.app/` directory
 3. Copy binary into it
 4. Copy and process `Info.plist` (substitute `$(PRODUCT_BUNDLE_IDENTIFIER)`, `$(PRODUCT_NAME)`)
 5. `codesign --force --sign -` the bundle
@@ -137,6 +144,7 @@ xcodebuild -downloadPlatform iOS    # ~8.5 GB download
 | "Scheme not found" | Stale SPM workspace | Delete `.swiftpm/` on host |
 | Slow first build | Package resolution + module precompilation | Subsequent builds are incremental |
 | Simulator shows black screen | Wrong arch | Rebuild targeting the specific device UDID |
+| "Host key verification failed" | Mac not in `known_hosts` | `ssh-keyscan -H "$HOST_IP" >> ~/.ssh/known_hosts` |
 
 ## Scripts
 

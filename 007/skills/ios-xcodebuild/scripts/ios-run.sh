@@ -12,8 +12,38 @@
 #   BUNDLE_ID          — Bundle identifier (default: com.example.app)
 #   DEVICE_ID          — Target UDID (optional, auto-detected for simulator)
 #
+# Host key verification is left ON. Trust the macOS host once, up front:
+#   ssh-keyscan -H "$HOST_IP" >> ~/.ssh/known_hosts
+#
 
 set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Usage: ios-run.sh [simulator|device]
+
+Deploys and launches a built iOS app on a macOS host over SSH
+(xcrun simctl for simulators, xcrun devicectl for devices).
+
+Arguments:
+  1  target   simulator (default) | device
+
+Environment:
+  HOST_USER          SSH user on the macOS host (default: current user)
+  HOST_IP            macOS host address (default: host.docker.internal)
+  HOST_PROJECT_PATH  Absolute path to the project on the host (required)
+  BUNDLE_ID          Bundle identifier (default: com.example.app)
+  DEVICE_ID          Target UDID (auto-detected for simulator, required for device)
+
+The macOS host must already be in known_hosts:
+  ssh-keyscan -H "$HOST_IP" >> ~/.ssh/known_hosts
+
+Run ios-build.sh first — this script expects a .app bundle under
+build/DerivedData on the host.
+USAGE
+}
+
+[[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage; exit 0; }
 
 TARGET=${1:-simulator}
 
@@ -23,7 +53,7 @@ HOST_PROJECT_PATH="${HOST_PROJECT_PATH:?Error: Set HOST_PROJECT_PATH}"
 BUNDLE_ID="${BUNDLE_ID:-com.example.app}"
 DEVICE_ID="${DEVICE_ID:-}"
 
-SSH_CMD="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${HOST_USER}@${HOST_IP}"
+SSH_CMD="ssh -o ConnectTimeout=5 ${HOST_USER}@${HOST_IP}"
 
 info() { echo "▸ $*"; }
 error() { echo "✗ $*" >&2; exit 1; }

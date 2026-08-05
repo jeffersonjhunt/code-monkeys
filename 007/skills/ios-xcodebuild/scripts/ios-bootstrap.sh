@@ -11,19 +11,38 @@
 
 set -euo pipefail
 
+usage() {
+    cat <<'USAGE'
+Usage: ios-bootstrap.sh <AppName> [bundle-id]
+
+Scaffolds an iOS project in ./<AppName> with:
+  - Package.swift (executableTarget, iOS 17+)
+  - SwiftUI entry point and ContentView
+  - Resources/Info.plist
+  - scripts/ios-build.sh and scripts/ios-run.sh for the Docker-on-Mac workflow
+  - .gitignore
+
+Arguments:
+  1  AppName    Swift module and product name (required)
+  2  bundle-id  Bundle identifier (default: com.example.<appname-lowercased>)
+
+Example:
+  ios-bootstrap.sh MyApp com.example.myapp
+USAGE
+}
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+esac
+
 APP_NAME=${1:-}
-BUNDLE_ID=${2:-com.example.${APP_NAME,,}}
 
 if [[ -z "$APP_NAME" ]]; then
-    echo "Usage: $0 <AppName> [bundle-id]" >&2
-    echo "" >&2
-    echo "Scaffolds an iOS project with:" >&2
-    echo "  - Package.swift (executableTarget)" >&2
-    echo "  - SwiftUI entry point" >&2
-    echo "  - Info.plist" >&2
-    echo "  - Build/run scripts for Docker-on-Mac workflow" >&2
+    usage >&2
     exit 1
 fi
+
+BUNDLE_ID=${2:-com.example.$(printf '%s' "$APP_NAME" | tr '[:upper:]' '[:lower:]')}
 
 if [[ -d "$APP_NAME" ]]; then
     echo "Error: Directory '$APP_NAME' already exists." >&2
@@ -146,7 +165,27 @@ EOF
 # --- Build Script ---
 cat > "$APP_NAME/scripts/build.sh" << 'BUILDEOF'
 #!/usr/bin/env bash
+#
+# Build this app on the macOS host over SSH.
+# The host must be in known_hosts: ssh-keyscan -H "$HOST_IP" >> ~/.ssh/known_hosts
+#
 set -euo pipefail
+
+case "${1:-}" in
+    -h|--help)
+        cat <<'USAGE'
+Usage: build.sh [simulator|device] [debug|release]
+
+Environment:
+  HOST_USER          SSH user on the macOS host (default: current user)
+  HOST_IP            macOS host address (default: host.docker.internal)
+  HOST_PROJECT_PATH  Absolute path to this project on the host (required)
+  BUNDLE_ID          Bundle identifier (default: com.example.app)
+  TEAM_ID            Apple Team ID (required for device builds)
+USAGE
+        exit 0
+        ;;
+esac
 
 TARGET=${1:-simulator}
 CONFIG=${2:-debug}
@@ -157,7 +196,7 @@ HOST_PROJECT_PATH="${HOST_PROJECT_PATH:?Set HOST_PROJECT_PATH to the project dir
 BUNDLE_ID="${BUNDLE_ID:-com.example.app}"
 TEAM_ID="${TEAM_ID:-}"
 
-SSH_CMD="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${HOST_USER}@${HOST_IP}"
+SSH_CMD="ssh -o ConnectTimeout=5 ${HOST_USER}@${HOST_IP}"
 
 info() { echo "▸ $*"; }
 error() { echo "✗ $*" >&2; exit 1; }
@@ -210,7 +249,29 @@ chmod +x "$APP_NAME/scripts/build.sh"
 # --- Run Script ---
 cat > "$APP_NAME/scripts/run.sh" << 'RUNEOF'
 #!/usr/bin/env bash
+#
+# Deploy and launch this app via the macOS host over SSH.
+# The host must be in known_hosts: ssh-keyscan -H "$HOST_IP" >> ~/.ssh/known_hosts
+#
 set -euo pipefail
+
+case "${1:-}" in
+    -h|--help)
+        cat <<'USAGE'
+Usage: run.sh [simulator|device]
+
+Environment:
+  HOST_USER          SSH user on the macOS host (default: current user)
+  HOST_IP            macOS host address (default: host.docker.internal)
+  HOST_PROJECT_PATH  Absolute path to this project on the host (required)
+  BUNDLE_ID          Bundle identifier (default: com.example.app)
+  DEVICE_ID          Target UDID (auto-detected for simulator, required for device)
+
+Run ./scripts/build.sh first.
+USAGE
+        exit 0
+        ;;
+esac
 
 TARGET=${1:-simulator}
 
@@ -220,7 +281,7 @@ HOST_PROJECT_PATH="${HOST_PROJECT_PATH:?Set HOST_PROJECT_PATH}"
 BUNDLE_ID="${BUNDLE_ID:-com.example.app}"
 DEVICE_ID="${DEVICE_ID:-}"
 
-SSH_CMD="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${HOST_USER}@${HOST_IP}"
+SSH_CMD="ssh -o ConnectTimeout=5 ${HOST_USER}@${HOST_IP}"
 APP_NAME=$(basename "$HOST_PROJECT_PATH")
 
 info() { echo "▸ $*"; }
@@ -276,6 +337,7 @@ echo "  export HOST_USER=<mac-user>"
 echo "  export HOST_IP=host.docker.internal"
 echo "  export HOST_PROJECT_PATH=\"/Users/<mac-user>/path/to/$APP_NAME\""
 echo "  export BUNDLE_ID=\"$BUNDLE_ID\""
+echo "  ssh-keyscan -H \"\$HOST_IP\" >> ~/.ssh/known_hosts   # once, to trust the host"
 echo "  cd $APP_NAME"
 echo "  ./scripts/build.sh simulator debug"
 echo "  ./scripts/run.sh simulator"

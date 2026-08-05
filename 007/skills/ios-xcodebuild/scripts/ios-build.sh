@@ -12,8 +12,36 @@
 #   BUNDLE_ID          — Bundle identifier (default: com.example.app)
 #   TEAM_ID            — Apple Team ID (required for device builds)
 #
+# Host key verification is left ON. Trust the macOS host once, up front:
+#   ssh-keyscan -H "$HOST_IP" >> ~/.ssh/known_hosts
+#
 
 set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Usage: ios-build.sh [simulator|device] [debug|release]
+
+Builds an iOS app on a macOS host over SSH (xcodebuild + codesign) and
+packages the resulting binary into a .app bundle.
+
+Arguments:
+  1  target   simulator (default) | device
+  2  config   debug (default) | release
+
+Environment:
+  HOST_USER          SSH user on the macOS host (default: current user)
+  HOST_IP            macOS host address (default: host.docker.internal)
+  HOST_PROJECT_PATH  Absolute path to the project on the host (required)
+  BUNDLE_ID          Bundle identifier (default: com.example.app)
+  TEAM_ID            Apple Team ID (required for device builds)
+
+The macOS host must already be in known_hosts:
+  ssh-keyscan -H "$HOST_IP" >> ~/.ssh/known_hosts
+USAGE
+}
+
+[[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage; exit 0; }
 
 TARGET=${1:-simulator}
 CONFIG=${2:-debug}
@@ -24,7 +52,7 @@ HOST_PROJECT_PATH="${HOST_PROJECT_PATH:?Error: Set HOST_PROJECT_PATH to the abso
 BUNDLE_ID="${BUNDLE_ID:-com.example.app}"
 TEAM_ID="${TEAM_ID:-}"
 
-SSH_CMD="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${HOST_USER}@${HOST_IP}"
+SSH_CMD="ssh -o ConnectTimeout=5 ${HOST_USER}@${HOST_IP}"
 
 info() { echo "▸ $*"; }
 error() { echo "✗ $*" >&2; exit 1; }
