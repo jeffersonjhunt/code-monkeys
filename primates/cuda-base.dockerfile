@@ -62,6 +62,7 @@ RUN apt-get update \
        git \
        curl \
        ca-certificates \
+       jq \
     && echo "codemonkey ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/codemonkey \
     && chmod 0440 /etc/sudoers.d/codemonkey \
     && apt autoremove -y \

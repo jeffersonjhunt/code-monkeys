@@ -55,6 +55,7 @@ RUN apt-get -y install \
       python3 \
       graphicsmagick \
       libsixel-bin \
+      jq \
       clamav \
       nmap \
       curl \
