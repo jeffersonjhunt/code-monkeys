@@ -4,7 +4,7 @@ description: The default software development lifecycle every agent follows — 
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.0"
+  version: "1.1.0"
 dependencies:
   - review-adversarial
 ---
@@ -30,22 +30,39 @@ thing this skill exists to prevent.
 
 ## Tiers
 
+Pick with two questions, not one "how big is it" judgement:
+
+```
+does it change behaviour? ── no ──> trivial
+         │ yes
+does it ship to a runtime? ── no ──> undeployed
+         │ yes
+one unit, reversible? ── yes ──> standard
+         │ no
+                        campaign
+```
+
 | tier | when | phases |
 |---|---|---|
 | `trivial` | docs, comments, formatting — **no behaviour change** | isolate, implement, land |
-| `standard` | a feature or bug fix in one place, reversible | all nine |
+| `undeployed` | real change that **ships nothing**: tests, dev tooling, specs, CI | all except deploy, observe |
+| `standard` | a feature or bug fix in one place, reversible, deployed | all nine |
 | `campaign` | multi-host, multi-artifact, or hard to reverse | all nine **+ survey**, per-unit verification, declared stop/resume point |
 
-If you are unsure between two tiers, take the higher one. Choosing `trivial` for something that
-changes behaviour is the failure mode, not choosing `standard` for a typo.
+`undeployed` is not a discount tier — it keeps `verify` and `review`, which is the whole point.
+Without it, work that ships nothing had to either claim `standard` and walk through `deploy` and
+`observe` that do not apply, or claim `trivial` and skip the verification it genuinely needs.
+
+If unsure between two, take the one with more phases. Choosing `trivial` for something that changes
+behaviour is the failure mode, not choosing `standard` for a typo.
 
 ## The phases
 
 **1 Intake** — restate the ask in your own words. Declare the tier and why. Name the **unit of work**
 (the smallest thing that can be built, verified and reverted on its own). State what "done" means.
 
-**2 Plan** — `standard` and `campaign`: write the plan, get it approved, *then* write code. If the ask
-is ambiguous in a way that changes the work, ask before planning, not after building.
+**2 Plan** — every tier except `trivial`: write the plan, get it approved, *then* write code. If the
+ask is ambiguous in a way that changes the work, ask before planning, not after building.
 
 **3 Isolate** — a branch, in a worktree. **Never `main`.** Never a deployment artifact (a clone that
 exists to run code, not host it). A shared checkout has one HEAD: if someone else switches it, your

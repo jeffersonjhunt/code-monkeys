@@ -136,6 +136,21 @@ def test_trivial_does_not_require_verify():
         assert "verify" not in out["required_phases"]
 
 
+def test_undeployed_keeps_verify_but_drops_deploy_and_observe():
+    """The tier exists so undeployed work is not forced to lie in either direction."""
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "s.json")
+        out = json.loads(init(state, tier="undeployed").stdout)
+        phases = out["required_phases"]
+        assert "verify" in phases and "review" in phases, "undeployed is not a discount tier"
+        assert "deploy" not in phases and "observe" not in phases
+
+        # And the phases it does not have are actually refused, not merely absent from a list.
+        r = advance(state, "deploy")
+        assert r.returncode == 1
+        assert "not required" in r.stderr
+
+
 def test_campaign_requires_survey_first():
     with tempfile.TemporaryDirectory() as d:
         state = str(Path(d) / "s.json")

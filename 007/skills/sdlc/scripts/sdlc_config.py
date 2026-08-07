@@ -22,10 +22,20 @@ PHASES = [
     "observe",
 ]
 
-# Tier -> the phases it requires, in order. `trivial` is deliberately short; it is for work that
-# cannot change behaviour. Everything else gets the full loop.
+# Tier -> the phases it requires, in order.
+#
+# Two independent questions pick the tier, not one ladder of "how big":
+#   does it change behaviour?   no  -> trivial
+#   does it ship to a runtime?  no  -> undeployed
+#                               yes -> standard, or campaign if many units / hard to reverse
+#
+# `undeployed` exists because without it, substantive work that ships nothing — test-only changes,
+# dev tooling, a spec — had to claim `standard` and then walk through `deploy` and `observe` that do
+# not apply, or claim `trivial` and skip `verify`, which it does need. Both are wrong, and an agent
+# forced to pick a wrong answer picks the cheap one.
 DEFAULT_TIERS = {
     "trivial": ["isolate", "implement", "land"],
+    "undeployed": [p for p in PHASES if p not in ("deploy", "observe")],
     "standard": list(PHASES),
     "campaign": list(PHASES),
 }
