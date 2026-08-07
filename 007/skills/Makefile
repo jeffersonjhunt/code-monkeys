@@ -14,9 +14,18 @@ list: ## List available skills
 	@echo "Available skills:"
 	@for d in $(SKILL_DIRS); do echo "  $${d%/}"; done
 
+# A skill whose scripts are container-resident cannot be smoke-tested here, and reporting that as
+# FAIL is worse than useless: it is indistinguishable from a genuinely broken script, so a real
+# breakage hides among the permanent failures. Such skills declare `metadata.runtime` and are SKIPPED
+# with the reason printed — skipping must always be visible, never silent.
 test: ## Run smoke tests on all skills
 	@for d in $(SKILL_DIRS); do \
 		echo "Testing $${d%/}..."; \
+		rt=$$(python3 scripts/skill-meta.py "$${d%/}/SKILL.md" metadata.runtime 2>/dev/null); \
+		if [ -n "$$rt" ]; then \
+			echo "  SKIP: needs $$rt — not runnable on this host"; \
+			continue; \
+		fi; \
 		if [ -d "$${d}scripts" ]; then \
 			for f in $${d}scripts/*.py; do \
 				[ -f "$$f" ] || continue; \
