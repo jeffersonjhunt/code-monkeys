@@ -43,7 +43,7 @@ Follow the frontmatter with a markdown body containing:
 ## Script Conventions
 
 - Use `#!/usr/bin/env python3` or `#!/usr/bin/env bash` shebangs
-- Python scripts: standard library only (no pip dependencies)
+- Python scripts: standard library only — **unless the skill declares a runtime** (see below)
 - Bash scripts: use `set -euo pipefail`
 - Output JSON by default for machine-readable results
 - Support `--help` for usage information
@@ -81,6 +81,27 @@ Follow the frontmatter with a markdown body containing:
 - Prefer no external dependencies (standard library only)
 - If external tools are needed (e.g., `libsixel`), document install instructions for macOS, Debian, and Fedora
 - Check for dependencies at runtime and fail with install instructions
+
+### Skills whose scripts only run somewhere else
+
+Some skills are wrappers around a harness that lives in a container or on a specific host — their
+scripts genuinely cannot run where `make test` runs, and `spark-bench` is the worked example: it needs
+`openai`, `datasets`, a LiveCodeBench clone and the `sweagent` binary, all resident in the
+`spark-bench` primate.
+
+Declare it, so the smoke test skips rather than fails:
+
+```yaml
+metadata:
+  runtime: container:spark-bench
+```
+
+`make test` then prints `SKIP: needs container:spark-bench — not runnable on this host` and moves on.
+
+This is not an exemption from testing, it is a **classification**. Before it existed, those five
+scripts were permanent `FAIL:` lines — indistinguishable from a genuinely broken script, so a real
+breakage would have been invisible among them. Declare the runtime only when the scripts truly cannot
+execute here; do not use it to quiet a script that is merely broken.
 
 ## Versioning & Changelog
 

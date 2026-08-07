@@ -4,7 +4,12 @@ description: Run LLM evaluation harnesses (AIME 25, GPQA, LiveCodeBench v6, tau2
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.0"
+  version: "1.1.0"
+  # These scripts are container-resident: they need openai/datasets, the LiveCodeBench clone at
+  # /opt/livecodebench, and the sweagent binary — all of which live in the spark-bench primate, not on
+  # a dev box. Declaring it lets `make test` SKIP them with a stated reason instead of reporting five
+  # permanent FAILs, among which a real breakage would be invisible.
+  runtime: container:spark-bench
 ---
 
 # spark-bench
