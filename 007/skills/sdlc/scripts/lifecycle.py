@@ -17,7 +17,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sdlc_config as cfg  # noqa: E402
 
-DEFAULT_STATE = ".sdlc-state.json"
+# Resolved lazily against the REPO ROOT, not cwd — see sdlc_config.default_state_path. An explicit
+# --state is still taken exactly as given, so it stays the escape hatch for tests and odd layouts.
+DEFAULT_STATE = None
 
 
 def now() -> str:
@@ -156,6 +158,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "overrides_from": state["config"].get("claude_md"),
         "overrides": state["config"].get("overrides", {}),
         "override_problems": state["config"].get("override_problems", []),
+        "state_file": str(Path(args.state).resolve()),
     }
     print(json.dumps(out, indent=2))
     return 0
@@ -185,7 +188,11 @@ def cmd_summary(args: argparse.Namespace) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--state", default=DEFAULT_STATE, help=f"state file (default: {DEFAULT_STATE})")
+    ap.add_argument(
+        "--state",
+        default=None,
+        help="state file (default: .sdlc-state.json at the repo root)",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("init", help="start a lifecycle")
@@ -206,6 +213,8 @@ def main() -> int:
     p.set_defaults(func=cmd_summary)
 
     args = ap.parse_args()
+    if args.state is None:
+        args.state = str(cfg.default_state_path())
     return int(args.func(args))
 
 

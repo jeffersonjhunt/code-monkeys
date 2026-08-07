@@ -63,6 +63,32 @@ def find_claude_md(start: Path | None = None) -> Path | None:
     return None
 
 
+def find_repo_root(start: Path | None = None) -> Path | None:
+    """Search upward for the working-tree root (the directory holding `.git`).
+
+    `.exists()`, not `.is_dir()`: in a git WORKTREE `.git` is a FILE pointing at the real git dir,
+    and a worktree is exactly where this matters most.
+    """
+    cur = (start or Path.cwd()).resolve()
+    for d in [cur, *cur.parents]:
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def default_state_path(start: Path | None = None) -> Path:
+    """Where `.sdlc-state.json` lives: the repo root, not the current directory.
+
+    Resolving it against cwd meant a lifecycle started at the repo root vanished the moment you
+    stepped into a subdirectory — `advance` then reported "no state, run init first" while the state
+    sat one level up. One task has one state file, so it belongs at a fixed point in the repo.
+
+    Outside a repo there is no fixed point, so cwd remains the fallback.
+    """
+    root = find_repo_root(start)
+    return (root or (start or Path.cwd())) / ".sdlc-state.json"
+
+
 def parse_overrides(path: Path | None) -> tuple[dict[str, str], list[str]]:
     """Return (overrides, problems) from the sentinel block in `path`.
 

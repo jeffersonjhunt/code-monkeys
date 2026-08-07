@@ -257,6 +257,66 @@ def test_phases_skip_removes_from_every_tier():
         assert "observe" not in out["required_phases"]
 
 
+# --- state file location ---------------------------------------------------------------
+
+
+def test_state_lives_at_repo_root_not_cwd():
+    """Init at the root, advance from a subdirectory — the bug this fixes.
+
+    Resolving against cwd meant `advance` reported "no state, run init first" while the state file
+    sat one directory up.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d) / "r"
+        (repo / "sub" / "deeper").mkdir(parents=True)
+        make_repo(repo, "feature")
+
+        r = run(LIFECYCLE, "init", "--tier", "trivial", "--task", "t", "--why", "w", cwd=repo)
+        assert r.returncode == 0, r.stderr
+        assert (repo / ".sdlc-state.json").is_file(), "state must be written at the repo root"
+
+        r = run(LIFECYCLE, "advance", "isolate", "--evidence", "e", cwd=repo / "sub" / "deeper")
+        assert r.returncode == 0, r.stderr
+        assert not (repo / "sub" / "deeper" / ".sdlc-state.json").exists()
+
+        r = run(LIFECYCLE, "status", cwd=repo / "sub")
+        assert r.returncode == 0
+        assert json.loads(r.stdout)["completed"] == ["isolate"]
+
+
+def test_state_file_path_is_reported():
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d) / "r"
+        repo.mkdir()
+        make_repo(repo, "feature")
+        run(LIFECYCLE, "init", "--tier", "trivial", "--task", "t", "--why", "w", cwd=repo)
+        out = json.loads(run(LIFECYCLE, "status", cwd=repo).stdout)
+        assert out["state_file"].endswith(".sdlc-state.json")
+
+
+def test_explicit_state_flag_still_wins():
+    """The escape hatch must keep working, taken exactly as given."""
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d) / "r"
+        repo.mkdir()
+        make_repo(repo, "feature")
+        custom = str(Path(d) / "elsewhere.json")
+        r = run(LIFECYCLE, "--state", custom, "init", "--tier", "trivial",
+                "--task", "t", "--why", "w", cwd=repo)
+        assert r.returncode == 0, r.stderr
+        assert Path(custom).is_file()
+        assert not (repo / ".sdlc-state.json").exists()
+
+
+def test_outside_a_repo_falls_back_to_cwd():
+    with tempfile.TemporaryDirectory() as d:
+        plain = Path(d) / "norepo"
+        plain.mkdir()
+        r = run(LIFECYCLE, "init", "--tier", "trivial", "--task", "t", "--why", "w", cwd=plain)
+        assert r.returncode == 0, r.stderr
+        assert (plain / ".sdlc-state.json").is_file()
+
+
 # --- preflight ------------------------------------------------------------------------
 
 

@@ -4,7 +4,7 @@ description: The default software development lifecycle every agent follows — 
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.1.1"
+  version: "1.1.2"
 dependencies:
   - review-adversarial
 ---
@@ -135,7 +135,9 @@ python scripts/lifecycle.py summary
 evidence. `--evidence` is a free-text claim about what was actually done; it is recorded, not
 validated — the point is that the claim exists and is attributable.
 
-State lives in `.sdlc-state.json` (override with `--state`). Add it to `.gitignore`.
+State lives in `.sdlc-state.json` **at the repo root**, so it is found from any subdirectory;
+`status` prints its resolved path. Override with `--state`, which is taken exactly as given.
+Add it to `.gitignore`.
 
 ## Overrides
 

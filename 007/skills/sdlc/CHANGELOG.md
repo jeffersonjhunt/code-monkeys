@@ -1,5 +1,13 @@
 # Changelog — sdlc
 
+## [1.1.2] - 2026-08-07
+
+- State file resolves at the repo root instead of cwd, so a lifecycle survives changing directory; status reports its path.
+
+## [1.1.2] - 2026-08-07
+
+- Version bump (patch)
+
 ## [1.1.1] - 2026-08-07
 
 - Verify rules: a worktree omits gitignored files so config-gated tests silently skip there; prefer a fixture over ambient config.
