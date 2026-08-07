@@ -4,7 +4,7 @@ description: The default software development lifecycle every agent follows — 
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.1.0"
+  version: "1.1.1"
 dependencies:
   - review-adversarial
 ---
@@ -99,6 +99,12 @@ Every one of these comes from a check that passed while being wrong.
   convenient one covers half the code and looks like full coverage.
 - **Distinguish "failed" from "found nothing".** They are different answers; collapsing them into one
   empty string turns an error into a clean result.
+- **A worktree is a different environment.** It omits every gitignored file, so tests gated on local
+  config *silently skip* there — a green run in a worktree can be hiding failures that only appear in
+  the main checkout. Check the skipped count, not just the passed count, and confirm it in both.
+- **Prefer a fixture to ambient config.** A test that reads the maintainer's local file runs on one
+  machine and skips everywhere else, which is how five stale assertions survived unnoticed in
+  `spark-build`. Give the script a seam and feed it a fixture; then every test runs everywhere.
 - **On any test failure: stop.** Write down what failed and the proposed fix, and check with the host
   before changing code or tests. Never chase green.
 
