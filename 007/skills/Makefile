@@ -26,10 +26,16 @@ test: ## Run smoke tests on all skills
 	done
 	@echo "Done."
 
+# Each validation runs in a SUBSHELL, so the cd cannot leak between iterations. Previously this was
+# `cd skills-ref && ... && cd ..`, where a FAILED validation skipped the `cd ..` — leaving every
+# later iteration stranded in skills-ref, printing "can't cd to skills-ref" instead of validating.
+# One bad skill therefore hid the results of every skill after it.
+# `|| rc=1` also means all skills are validated and the failure is reported at the end, rather than
+# the run stopping at the first one.
 validate: ## Validate all SKILL.md files
-	@for d in $(SKILL_DIRS); do \
-		cd skills-ref && uv run skills-ref validate "../$${d%/}" && cd ..; \
-	done
+	@rc=0; for d in $(SKILL_DIRS); do \
+		( cd skills-ref && uv run skills-ref validate "../$${d%/}" ) || rc=1; \
+	done; exit $$rc
 
 build: ## Build (no-op for interpreted scripts)
 	@echo "Nothing to build (scripts are interpreted)."

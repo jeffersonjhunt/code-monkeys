@@ -18,6 +18,10 @@ ALLOWED_FIELDS = {
     "allowed-tools",
     "metadata",
     "compatibility",
+    # Documented in CONTRIBUTING.md and read by scripts/resolve-deps.py (`make deps`), but missing
+    # here — so any skill that used the documented field failed validation. No skill had declared a
+    # dependency until `sdlc`, which is why the contradiction went unnoticed.
+    "dependencies",
 }
 
 

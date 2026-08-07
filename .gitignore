@@ -15,3 +15,5 @@ openvpn/logs/
 007/skills/skills-ref/.venv
 __pycache__/
 .pytest_cache/
+# sdlc skill: per-task lifecycle state, never committed
+.sdlc-state.json
