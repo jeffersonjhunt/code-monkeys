@@ -95,7 +95,11 @@ case "$SYNC" in rsync|git) ;; *) echo "Error: --sync must be rsync or git" >&2; 
 # ---- locate repo root and load cluster.env ------------------------------
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../../.." && pwd)
-CLUSTER_ENV="$REPO_ROOT/spark/cluster/cluster.env"
+# Overridable so tests can supply a fixture. Without a seam the tests depended on the maintainer's
+# local, GITIGNORED cluster.env — so they skipped in a fresh checkout or any worktree and ran on
+# exactly one machine. Five stale assertions survived that way: the images had been renamed and the
+# SSH user changed, and nothing said so because the tests were skipping wherever anyone looked.
+CLUSTER_ENV="${SPARK_CLUSTER_ENV:-$REPO_ROOT/spark/cluster/cluster.env}"
 
 if [[ ! -f "$CLUSTER_ENV" ]]; then
   echo "Error: $CLUSTER_ENV not found. Copy cluster.env.example and fill in." >&2
