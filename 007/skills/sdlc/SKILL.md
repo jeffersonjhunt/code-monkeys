@@ -1,10 +1,10 @@
 ---
 name: sdlc
-description: The default software development lifecycle every agent follows — intake, plan, isolate, implement, verify, review, land, deploy, observe. Use at the start of any coding task, and whenever deciding whether work is ready to land or deploy.
+description: The default software development lifecycle every agent follows — intake, plan, isolate, implement, verify, review, land, deploy, observe, release. Use at the start of any coding task, and whenever deciding whether work is ready to deploy or ready to merge.
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.2.0"
+  version: "1.2.1"
 dependencies:
   - review-adversarial
 ---
