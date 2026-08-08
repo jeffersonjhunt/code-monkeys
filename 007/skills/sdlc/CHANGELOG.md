@@ -1,5 +1,13 @@
 # Changelog — sdlc
 
+## [1.2.0] - 2026-08-07
+
+- Split land into land (push the branch) and release (merge, last). Deploy the branch sha and observe BEFORE merging; release.merge_by replaces land.merge_by, which stays as an alias.
+
+## [1.2.0] - 2026-08-07
+
+- Version bump (minor)
+
 ## [1.1.2] - 2026-08-07
 
 - State file resolves at the repo root instead of cwd, so a lifecycle survives changing directory; status reports its path.

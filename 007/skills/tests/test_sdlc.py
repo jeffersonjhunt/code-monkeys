@@ -100,6 +100,11 @@ def test_land_before_verify_is_refused_then_allowed():
         r = advance(state, "land", "pushed the branch")
         assert r.returncode == 0, "land must be allowed once its prerequisites are met"
 
+        # ...and the merge is NOT yet allowed: nothing has been proven on hardware.
+        r = advance(state, "release", "merged")
+        assert r.returncode == 1, "release must be refused before deploy/observe"
+        assert "deploy" in r.stderr
+
 
 def test_phase_not_in_tier_is_refused():
     with tempfile.TemporaryDirectory() as d:
@@ -132,7 +137,7 @@ def test_trivial_does_not_require_verify():
     with tempfile.TemporaryDirectory() as d:
         state = str(Path(d) / "s.json")
         out = json.loads(init(state, tier="trivial").stdout)
-        assert out["required_phases"] == ["isolate", "implement", "land"]
+        assert out["required_phases"] == ["isolate", "implement", "land", "release"]
         assert "verify" not in out["required_phases"]
 
 
@@ -190,8 +195,13 @@ def test_summary_nonzero_until_complete():
         assert r.returncode == 1
         assert "INCOMPLETE" in r.stdout
 
+        # `release` now closes every tier — even docs get merged; the tier only decides what has to
+        # be true first.
         for p in ("isolate", "implement", "land"):
             advance(state, p)
+        assert run(LIFECYCLE, "--state", state, "summary").returncode == 1
+
+        advance(state, "release", "merged")
         r = run(LIFECYCLE, "--state", state, "summary")
         assert r.returncode == 0
         assert "all required phases complete" in r.stdout
@@ -255,6 +265,67 @@ def test_phases_skip_removes_from_every_tier():
         out = json.loads(init(str(root / "s.json"), tier="standard", cwd=root).stdout)
         assert "deploy" not in out["required_phases"]
         assert "observe" not in out["required_phases"]
+
+
+# --- release comes last ----------------------------------------------------------------
+
+
+def test_release_is_the_final_phase_after_deploy_and_observe():
+    """Merging before deploying makes main a promise rather than a record.
+
+    The order is land (push) -> deploy the branch -> observe -> release (merge on the evidence).
+    """
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "s.json")
+        out = json.loads(init(state, tier="standard").stdout)
+        assert out["required_phases"][-1] == "release"
+        assert out["required_phases"].index("deploy") < out["required_phases"].index("release")
+        assert out["required_phases"].index("observe") < out["required_phases"].index("release")
+
+        for p in ("intake", "plan", "isolate", "implement"):
+            advance(state, p)
+        advance(state, "verify", "negative control run")
+        advance(state, "review")
+        advance(state, "land", "branch pushed")
+
+        assert advance(state, "release", "merged").returncode == 1
+        advance(state, "deploy", "deployed the branch sha")
+        assert advance(state, "release", "merged").returncode == 1, "observe still outstanding"
+        advance(state, "observe", "healthy in situ")
+        assert advance(state, "release", "merged").returncode == 0
+
+
+def test_summary_names_the_next_step():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "s.json")
+        init(state, tier="standard")
+        for p in ("intake", "plan", "isolate", "implement"):
+            advance(state, p)
+        advance(state, "verify", "negative control run")
+        advance(state, "review")
+        advance(state, "land", "pushed")
+        out = run(LIFECYCLE, "--state", state, "summary").stdout
+        assert "Not proven on real hardware" in out
+
+        advance(state, "deploy", "deployed branch sha")
+        advance(state, "observe", "healthy")
+        out = run(LIFECYCLE, "--state", state, "summary").stdout
+        assert "merge is the remaining step" in out
+
+
+def test_release_merge_by_key_with_land_alias():
+    """The old key keeps working; a silent un-configure would be worse than a rename."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "CLAUDE.md").write_text(
+            "<!-- sdlc:begin -->\nrelease.merge_by: agent\n<!-- sdlc:end -->\n")
+        assert json.loads(init(str(root / "s.json"), cwd=root).stdout)["config"]["merge_by"] == "agent"
+
+        (root / "CLAUDE.md").write_text(
+            "<!-- sdlc:begin -->\nland.merge_by: agent\n<!-- sdlc:end -->\n")
+        out = json.loads(init(str(root / "s.json"), cwd=root).stdout)
+        assert out["config"]["merge_by"] == "agent", "the alias must still configure"
+        assert out["config"]["override_problems"] == []
 
 
 # --- state file location ---------------------------------------------------------------

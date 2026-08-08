@@ -20,6 +20,7 @@ PHASES = [
     "land",
     "deploy",
     "observe",
+    "release",
 ]
 
 # Tier -> the phases it requires, in order.
@@ -34,7 +35,7 @@ PHASES = [
 # not apply, or claim `trivial` and skip `verify`, which it does need. Both are wrong, and an agent
 # forced to pick a wrong answer picks the cheap one.
 DEFAULT_TIERS = {
-    "trivial": ["isolate", "implement", "land"],
+    "trivial": ["isolate", "implement", "land", "release"],
     "undeployed": [p for p in PHASES if p not in ("deploy", "observe")],
     "standard": list(PHASES),
     "campaign": list(PHASES),
@@ -48,6 +49,10 @@ SENTINEL_BEGIN = "<!-- sdlc:begin -->"
 SENTINEL_END = "<!-- sdlc:end -->"
 
 KNOWN_KEYS = {
+    "release.merge_by": {"host", "agent"},
+    # Accepted alias. `land` stopped meaning "merge" when release became its own phase; renaming the
+    # key outright would have silently un-configured every project still using it, so the old name
+    # keeps working and resolve() prefers the new one.
     "land.merge_by": {"host", "agent"},
     "verify.require_negative": {"true", "false"},
 }
@@ -166,7 +171,9 @@ def load(start: Path | None = None) -> dict:
         "overrides": overrides,
         "override_problems": problems,
         "tiers": resolve_tiers(overrides),
-        "merge_by": overrides.get("land.merge_by", "host"),
+        "merge_by": overrides.get(
+            "release.merge_by", overrides.get("land.merge_by", "host")
+        ),
         "require_negative": overrides.get("verify.require_negative", "true") == "true",
     }
 

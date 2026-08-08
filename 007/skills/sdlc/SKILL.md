@@ -4,14 +4,15 @@ description: The default software development lifecycle every agent follows — 
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.1.2"
+  version: "1.2.0"
 dependencies:
   - review-adversarial
 ---
 
 # sdlc
 
-The lifecycle every instance follows unless a project overrides it. You do the work; the scripts hold
+The lifecycle every instance follows unless a project overrides it. Ten phases; the merge is the
+LAST act, not an early one. You do the work; the scripts hold
 state and refuse invalid transitions, so a skipped phase is a visible decision rather than a silent
 omission.
 
@@ -44,14 +45,16 @@ one unit, reversible? ── yes ──> standard
 
 | tier | when | phases |
 |---|---|---|
-| `trivial` | docs, comments, formatting — **no behaviour change** | isolate, implement, land |
+| `trivial` | docs, comments, formatting — **no behaviour change** | isolate, implement, land, release |
 | `undeployed` | real change that **ships nothing**: tests, dev tooling, specs, CI | all except deploy, observe |
-| `standard` | a feature or bug fix in one place, reversible, deployed | all nine |
-| `campaign` | multi-host, multi-artifact, or hard to reverse | all nine **+ survey**, per-unit verification, declared stop/resume point |
+| `standard` | a feature or bug fix in one place, reversible, deployed | all ten |
+| `campaign` | multi-host, multi-artifact, or hard to reverse | all ten **+ survey**, per-unit verification, declared stop/resume point |
 
 `undeployed` is not a discount tier — it keeps `verify` and `review`, which is the whole point.
 Without it, work that ships nothing had to either claim `standard` and walk through `deploy` and
-`observe` that do not apply, or claim `trivial` and skip the verification it genuinely needs.
+`observe` that do not apply, or claim `trivial` and skip the verification it genuinely needs. Every
+tier still ends in `release`: everything gets merged eventually, the question is only what has to be
+true first.
 
 If unsure between two, take the one with more phases. Choosing `trivial` for something that changes
 behaviour is the failure mode, not choosing `standard` for a typo.
@@ -75,15 +78,25 @@ commits land on their branch and nothing errors.
 **6 Review** — read your own diff as an adversary before anyone else does. For anything non-trivial,
 chain to the `review-adversarial` skill.
 
-**7 Land** — push the **branch**. Report what is ready and what you did not do. **The host merges.**
-Pushing a branch commit onward to main after every commit is developing on main with extra steps.
+**7 Land** — push the **branch**, and stop there. This is *not* the merge. Report what is ready and
+what you did not do. Pushing a branch commit onward to main after every commit is developing on main
+with extra steps.
 
-**8 Deploy** — the artifact is pinned (a digest, a sha — not a mutable tag). There is a health gate.
-The rollback path has been *run*, not just written. A rollback that has never executed is not a
+**8 Deploy** — deploy **the branch's sha**, not main. Deploy tooling takes any ref; the point of
+pinned artifacts and a proven rollback is that a candidate can go on real hardware and come off again
+cheaply. The artifact is pinned (a digest, a sha — never a mutable tag), there is a health gate, and
+the rollback path has been *run*, not just written. A rollback that has never executed is not a
 rollback path.
 
 **9 Observe** — verify in situ, not just that the deploy command exited 0. Record state. Re-check the
 specific failure the change was supposed to prevent.
+
+**10 Release** — *now* merge, on the evidence from 8 and 9. **The host merges.** If observation went
+badly the alternative is redeploying the previous digest and fixing the branch — no merge to unwind.
+
+> Merging before deploying inverts this: it makes main a promise rather than a record, and throws
+> away the cheap way out. While a candidate is under test the repo *will* show declared-vs-running
+> drift on that host — that is the expected state, not a reason to merge early.
 
 ## Verify: the rules that keep being learned the hard way
 
@@ -126,13 +139,14 @@ directory that looks like a deployment artifact. Exit non-zero names what to do 
 python scripts/lifecycle.py init --tier campaign --task "stamp all config images" --why "24 artifacts, 5 hosts"
 python scripts/lifecycle.py advance implement --evidence "3 commits on branch"
 python scripts/lifecycle.py advance verify --evidence "negative test: gate fails on main, passes on branch"
-python scripts/lifecycle.py advance land --evidence "pushed sdlc-skill"
+python scripts/lifecycle.py advance land --evidence "pushed branch feat/x, not merged"
+python scripts/lifecycle.py advance release --evidence "observed healthy on minerva; merged"
 python scripts/lifecycle.py status
 python scripts/lifecycle.py summary
 ```
 
-`advance` refuses a phase whose prerequisites are unmet, and refuses `land` unless `verify` recorded
-evidence. `--evidence` is a free-text claim about what was actually done; it is recorded, not
+`advance` refuses a phase whose prerequisites are unmet — `land` before `verify` has evidence, and
+`release` before `deploy` and `observe` have theirs. `--evidence` is a free-text claim about what was actually done; it is recorded, not
 validated — the point is that the claim exists and is attributable.
 
 State lives in `.sdlc-state.json` **at the repo root**, so it is found from any subdirectory;
