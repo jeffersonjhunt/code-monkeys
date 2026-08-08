@@ -12,7 +12,7 @@ drift apart.
 tiers.trivial.phases: isolate, implement, land
 tiers.standard.phases: intake, plan, isolate, implement, verify, review, land, deploy, observe
 phases.deploy: required
-land.merge_by: host
+release.merge_by: host
 <!-- sdlc:end -->
 ```
 
@@ -27,7 +27,7 @@ is the same class of bug as a check that examines nothing.
 |---|---|---|
 | `tiers.<tier>.phases` | comma-separated phase names | exactly which phases that tier requires |
 | `phases.<phase>` | `required` / `optional` / `skip` | force a phase on or off for every tier |
-| `land.merge_by` | `host` / `agent` | who merges. Defaults to `host` |
+| `release.merge_by` | `host` / `agent` | who merges, in the final `release` phase. Defaults to `host`. `land.merge_by` is still accepted as an alias — `land` stopped meaning "merge" when release became its own phase, and renaming outright would have silently un-configured projects using the old name |
 | `verify.require_negative` | `true` / `false` | whether `verify` evidence must mention a negative test |
 
 ## Resolution order
@@ -42,6 +42,7 @@ override that is not being applied is visible rather than mysterious.
 
 ## Deliberately not overridable
 
-`land.merge_by: agent` is honoured, but **never `main` as a working branch** and **never a deployment
-artifact as a workspace**. Those are not policy knobs; a project that needs to violate them has a
+`release.merge_by: agent` is honoured, but **never `main` as a working branch**, **never a deployment
+artifact as a workspace**, and **never merging before the candidate has been deployed and observed**
+where those phases apply. Those are not policy knobs; a project that needs to violate them has a
 different problem to solve.

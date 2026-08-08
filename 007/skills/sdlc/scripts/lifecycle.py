@@ -175,14 +175,21 @@ def cmd_summary(args: argparse.Namespace) -> int:
         mark = "x" if done else " "
         ev = state["evidence"].get(p, {}).get("text", "")
         print(f"  [{mark}] {p}{': ' + ev if ev else ''}")
+    host_merges = state["config"].get("merge_by", "host") == "host"
     if remaining:
         print(f"INCOMPLETE — remaining: {', '.join(remaining)}")
-        if state["config"].get("merge_by", "host") == "host":
+        # Name the NEXT thing, not just the set. "release" outstanding after a clean observe is a
+        # decision waiting on a person; "deploy" outstanding means nothing has been proven yet.
+        nxt = remaining[0]
+        if nxt == "release":
+            print("Deployed and observed. The merge is the remaining step"
+                  + (" — the host makes that call." if host_merges else "."))
+        elif nxt in ("deploy", "observe"):
+            print("Not proven on real hardware yet. Deploy the BRANCH sha and observe before merging.")
+        elif host_merges:
             print("Do not merge. Push the branch and report.")
         return 1
     print("all required phases complete")
-    if state["config"].get("merge_by", "host") == "host":
-        print("Push the branch and report — the host merges.")
     return 0
 
 
