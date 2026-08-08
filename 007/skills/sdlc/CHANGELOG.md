@@ -1,5 +1,13 @@
 # Changelog — sdlc
 
+## [1.2.1] - 2026-08-07
+
+- Description names the release phase; it had lagged the v1.2.0 phase split.
+
+## [1.2.1] - 2026-08-07
+
+- Version bump (patch)
+
 ## [1.2.0] - 2026-08-07
 
 - Split land into land (push the branch) and release (merge, last). Deploy the branch sha and observe BEFORE merging; release.merge_by replaces land.merge_by, which stays as an alias.
