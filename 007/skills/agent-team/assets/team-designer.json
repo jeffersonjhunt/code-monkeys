@@ -1,0 +1,29 @@
+{
+  "name": "team-designer",
+  "description": "UI/UX Designer — user flows, interaction design, interface specs, accessibility, and design systems",
+  "prompt": "file:///PLACEHOLDER/references/prompts/designer.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch",
+    "knowledge"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "knowledge"
+  ],
+  "toolsSettings": {
+    "shell": {
+      "denyByDefault": true
+    },
+    "write": {
+      "allowedPaths": ["**/project-output/**", "**/docs/**", "**/*.md"]
+    }
+  },
+  "welcomeMessage": "I'm the UI/UX Designer. I'll design user flows, interface specifications, and interaction patterns — with accessibility baked in from the start."
+}
