@@ -1,0 +1,37 @@
+{
+  "name": "team-tester",
+  "description": "QA Engineer — test strategy, test cases, validation, bug reporting, and coverage analysis",
+  "prompt": "file:///PLACEHOLDER/references/prompts/tester.md",
+  "tools": [
+    "read",
+    "write",
+    "shell",
+    "grep",
+    "glob",
+    "code",
+    "knowledge"
+  ],
+  "allowedTools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "code"
+  ],
+  "toolsSettings": {
+    "shell": {
+      "allowedCommands": [
+        "npm test *", "npm run test*",
+        "npx vitest *", "npx jest *", "npx playwright *",
+        "cargo test *",
+        "python -m pytest *", "uv run pytest *",
+        "go test *",
+        "make test*",
+        "git status", "git diff *",
+        "cat *", "ls *"
+      ],
+      "autoAllowReadonly": true
+    }
+  },
+  "welcomeMessage": "I'm the QA Engineer. I'll design test strategies, write test cases, validate behavior against requirements, and report any issues found."
+}

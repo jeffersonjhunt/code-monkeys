@@ -23,6 +23,8 @@ Each skill lives in its own directory and follows a standard structure:
 | [docs-issues](docs-issues/) | Manage markdown-based issues in docs/reviews/ and export to GitHub/GitLab/todo.md |
 | [spark-bench](spark-bench/) | Run LLM eval harnesses (AIME 25, GPQA, LiveCodeBench v6, tau2-bench, SWE-Bench Verified) against the spark-cluster from the x86 bench host |
 | [spark-build](spark-build/) | Build the `cuda-*` primate images on a spark-cluster node, draining it from the cluster first |
+| [sdlc](sdlc/) | The default software development lifecycle every agent follows — intake through release |
+| [agent-team](agent-team/) | Multi-agent team orchestration (PM, Architect, Developer, Designer, Tester, Reviewer) with HITL checkpoints at every phase |
 | [ios-xcodebuild](ios-xcodebuild/) | Bootstrap, build, and deploy iOS apps from a Docker container via SSH to a macOS host |
 
 ## Usage

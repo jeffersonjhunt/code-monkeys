@@ -1,0 +1,31 @@
+{
+  "name": "team-pm",
+  "description": "Project Manager — owns intake, planning, coordination, scope management, and delivery",
+  "prompt": "file:///PLACEHOLDER/references/prompts/pm.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch",
+    "knowledge",
+    "todo_list"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "knowledge",
+    "todo_list"
+  ],
+  "toolsSettings": {
+    "shell": {
+      "denyByDefault": true
+    },
+    "write": {
+      "allowedPaths": ["**/project-output/**", "**/docs/**", "**/*.md"]
+    }
+  },
+  "welcomeMessage": "I'm your Project Manager. Give me a project idea and I'll structure it into a clear brief with scope, milestones, and risk assessment for your approval."
+}

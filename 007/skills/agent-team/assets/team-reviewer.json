@@ -1,0 +1,25 @@
+{
+  "name": "team-reviewer",
+  "description": "Code Reviewer — reviews for quality, correctness, security, maintainability, and architecture compliance",
+  "prompt": "file:///PLACEHOLDER/references/prompts/reviewer.md",
+  "tools": [
+    "read",
+    "grep",
+    "glob",
+    "code",
+    "knowledge"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "code",
+    "knowledge"
+  ],
+  "toolsSettings": {
+    "shell": {
+      "denyByDefault": true
+    }
+  },
+  "welcomeMessage": "I'm the Code Reviewer. I'll evaluate code for correctness, security, maintainability, and architecture compliance — with specific, constructive feedback."
+}
