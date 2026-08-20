@@ -17,3 +17,8 @@ __pycache__/
 .pytest_cache/
 # sdlc skill: per-task lifecycle state, never committed
 .sdlc-state.json
+# retired openssl+S3 vault: legacy encrypted blobs and its sync marker. Secrets
+# never belong in this public repo, encrypted or not — see the Vault section in
+# README.md. Machines predating the SOPS+age migration still have these.
+*.vault
+.vault-synced
