@@ -235,7 +235,7 @@ can already decrypt, then commit + push hemlighet.
 ├── vimrc                  # vim config
 ├── toprc                  # top config
 ├── hooks/                 # git hooks (installed by setup)
-│   └── pre-commit         # warns if vault is stale
+│   └── pre-commit         # warns if vault is stale, or if keys are >30 days unrotated
 ├── jjh.zsh-theme          # custom zsh prompt theme (based on ys, adds conda env)
 ├── claude/                # Claude Code settings + custom commands
 │   ├── settings.json

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 #
-# pre-commit — warn if any vault is stale
+# pre-commit — warn if any vault is stale, or if keys are overdue for rotation
+#
+# Both checks are advisory: this hook never blocks a commit.
 #
 
 REPO_DIR="$(git rev-parse --show-toplevel)"
+
+# --- Stale vault ---
 
 if stale=$("$REPO_DIR/vault" status --local 2>/dev/null | grep "STALE"); then
   echo ""
@@ -11,6 +15,31 @@ if stale=$("$REPO_DIR/vault" status --local 2>/dev/null | grep "STALE"); then
   echo "$stale"
   echo "  Run './vault lock --keep' to re-encrypt into ~/hemlighet, then commit+push there."
   echo ""
+fi
+
+# --- Key rotation (monthly) ---
+#
+# .keys-rotated is per-machine state (gitignored). Its mtime is the clock, so
+# `date -u +%F > .keys-rotated` both records and resets the reminder. Age is
+# tested with find -mtime so the check works with BSD and GNU userland alike.
+
+ROTATION_DAYS=30
+ROTATION_STAMP="${REPO_DIR}/.keys-rotated"
+
+rotation_notice() {
+  echo ""
+  echo "WARNING: $1"
+  echo "  In scope: the vault-managed 'env' secrets (API keys, tokens), 'aws/'"
+  echo "  credentials, and any 'ssh/' keys you rotate on a schedule."
+  echo "  After rotating, re-encrypt and record the date:"
+  echo "    ./vault lock --keep && date -u +%F > .keys-rotated"
+  echo ""
+}
+
+if [[ ! -f "$ROTATION_STAMP" ]]; then
+  rotation_notice "key rotation has never been recorded."
+elif [[ -n "$(find "$ROTATION_STAMP" -maxdepth 0 -mtime "+${ROTATION_DAYS}" 2>/dev/null)" ]]; then
+  rotation_notice "keys not rotated in over ${ROTATION_DAYS} days (last recorded: $(head -1 "$ROTATION_STAMP" 2>/dev/null || echo unknown))."
 fi
 
 exit 0

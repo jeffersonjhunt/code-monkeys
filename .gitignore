@@ -17,3 +17,5 @@ __pycache__/
 .pytest_cache/
 # sdlc skill: per-task lifecycle state, never committed
 .sdlc-state.json
+# pre-commit key-rotation reminder: per-machine timestamp, not shared state
+.keys-rotated
