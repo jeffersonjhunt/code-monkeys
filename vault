@@ -210,6 +210,32 @@ _require_key() {
   fi
 }
 
+# vault's data directory is its own directory: the plaintext items live beside
+# the script and are gitignored, so they exist only in the main checkout. Run
+# from a linked worktree, lock sees an empty tree ("Nothing to lock") and unlock
+# would decrypt secrets into a scratch checkout that `git worktree remove`
+# deletes. Refuse instead.
+_require_main_checkout() {
+  local gitdir commondir main
+  gitdir=$(git -C "$SCRIPT_DIR" rev-parse --absolute-git-dir 2>/dev/null || true)
+  [[ -n "$gitdir" ]] || return 0            # not a git checkout at all: not our business
+  commondir=$(cd "$SCRIPT_DIR" && cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .)" && pwd)
+  [[ "$gitdir" == "$commondir" ]] && return 0
+
+  main="$(dirname "$commondir")"
+  echo "Error: vault is running from a linked git worktree." >&2
+  echo "         here: $SCRIPT_DIR" >&2
+  echo "  main checkout: $main" >&2
+  echo "" >&2
+  echo "  The plaintext items (ssh/, env, aws/, face, gitconfig) are gitignored, so they" >&2
+  echo "  exist only in the main checkout. From here, lock would find nothing to encrypt" >&2
+  echo "  and unlock would write your secrets into a throwaway worktree." >&2
+  echo "" >&2
+  echo "  Run it from the main checkout instead (switch branches there to test one):" >&2
+  echo "    cd $main && ./vault $*" >&2
+  exit 1
+}
+
 _select_items() {
   if [[ $# -eq 0 ]]; then
     echo "$ITEMS"
@@ -595,10 +621,10 @@ fi
 
 case "$1" in
   -h|--help) usage; exit 0 ;;
-  unlock) shift; do_unlock "$@" ;;
-  lock)   shift; do_lock "$@" ;;
-  rekey)  shift; do_rekey "$@" ;;
-  status) shift; do_status "$@" ;;
+  unlock) _require_main_checkout "$@"; shift; do_unlock "$@" ;;
+  lock)   _require_main_checkout "$@"; shift; do_lock "$@" ;;
+  rekey)  _require_main_checkout "$@"; shift; do_rekey "$@" ;;
+  status) _require_main_checkout "$@"; shift; do_status "$@" ;;
   sync)
     echo "vault sync is retired — hemlighet is a git repo now:" >&2
     echo "  git -C $HL pull / push" >&2
