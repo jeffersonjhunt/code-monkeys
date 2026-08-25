@@ -9,10 +9,32 @@
 #     absolute paths under cwd work as-is, not just relative paths)
 #   - AWS_* env vars forwarded
 #
+# Forwarding AWS_PROFILE is not enough on its own: with it unset the CLI
+# resolves the 'default' profile, so a ~/.aws holding only named profiles fails
+# with NoCredentials. When there is exactly one profile and no default, this
+# selects it and says so.
+#
 # Force the container path with: _AWS_FORCE_CONTAINER=1 aws ...
 #
 
 set -e
+
+# Profiles present in ~/.aws (config writes "[profile x]", credentials "[x]").
+# config's "[sso-session x]" / "[services x]" sections are deliberately skipped.
+_aws_profiles() {
+  { sed -nE 's/^\[profile ([^]]+)\][[:space:]]*$/\1/p; s/^\[(default)\][[:space:]]*$/\1/p' \
+      "$HOME/.aws/config"
+    sed -nE 's/^\[([^][:space:]]+)\][[:space:]]*$/\1/p' "$HOME/.aws/credentials"
+  } 2>/dev/null | sort -u
+}
+
+if [[ -z "${AWS_PROFILE:-}" ]] && ! _aws_profiles | grep -qx default; then
+  _only="$(_aws_profiles)"
+  if [[ -n "$_only" && "$(printf '%s\n' "$_only" | wc -l)" -eq 1 ]]; then
+    export AWS_PROFILE="$_only"
+    echo "aws shim: no 'default' AWS profile; using the only one present: ${AWS_PROFILE}" >&2
+  fi
+fi
 
 # Inode of this shim (follows symlinks). Used to skip ourselves on PATH.
 _inode() { ls -Lid "$1" 2>/dev/null | awk '{print $1}'; }
