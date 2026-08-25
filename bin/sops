@@ -21,13 +21,60 @@ _TOOL="sops"
 _IMAGE="nyckel"
 _REG="521147433280.dkr.ecr.us-east-1.amazonaws.com"
 
+# Profiles present in ~/.aws (config writes "[profile x]", credentials "[x]").
+_aws_profiles() {
+  # config carries "[profile x]" and "[default]"; skip its "[sso-session x]" and
+  # "[services x]" sections. credentials carries bare "[x]".
+  { sed -nE 's/^\[profile ([^]]+)\][[:space:]]*$/\1/p; s/^\[(default)\][[:space:]]*$/\1/p' \
+      "$HOME/.aws/config"
+    sed -nE 's/^\[([^][:space:]]+)\][[:space:]]*$/\1/p' "$HOME/.aws/credentials"
+  } 2>/dev/null | sort -u
+}
+
 if ! docker image inspect "${_IMAGE}:latest" >/dev/null 2>&1; then
-  echo "${_TOOL} shim: pulling ${_IMAGE} from ECR..." >&2
-  _tok="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-login-password --region us-east-1)"
-  if [[ -z "$_tok" ]]; then
-    echo "${_TOOL} shim: empty ECR token — check ~/.aws creds (or build locally: cd primates && make nyckel.build)" >&2
+  # inspect also fails when the daemon is unreachable, which is not the same as
+  # a missing image and must not be reported as one.
+  if ! docker version >/dev/null 2>&1; then
+    echo "${_TOOL} shim: cannot reach the docker daemon (the image may well exist)." >&2
+    echo "  On a host: is Docker running? Inside a primate container: prefix with sudo." >&2
     exit 1
   fi
+
+  # The aws-cli container has no AWS context of its own. With no AWS_PROFILE
+  # forwarded it resolves 'default', which does not exist on a machine whose
+  # only profile is named — and that surfaced as "empty ECR token", hiding the
+  # real cause.
+  if [[ -z "${AWS_PROFILE:-}" ]] && ! _aws_profiles | grep -qx default; then
+    _only="$(_aws_profiles)"
+    if [[ -n "$_only" && "$(printf '%s\n' "$_only" | wc -l)" -eq 1 ]]; then
+      export AWS_PROFILE="$_only"
+      echo "${_TOOL} shim: no 'default' AWS profile; using the only one present: ${AWS_PROFILE}" >&2
+    fi
+  fi
+
+  echo "${_TOOL} shim: pulling ${_IMAGE} from ECR..." >&2
+
+  _aws_mount=()
+  if [[ -d "$HOME/.aws" ]]; then
+    _aws_mount=(--volume "$(cd -P "$HOME/.aws" && pwd):/root/.aws:ro")
+  fi
+
+  _err="$(mktemp)"
+  if ! _tok="$(docker run --rm \
+        -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
+        -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+        "${_aws_mount[@]}" \
+        amazon/aws-cli ecr get-login-password --region us-east-1 2>"$_err")" \
+     || [[ -z "$_tok" ]]; then
+    echo "${_TOOL} shim: ECR authentication failed (AWS_PROFILE=${AWS_PROFILE:-<unset>})." >&2
+    sed 's/^/  /' "$_err" >&2
+    echo "  profiles in ~/.aws: $(_aws_profiles | tr '\n' ' ')" >&2
+    echo "  fix: export AWS_PROFILE=<name>, or build locally: cd primates && make nyckel.build" >&2
+    rm -f "$_err"
+    exit 1
+  fi
+  rm -f "$_err"
+
   printf '%s' "$_tok" | docker login --username AWS --password-stdin "$_REG" >/dev/null
   docker pull -q "${_REG}/codemonkeys/${_IMAGE}:latest" >/dev/null
   docker tag "${_REG}/codemonkeys/${_IMAGE}:latest" "${_IMAGE}:latest"
