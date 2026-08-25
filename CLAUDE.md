@@ -76,8 +76,21 @@ primates/build-push.sh cuda-comfy cuda-llama-cpp   # GPU images, on a GPU host o
 primates/manifest-push.sh                     # assemble multi-arch :latest via buildx imagetools
 ```
 
-Creds come from the host `~/.aws` (default profile = the scoped `fleet-ecr-push` identity, which covers
-`codemonkeys/*`). The **`primate <name>` shell function pulls from ECR on demand** (`_primate_ensure_image`) and
+Creds come from the host `~/.aws`, and the identity needs ECR access to `codemonkeys/*` (push for the
+scripts above, pull for everything else). **Profile resolution is not uniform**, which is worth knowing
+before debugging a `NoCredentials` failure — every entry point runs the AWS CLI in a container, so it
+sees only what is forwarded to it:
+
+| Entry point | Resolves |
+|---|---|
+| `vault`, `bin/{aws,age,age-keygen,sops}` | `AWS_PROFILE`, else `default`, else the sole profile if there is exactly one |
+| `primates/build-push.sh`, `primates/manifest-push.sh`, `primate`'s `_primate_ensure_image` | `AWS_PROFILE` or a `default` profile only |
+
+So on a host whose `~/.aws` holds only named profiles, the second row needs `AWS_PROFILE` exported.
+`_primate_ensure_image` additionally discards the login's stderr, so a credentials failure there shows
+up only as "could not be pulled from ECR".
+
+The **`primate <name>` shell function pulls from ECR on demand** (`_primate_ensure_image`) and
 retags to the local name, so a fresh host runs any primate without building it first.
 
 ## Key Conventions
