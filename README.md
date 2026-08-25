@@ -190,6 +190,7 @@ The plaintext files are gitignored here; the encrypted copies live in hemlighet 
 ```bash
 ./vault unlock [item...]   # decrypt from the hemlighet clone into the working tree (--force to overwrite)
 ./vault lock   [item...]   # encrypt into the hemlighet clone and remove plaintext (--keep to leave it)
+./vault lock --push        # ...and commit + push hemlighet in one go (otherwise it prints how)
 ./vault status             # per-item state + hemlighet git state (--local skips the fetch)
 ./vault rekey              # re-wrap data keys after editing recipients in hemlighet's .sops.yaml
 ```
@@ -202,7 +203,7 @@ theirs with `mv ~/hemlighet ~/.local/share/hemlighet`.
 
 Encryption runs containerized via the `nyckel` primate (age + sops; pulled from ECR on demand) — no
 host installs. `bin/{sops,age,age-keygen}` are matching shims for ad-hoc use. Machine-to-machine
-sync is just git: `lock` on one box, push hemlighet, pull + `unlock` on another. A machine can only
+sync is just git: `lock --push` on one box, then pull + `unlock` on another. A machine can only
 decrypt if its age key is a recipient — to add one, append its pubkey to the
 `code-monkeys/personal/.*` rule in hemlighet's `.sops.yaml`, run `./vault rekey` on a machine that
 can already decrypt, then commit + push hemlighet.
@@ -211,7 +212,7 @@ can already decrypt, then commit + push hemlighet.
 
 1. Create `ssh/`, `aws/`, and/or `env` with your credentials
 2. Clone your secrets repo to `~/.local/share/hemlighet` and give it a `.sops.yaml` rule for `code-monkeys/personal/.*`
-3. Run `./vault lock` to encrypt, then commit + push hemlighet
+3. Run `./vault lock --push` to encrypt and publish (or `./vault lock`, then commit + push hemlighet yourself)
 
 ## Repository Layout
 
