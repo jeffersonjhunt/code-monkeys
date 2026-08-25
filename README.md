@@ -11,7 +11,7 @@ cd primates
 make all
 ```
 
-This gives you a working shell environment and Docker images. To pull in secrets from a previous setup (needs a `~/hemlighet` clone and this machine's age key — see [Vault](#vault-optional)):
+This gives you a working shell environment and Docker images. To pull in secrets from a previous setup (needs a `~/.local/share/hemlighet` clone and this machine's age key — see [Vault](#vault-optional)):
 
 ```bash
 ./vault unlock
@@ -173,7 +173,7 @@ make upgrade                 # upgrade all
 ## Vault (optional)
 
 The `vault` script manages personal secrets as **SOPS + age** encrypted files stored in a separate
-private git repo (`~/hemlighet`, under `code-monkeys/personal/`) — one encrypted `.sops` file per
+private git repo (`~/.local/share/hemlighet`, under `code-monkeys/personal/`) — one encrypted `.sops` file per
 original file, binary mode, so everything round-trips byte-for-byte. This public repo never holds
 secrets, plaintext or encrypted. It manages five items:
 
@@ -188,13 +188,17 @@ secrets, plaintext or encrypted. It manages five items:
 The plaintext files are gitignored here; the encrypted copies live in hemlighet and travel via git.
 
 ```bash
-./vault unlock [item...]   # decrypt from ~/hemlighet into the working tree (--force to overwrite)
-./vault lock   [item...]   # encrypt into ~/hemlighet and remove plaintext (--keep to leave it)
+./vault unlock [item...]   # decrypt from the hemlighet clone into the working tree (--force to overwrite)
+./vault lock   [item...]   # encrypt into the hemlighet clone and remove plaintext (--keep to leave it)
 ./vault status             # per-item state + hemlighet git state (--local skips the fetch)
 ./vault rekey              # re-wrap data keys after editing recipients in hemlighet's .sops.yaml
 ```
 
 Once unlocked, `setup` symlinks `ssh` → `~/.ssh`, `aws` → `~/.aws`, and `gitconfig` → `~/.gitconfig`.
+
+The clone location resolves as `VAULT_HEMLIGHET`, then `${XDG_DATA_HOME:-~/.local/share}/hemlighet`,
+then a legacy `~/hemlighet` if one still exists — so older machines keep working until you move
+theirs with `mv ~/hemlighet ~/.local/share/hemlighet`.
 
 Encryption runs containerized via the `nyckel` primate (age + sops; pulled from ECR on demand) — no
 host installs. `bin/{sops,age,age-keygen}` are matching shims for ad-hoc use. Machine-to-machine
@@ -206,7 +210,7 @@ can already decrypt, then commit + push hemlighet.
 ### Creating the vault from scratch
 
 1. Create `ssh/`, `aws/`, and/or `env` with your credentials
-2. Clone your secrets repo to `~/hemlighet` and give it a `.sops.yaml` rule for `code-monkeys/personal/.*`
+2. Clone your secrets repo to `~/.local/share/hemlighet` and give it a `.sops.yaml` rule for `code-monkeys/personal/.*`
 3. Run `./vault lock` to encrypt, then commit + push hemlighet
 
 ## Repository Layout
@@ -214,7 +218,7 @@ can already decrypt, then commit + push hemlighet.
 ```
 .
 ├── setup                  # host machine setup script (symlinks dotfiles into $HOME)
-├── vault                  # secrets manager (SOPS + age via the nyckel primate; store = ~/hemlighet)
+├── vault                  # secrets manager (SOPS + age via the nyckel primate; store = ~/.local/share/hemlighet)
 ├── bin/                   # host shim scripts symlinked into ~/.local/bin/
 │   ├── aws                # local-first AWS CLI wrapper (falls back to minion container)
 │   └── sops, age, age-keygen  # shims running the tools in the nyckel primate

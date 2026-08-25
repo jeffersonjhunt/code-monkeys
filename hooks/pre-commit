@@ -13,7 +13,7 @@ if stale=$("$REPO_DIR/vault" status --local 2>/dev/null | grep "STALE"); then
   echo ""
   echo "WARNING: vault may be stale:"
   echo "$stale"
-  echo "  Run './vault lock --keep' to re-encrypt into ~/hemlighet, then commit+push there."
+  echo "  Run './vault lock --keep' to re-encrypt into the hemlighet clone, then commit+push there."
   echo ""
 fi
 
@@ -30,7 +30,13 @@ fi
 ROTATION_DAYS=30
 ROTATION_ITEMS="ssh env aws"
 
-HL="${VAULT_HEMLIGHET:-$HOME/hemlighet}"
+# Mirrors vault's resolution: explicit override, then the XDG data dir, then a
+# legacy ~/hemlighet clone if one still exists.
+HL="${VAULT_HEMLIGHET:-}"
+if [[ -z "$HL" ]]; then
+  HL="${XDG_DATA_HOME:-$HOME/.local/share}/hemlighet"
+  [[ ! -d "$HL/.git" && -d "$HOME/hemlighet/.git" ]] && HL="$HOME/hemlighet"
+fi
 HL_SUB="code-monkeys/personal"
 
 if [[ -d "$HL/.git" && -d "$HL/$HL_SUB" ]]; then
@@ -63,7 +69,7 @@ if [[ -d "$HL/.git" && -d "$HL/$HL_SUB" ]]; then
     echo "WARNING: vault credentials not rotated in over ${ROTATION_DAYS} days:"
     echo "  days  entry"
     printf '%s' "$overdue" | sort -rn | head -10 | sed 's/^/  /'
-    echo "  Rotate at the source, then: ./vault lock --keep && commit+push ~/hemlighet"
+    echo "  Rotate at the source, then: ./vault lock --keep && commit+push $HL"
     echo ""
   fi
 fi

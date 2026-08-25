@@ -31,21 +31,41 @@
 # Syncing is plain git now: commit + push the hemlighet clone after locking.
 #
 # Environment:
-#   VAULT_HEMLIGHET   hemlighet clone location (default: ~/hemlighet)
+#   VAULT_HEMLIGHET   hemlighet clone location. Default:
+#                     ${XDG_DATA_HOME:-~/.local/share}/hemlighet, falling back to
+#                     a legacy ~/hemlighet clone if one already exists there.
 #
 # New-machine setup:
-#   git clone ssh://git-codecommit.us-east-1.amazonaws.com/v1/repos/hemlighet ~/hemlighet
+#   git clone ssh://git-codecommit.us-east-1.amazonaws.com/v1/repos/hemlighet \
+#     ~/.local/share/hemlighet
 #   mkdir -p ~/.config/sops/age && cd ~/.config/sops/age \
 #     && age-keygen -o keys.txt && chmod 600 keys.txt          # bin/ shim
 #   # add the printed public key to the code-monkeys/personal rule in
 #   # hemlighet/.sops.yaml, then run './vault rekey' on a machine that can
 #   # already decrypt, and push.
 #
+# Moving an existing clone:
+#   mkdir -p ~/.local/share && mv ~/hemlighet ~/.local/share/hemlighet
+#
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HL="${VAULT_HEMLIGHET:-$HOME/hemlighet}"
+
+# Where the hemlighet clone lives. Resolution order:
+#   1. VAULT_HEMLIGHET      explicit override, always wins
+#   2. XDG data dir         ${XDG_DATA_HOME:-~/.local/share}/hemlighet — the default
+#   3. legacy ~/hemlighet   only if it already exists, so machines that predate
+#                           the move keep working until their clone is moved
+_default_hl() {
+  local xdg="${XDG_DATA_HOME:-$HOME/.local/share}/hemlighet"
+  if [[ ! -d "$xdg/.git" && -d "$HOME/hemlighet/.git" ]]; then
+    echo "$HOME/hemlighet"
+  else
+    echo "$xdg"
+  fi
+}
+HL="${VAULT_HEMLIGHET:-$(_default_hl)}"
 HL_SUB="code-monkeys/personal"
 AGE_DIR="$HOME/.config/sops/age"
 IMAGE="nyckel"
@@ -172,7 +192,11 @@ _nyckel() {
 _require_hl() {
   if [[ ! -d "$HL/.git" || ! -f "$HL/.sops.yaml" ]]; then
     echo "Error: hemlighet clone not found at $HL" >&2
+    echo "  mkdir -p $(dirname "$HL")" >&2
     echo "  git clone ssh://git-codecommit.us-east-1.amazonaws.com/v1/repos/hemlighet $HL" >&2
+    if [[ -d "$HOME/hemlighet" && "$HL" != "$HOME/hemlighet" ]]; then
+      echo "  (or move the legacy clone: mv $HOME/hemlighet $HL)" >&2
+    fi
     exit 1
   fi
 }

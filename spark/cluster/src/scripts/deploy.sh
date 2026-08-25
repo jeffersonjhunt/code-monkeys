@@ -28,7 +28,8 @@ COMPOSE_DIR="$(cd "$script_dir/../compose" && pwd)"
 # The vllm stack pulls the cuda-vllm primate from private ECR and gets its .env (HF_TOKEN + serving
 # config) by decrypting hemlighet on the target — replacing the retired ship-image.sh (host->host
 # docker save|ssh|load) and the tar'd plaintext .env. Matches g.deceiver's deploy path. The target host
-# needs ~/.aws, an age key (~/.config/sops/age/keys.txt), and a hemlighet clone.
+# needs ~/.aws, an age key (~/.config/sops/age/keys.txt), and a hemlighet clone in
+# ${XDG_DATA_HOME:-~/.local/share}/hemlighet (a legacy ~/hemlighet is still honoured).
 ECR_REGISTRY="${ECR_REGISTRY:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
 NYCKEL="$ECR_REGISTRY/codemonkeys/nyckel:latest"
 
@@ -99,13 +100,20 @@ TOK="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-logi
 [ -n "$TOK" ] || { echo "deploy: empty ECR token (aws creds on $(hostname)?)" >&2; exit 8; }
 echo "$TOK" | docker login --username AWS --password-stdin "$REG" >/dev/null
 # secrets: decrypt the vllm env (HF_TOKEN + config) from hemlighet -> .env
-[ -d "$HOME/hemlighet/.git" ] || { echo "deploy: ~/hemlighet not cloned on $(hostname) — clone it first" >&2; exit 9; }
-git -C "$HOME/hemlighet" pull -q --ff-only origin main 2>/dev/null || true
-docker run --rm -v "$HOME/.config/sops/age:/age:ro" -v "$HOME/hemlighet:/hl:ro" \
+# Clone location on the target: VAULT_HEMLIGHET, else the XDG data dir, else a
+# legacy ~/hemlighet — so hosts that predate the move keep deploying untouched.
+HL="${VAULT_HEMLIGHET:-}"
+if [ -z "$HL" ]; then
+  HL="${XDG_DATA_HOME:-$HOME/.local/share}/hemlighet"
+  if [ ! -d "$HL/.git" ] && [ -d "$HOME/hemlighet/.git" ]; then HL="$HOME/hemlighet"; fi
+fi
+[ -d "$HL/.git" ] || { echo "deploy: hemlighet not cloned on $(hostname) (looked in $HL) — clone it first" >&2; exit 9; }
+git -C "$HL" pull -q --ff-only origin main 2>/dev/null || true
+docker run --rm -v "$HOME/.config/sops/age:/age:ro" -v "$HL:/hl:ro" \
   -e SOPS_AGE_KEY_FILE=/age/keys.txt "$NYCKEL" \
   sops -d --input-type binary --output-type binary /hl/code-monkeys/cluster-vllm.env > .env.tmp
 mv .env.tmp .env && chmod 600 .env
-echo ">> decrypted .env from hemlighet"
+echo ">> decrypted .env from hemlighet ($HL)"
 docker compose pull
 docker compose up -d --force-recreate --remove-orphans
 docker logout "$REG" >/dev/null 2>&1 || true
