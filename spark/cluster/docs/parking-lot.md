@@ -150,3 +150,14 @@ prod hosts go **pull-only** (tighter blast radius, builds stop competing with in
 
 **Retry trigger:** a spare Spark (or any host not needed for serving) becomes available — move the
 push IAM identity + build caches there and downgrade the serving hosts to ECR pull-only.
+
+## Evaluate new Qwen / Kimi generations for the g.deceiver roles (fastpath / reasoning / coder)
+
+**Filed 2026-08-26** (g.deceiver feature-006 is the consumer-side tracker). Candidate refresh for
+the three LLM roles behind the LiteLLM LB. Not just a swap: needs (a) spark-bench baselines on the
+cluster for each candidate (the harness + intel-nuc bench host already exist), (b) **new custom
+tests for the actual use cases** — grounded QA against the corpus, persona adherence, classifier
+routing quality, `<tool_call>` parsing — since public benches don't measure what Gay does, and
+(c) the usual sm_121 kernel gauntlet for anything MoE/NVFP4 (see entries above; AWQ has been the
+reliable path). Kimi models are untested on Spark hardware entirely — start with a single-replica
+canary behind the LB's model map, never the serving pool.
