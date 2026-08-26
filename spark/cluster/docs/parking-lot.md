@@ -158,6 +158,8 @@ the three LLM roles behind the LiteLLM LB. Not just a swap: needs (a) spark-benc
 cluster for each candidate (the harness + intel-nuc bench host already exist), (b) **new custom
 tests for the actual use cases** — grounded QA against the corpus, persona adherence, classifier
 routing quality, `<tool_call>` parsing — since public benches don't measure what Gay does, and
-(c) the usual sm_121 kernel gauntlet for anything MoE/NVFP4 (see entries above; AWQ has been the
-reliable path). Kimi models are untested on Spark hardware entirely — start with a single-replica
-canary behind the LB's model map, never the serving pool.
+(c) the normal new-model checks — NVFP4/MoE serve fine on the cluster (native sm_121 cutlass in
+the locally-built cuda-vllm since 2026-05-08; the production coder IS Qwen3-Coder-Next-NVFP4), so
+the gauntlet is ordinary vLLM arch/quant support per candidate plus the known tool-call-parser
+caveat, not kernels. Kimi models are untested on Spark hardware entirely — start with a
+single-replica canary behind the LB's model map, never the serving pool.
