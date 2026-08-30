@@ -7,9 +7,14 @@ LiveCodeBench v6 runner — wraps lcb_runner.runner.main with two patches:
   2. Chdir's to /opt/livecodebench before invoking main, because lcb_runner
      looks up prompt files via relative paths (./lcb_runner/prompts/...).
 
-Defaults run a 30-problem subset of the v6 codegeneration scenario with
+Defaults run the FULL v6 codegeneration set with ONE sample per problem and
 --evaluate (executes generated code in subprocess sandboxes locally on the
-bench host). Pass --n 0 for the full ~300-problem set.
+bench host). For a subset pass --debug (lcb_runner's deterministic first-15
+slice) or a --start_date/--end_date window. CAUTION: --n is lcb_runner's
+SAMPLES PER PROBLEM (pass@k), not a subset size — `--n 20` on 2026-08-30
+queued ~21k generations and had to be killed, and the backlog outlived the
+client (LiteLLM does not propagate the disconnect), needing a vllm restart
+on the replica to clear.
 
 Usage:
     spark-bench python /opt/skill/scripts/run-lcb.py \\
