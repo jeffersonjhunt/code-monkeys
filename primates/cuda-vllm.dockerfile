@@ -66,16 +66,28 @@ RUN git clone --depth 1 --branch ${VLLM_VERSION} https://github.com/vllm-project
 # any torch reinstall resolves to the cu130 wheel.
 RUN pip install --extra-index-url ${TORCH_INDEX} -r vllm/requirements/cuda.txt
 
-# vLLM's [build-system].requires from pyproject.toml — must be present for
-# the no-build-isolation install of vllm itself. setuptools pinned <81.
+# vLLM's build requirements (requirements/build/cuda.txt, mirrored from
+# [build-system].requires) — must be present for the no-build-isolation
+# install of vllm itself. setuptools pinned <81. v0.28 added setuptools-rust:
+# setup.py imports it unconditionally (the 2026-08-30 build died on
+# "No module named 'setuptools_rust'"), but the Rust artifacts it describes —
+# the experimental vllm-rs frontend and vllm._rust_tool_parser (used only by
+# the MiniMax-M3 parser; hermes / qwen3_coder stay Python) — are declared
+# optional unless VLLM_REQUIRE_RUST_FRONTEND is set, so with no cargo in this
+# stage they are skipped with a warning, not a failure. Deliberate: we serve
+# the Python frontend. torch is already pinned above.
 RUN pip install \
         "cmake>=3.26.1" \
         ninja \
         "packaging>=24.2" \
         "setuptools>=77.0.3,<81.0.0" \
-        "setuptools-scm>=8.0" \
+        "setuptools-scm>=8" \
+        "setuptools-rust>=1.9.0" \
         wheel \
-        jinja2
+        "jinja2>=3.1.6" \
+        regex \
+        build \
+        "protobuf>=5.29.6,!=6.30.*,!=6.31.*,!=6.32.*,!=6.33.0.*,!=6.33.1.*,!=6.33.2.*,!=6.33.3.*,!=6.33.4.*"
 
 # Compile-tunables placed AFTER the multi-minute cached install steps so
 # future tweaks don't invalidate apt/torch/cuda.txt layers.
