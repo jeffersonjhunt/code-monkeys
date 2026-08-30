@@ -125,6 +125,9 @@ spark-bench sweagent run-batch \
 
 ## Recovery / Common Pitfalls
 
+- **Harness refs and `anthropic` are pinned** in `spark-bench.dockerfile` (`LCB_REF`, `TAU2_REF`,
+  `ANTHROPIC_VERSION`) to the 2026-08-30 image. Bumping any of them changes the harness itself, so
+  re-run the baseline side of every comparison you care about after a bump.
 - **`exec: "python": executable file not found in $PATH`** — the image's python lives in the
   `spark-bench-env` conda env, which only an *interactive* zsh activates (conda init in `~/.zshrc`).
   Images built before the `ENV PATH=/opt/miniforge3/envs/spark-bench-env/bin:…` line in

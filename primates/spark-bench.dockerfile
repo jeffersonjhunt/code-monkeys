@@ -28,8 +28,14 @@ RUN if [ "$UNSAFE_SSL" = "true" ]; then /opt/miniforge3/bin/conda config --set s
 # Pin versions where available; pull active git refs for the rest.
 ARG SWEBENCH_VERSION=4.1.0
 ARG SWEAGENT_REF=v1.1.0
-ARG TAU2_REF=main
-ARG LCB_REF=main
+# Pinned to the commits in the 2026-08-30 image (the one every A/B pair so far ran on).
+# `main` for both used to be the setting; an unpinned rebuild pulled anthropic 1.2.0,
+# whose removed HUMAN_PROMPT/AI_PROMPT constants LCB imports at load time (host,
+# 2026-08-30: "pin it when you rebuild the bench image"). A SHA cannot go through
+# `git clone --branch`, hence the checkout below. Bump deliberately, then re-baseline.
+ARG TAU2_REF=a2c024725189
+ARG LCB_REF=28fef95ea8c9
+ARG ANTHROPIC_VERSION=1.2.0
 
 # Install harness packages into spark-bench-env via uv (much faster resolver
 # than pip). uv is already on PATH from miniforge3 (symlinked to /usr/local/bin).
@@ -52,8 +58,10 @@ ARG LCB_REF=main
 # that point each library at its cloned data/config tree.
 RUN /opt/miniforge3/envs/${IMAGE_NAME}-env/bin/python -m pip install --upgrade pip \
     && git clone --depth 1 --branch ${SWEAGENT_REF} https://github.com/SWE-agent/SWE-agent.git /opt/sweagent \
-    && git clone --depth 1 --branch ${LCB_REF}      https://github.com/LiveCodeBench/LiveCodeBench.git /opt/livecodebench \
-    && git clone --depth 1 --branch ${TAU2_REF}     https://github.com/sierra-research/tau2-bench.git /opt/tau2-bench \
+    && git clone --filter=blob:none https://github.com/LiveCodeBench/LiveCodeBench.git /opt/livecodebench \
+    && git -C /opt/livecodebench checkout -q ${LCB_REF} \
+    && git clone --filter=blob:none https://github.com/sierra-research/tau2-bench.git /opt/tau2-bench \
+    && git -C /opt/tau2-bench checkout -q ${TAU2_REF} \
     && uv pip install --python /opt/miniforge3/envs/${IMAGE_NAME}-env/bin/python \
         $([ "$UNSAFE_SSL" = "true" ] && echo "--native-tls --allow-insecure-host pypi.org --allow-insecure-host files.pythonhosted.org") \
         "swebench==${SWEBENCH_VERSION}" \
@@ -61,6 +69,7 @@ RUN /opt/miniforge3/envs/${IMAGE_NAME}-env/bin/python -m pip install --upgrade p
         -e "/opt/livecodebench" \
         -e "/opt/tau2-bench" \
         "openai>=2.0" \
+        "anthropic==${ANTHROPIC_VERSION}" \
         "datasets<4.0" \
         "huggingface_hub" \
         "tiktoken" \
