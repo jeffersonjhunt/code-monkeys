@@ -160,6 +160,16 @@ def main():
     sys.argv = cli_argv
     from tau2.cli import main as tau2_main
     rc = tau2_main() or 0  # tau2.cli.main returns None on success
+    # tau2 saves simulations under $TAU2_DATA_DIR/simulations regardless of cwd, i.e. inside the
+    # container — copy this run's directories out to /results so they survive the container
+    # (2026-08-30: a 20-task run left an empty results dir and had to be `docker cp`'d back).
+    import shutil
+    sims = Path(os.environ.get("TAU2_DATA_DIR", "/opt/tau2-bench/data")) / "simulations"
+    if sims.is_dir():
+        for d in sims.iterdir():
+            if d.is_dir() and d.name >= ts.replace("-", "_"):
+                shutil.copytree(d, outdir / "simulations" / d.name, dirs_exist_ok=True)
+                print(f"[run-tau2] copied {d.name} -> {outdir / 'simulations'}")
     print(f"[run-tau2] exit {rc}")
     sys.exit(rc)
 

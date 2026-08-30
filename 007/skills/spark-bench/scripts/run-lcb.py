@@ -23,6 +23,17 @@ import shutil
 import sys
 from pathlib import Path
 
+# anthropic >= 1.x dropped the legacy completion-prompt constants, but
+# lcb_runner/prompts/test_output_prediction.py still does
+# `from anthropic import HUMAN_PROMPT, AI_PROMPT` at import time (LCB main,
+# 2026-08-30: "cannot import name 'HUMAN_PROMPT'"). We never use the Claude
+# path; supply the strings so the import succeeds. Must run before any
+# lcb_runner import.
+import anthropic  # noqa: E402
+for _name, _val in (("HUMAN_PROMPT", "\n\nHuman:"), ("AI_PROMPT", "\n\nAssistant:")):
+    if not hasattr(anthropic, _name):
+        setattr(anthropic, _name, _val)
+
 
 def register_spark_model(model_name: str):
     """Inject our cluster model into lcb_runner's hard-coded LanguageModelList

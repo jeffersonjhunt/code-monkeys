@@ -125,6 +125,16 @@ spark-bench sweagent run-batch \
 
 ## Recovery / Common Pitfalls
 
+- **Harness refs and `anthropic` are pinned** in `spark-bench.dockerfile` (`LCB_REF`, `TAU2_REF`,
+  `ANTHROPIC_VERSION`) to the 2026-08-30 image. Bumping any of them changes the harness itself, so
+  re-run the baseline side of every comparison you care about after a bump.
+- **`exec: "python": executable file not found in $PATH`** — the image's python lives in the
+  `spark-bench-env` conda env, which only an *interactive* zsh activates (conda init in `~/.zshrc`).
+  Images built before the `ENV PATH=/opt/miniforge3/envs/spark-bench-env/bin:…` line in
+  `spark-bench.dockerfile` need the command wrapped: `spark-bench /bin/zsh -ic 'python …'`
+  (or the explicit `/opt/miniforge3/envs/spark-bench-env/bin/python`). Rebuild to drop the wrapper —
+  but not in the middle of an A/B pair; the bench image must be identical on both sides.
+
 - **`docker: permission denied`** — `--group-add` failed. Run `stat -c '%g' /var/run/docker.sock` on the host to find the actual GID; export `SPARK_BENCH_DOCKER_GID` (not implemented yet) or fall back to `sudo` inside the container.
 - **SWE-Bench testbed image pull is slow/fails** — first run downloads ~50-100 GB of `swebench/sweb.eval.x86_64.*` images. Pre-pull manually on the bench host with `docker pull swebench/sweb.eval.x86_64.<problem_id>` if needed.
 - **Cluster endpoint errors mid-bench** — LiteLLM has no healthy backend for the requested `model` (the replica is draining for a build, etc.); with a single coding replica there is no failover, so this is a hard outage until it returns. Check `curl http://minerva:8888/v1/models` and the replica's own `curl http://hutch:8000/health`, then resume once vLLM is back up.
