@@ -98,6 +98,12 @@ ENV VLLM_BASE_URL=http://minerva.tworivers:8888/v1
 ENV OPENAI_API_BASE=${VLLM_BASE_URL}
 ENV OPENAI_API_KEY=spark-cluster-no-auth
 
+# The harness env must be on PATH for a NON-interactive exec too: the `spark-bench`
+# shim runs `docker run … spark-bench python …` directly, and only an interactive
+# zsh sources the conda init in ~/.zshrc. Without this line `python` is not found
+# (seen 2026-08-30 on a fresh intel-nuc build; the workaround was `/bin/zsh -ic`).
+ENV PATH=/opt/miniforge3/envs/${IMAGE_NAME}-env/bin:${PATH}
+
 WORKDIR /work
 USER codemonkey
 
