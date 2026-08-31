@@ -92,6 +92,10 @@ def main():
     ap.add_argument("-h", "--help", action="store_true")
     # Parse only our wrapper-specific flags; the rest fall through to lcb_runner
     args, passthrough = ap.parse_known_args()
+    # argparse keeps the "--" separator itself in the unknown-args list, and lcb_runner
+    # rejects it ("unrecognized arguments: --"). The docstring recommends the separator,
+    # so drop it here (2026-08-31: a timeout-override run died instantly on this).
+    passthrough = [a for i, a in enumerate(passthrough) if not (a == "--" and i == 0)]
 
     if args.help:
         print(__doc__)
