@@ -18,11 +18,13 @@ FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 # (~1.5 GB larger than a Spark-only build). Override to "12.0 12.1+PTX" for a
 # slimmer Spark-only build.
 ARG TORCH_CUDA_ARCH_LIST="8.9 12.0 12.1+PTX"
-ARG VLLM_VERSION=v0.21.0
-# Keep TORCH_VERSION at 2.11.0: vLLM v0.21.0's requirements/cuda.txt still
-# pins torch==2.11.0 / torchvision==0.26.0 / torchaudio==2.11.0. Bumping
-# torch here would conflict with vLLM's resolver during the pip step.
-ARG TORCH_VERSION=2.11.0
+ARG VLLM_VERSION=v0.28.0
+# TORCH_VERSION follows vLLM's requirements/cuda.txt EXACTLY (v0.28.0 pins
+# torch==2.13.0); any other value conflicts with vLLM's resolver during the
+# pip step. The index stays cu130 (cu132 only ships 2.12.x; cu128/cu129 were
+# dropped in 2.13). Verify per bump that the index publishes that torch for
+# aarch64 — the first `pip install torch` step is the proof, nothing earlier.
+ARG TORCH_VERSION=2.13.0
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu130
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -64,28 +66,41 @@ RUN git clone --depth 1 --branch ${VLLM_VERSION} https://github.com/vllm-project
 # any torch reinstall resolves to the cu130 wheel.
 RUN pip install --extra-index-url ${TORCH_INDEX} -r vllm/requirements/cuda.txt
 
-# vLLM's [build-system].requires from pyproject.toml — must be present for
-# the no-build-isolation install of vllm itself. setuptools pinned <81.
+# vLLM's build requirements (requirements/build/cuda.txt, mirrored from
+# [build-system].requires) — must be present for the no-build-isolation
+# install of vllm itself. setuptools pinned <81. v0.28 added setuptools-rust:
+# setup.py imports it unconditionally (the 2026-08-30 build died on
+# "No module named 'setuptools_rust'"), but the Rust artifacts it describes —
+# the experimental vllm-rs frontend and vllm._rust_tool_parser (used only by
+# the MiniMax-M3 parser; hermes / qwen3_coder stay Python) — are declared
+# optional unless VLLM_REQUIRE_RUST_FRONTEND is set, so with no cargo in this
+# stage they are skipped with a warning, not a failure. Deliberate: we serve
+# the Python frontend. torch is already pinned above.
 RUN pip install \
         "cmake>=3.26.1" \
         ninja \
         "packaging>=24.2" \
         "setuptools>=77.0.3,<81.0.0" \
-        "setuptools-scm>=8.0" \
+        "setuptools-scm>=8" \
+        "setuptools-rust>=1.9.0" \
         wheel \
-        jinja2
+        "jinja2>=3.1.6" \
+        regex \
+        build \
+        "protobuf>=5.29.6,!=6.30.*,!=6.31.*,!=6.32.*,!=6.33.0.*,!=6.33.1.*,!=6.33.2.*,!=6.33.3.*,!=6.33.4.*"
 
 # Compile-tunables placed AFTER the multi-minute cached install steps so
 # future tweaks don't invalidate apt/torch/cuda.txt layers.
 #
 # vLLM's setup.py:191 computes ninja -j as (MAX_JOBS // NVCC_THREADS).
 # Heavy cutlass templates (NVFP4, MLA, machete, qutlass) want 10–15 GB each.
-# Defaults (MAX_JOBS=16 / NVCC_THREADS=4 → 4 parallel ninja jobs, ~48–60 GB
-# peak) are sized for a 121 GB DGX Spark. On a low-RAM x86 host (the 4090 boxes
+# Defaults (MAX_JOBS=24 / NVCC_THREADS=4 → 6 parallel ninja jobs, ~70–90 GB
+# peak) are sized for a 121 GB DGX Spark: the 0.21 build at 16/4 left 21 % CPU /
+# 17 % RAM headroom on hutch (CHANGELOG 2026-05-23). On a low-RAM x86 host (the 4090 boxes
 # have ~30 GB) override BOTH to a small equal value to force a single parallel
 # job, e.g. --build-arg MAX_JOBS=6 --build-arg NVCC_THREADS=6 → 1 ninja job,
 # ~15 GB peak. Slower (cutlass templates compile mostly serially) but fits.
-ARG MAX_JOBS=16
+ARG MAX_JOBS=24
 ARG NVCC_THREADS=4
 ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 ENV NVCC_THREADS=${NVCC_THREADS}
