@@ -102,7 +102,9 @@ spark-bench python -m <runner>
 ### LiveCodeBench v6
 
 ```bash
-spark-bench python -m lcb_runner.runner.main --model "$SPARK_BENCH_MODEL" --scenario codegeneration
+# subset: --debug = deterministic first 15 problems; --n = SAMPLES PER PROBLEM (not a subset!)
+spark-bench python /opt/skill/scripts/run-lcb.py --debug --n 1
+spark-bench python /opt/skill/scripts/run-lcb.py            # full v6 set, 1 sample per problem
 ```
 
 ### tau2-bench
