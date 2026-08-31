@@ -21,7 +21,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-ARG COMFYUI_VERSION=v0.22.0
+ARG COMFYUI_VERSION=v0.34.2
+# torch stays 2.11.0: torchaudio froze at 2.11 (maintenance mode) and its cu130 wheel
+# pins torch==2.11, so the 2.13 line the vLLM stack moved to is unreachable here
+# until torchaudio is dropped or unfrozen. App-level parity only.
 RUN git clone --branch ${COMFYUI_VERSION} --depth 1 https://github.com/Comfy-Org/ComfyUI.git .
 
 ARG PYTORCH_VERSION=2.11.0

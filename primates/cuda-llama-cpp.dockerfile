@@ -17,7 +17,7 @@ FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 ARG CUDA_DOCKER_ARCH=89;120;121
 
 # Clone llama.cpp at build time
-ARG LLAMA_CPP_VERSION=b9296
+ARG LLAMA_CPP_VERSION=b10679
 
 RUN apt-get update && \
     apt-get install -y build-essential cmake python3 python3-pip git libcurl4-openssl-dev libgomp1 && \
