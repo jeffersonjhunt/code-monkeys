@@ -48,7 +48,7 @@ services:
       - --tensor-parallel-size
       - "${VLLM_TP_SIZE:-1}"
       - --gpu-memory-utilization
-      - "${VLLM_GPU_MEM_UTIL:-0.90}"
+      - "${VLLM_GPU_MEM_UTIL:-0.85}"  # vLLM >=0.28 enforces free-mem >= util at startup; GB10 UMA holds ~14 GiB for the OS, so 0.90 can never pass (g.deceiver docs/plans/cuda-vllm-028.md)
       - --max-model-len
       - "${VLLM_MAX_MODEL_LEN:-32768}"
       - --max-num-seqs
