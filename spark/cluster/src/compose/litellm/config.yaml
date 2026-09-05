@@ -5,7 +5,7 @@
 # by `model` name, so a single endpoint fronts BOTH GPU boxes serving DIFFERENT
 # models:
 #
-#   model: qwen3-coder-next     -> hutch   (coding cluster / opencode)
+#   model: qwen3-coder-next     -> starsky (27B FP8 no-think; standalone coder retired 2026-09)
 #   model: reasoning            -> starsky (dev/opencode-facing, full 128k)
 #   model: gdeceiver-reasoning  -> starsky (gay/g.deceiver-facing, SAME backend, light 32k/8k)
 #
@@ -25,10 +25,22 @@
 # An unknown `model` is rejected by LiteLLM (no silent fan-out to the wrong box).
 
 model_list:
+  # Coding is served by the CONSOLIDATED reasoning engine on starsky (Qwen3.8-27B-FP8),
+  # not a dedicated coder. The standalone RedHatAI/Qwen3-Coder-Next-NVFP4 on hutch is retired
+  # (2026-09): a bake-off had the 27B FP8 (no-think) *beat* it — HumanEval 0.967 vs 0.850,
+  # tau2-retail 0.95 vs 0.60 — so one model now does reason+code+caption+vision and hutch's
+  # ~80 GB is freed. `enable_thinking: false` forces the no-think path that was benchmarked
+  # (thinking-on adds ~2x latency for no code-quality gain). Name kept as `qwen3-coder-next`
+  # so every existing client (opencode, spark-bench) moves transparently with no client change.
+  # NOTE: this now shares starsky with the live co-host. Single-operator use never streams+codes
+  # at once, so it is left UNTHROTTLED (unlike the `reasoning` alias); add rpm/max_parallel_requests
+  # here if coding is ever run alongside a live stream.
   - model_name: qwen3-coder-next
     litellm_params:
-      model: hosted_vllm/qwen3-coder-next
-      api_base: http://hutch.tworivers:8000/v1
+      model: hosted_vllm/reasoning
+      api_base: http://starsky.tworivers:8000/v1
+      chat_template_kwargs:
+        enable_thinking: false
 
   # Dev / opencode-facing reasoning: full 128k, but rate- and concurrency-limited so
   # it can never occupy more than a few of starsky's ~10 batch slots — the rest stay
