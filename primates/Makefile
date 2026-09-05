@@ -6,11 +6,12 @@ KERNEL := $(shell uname -r)
 REPO_ROOT := $(abspath $(dir $(MAKEFILE_PATH))/..)
 
 # Single source of truth for the fleet roster — see primates/fleet.conf for the field layout.
-# `make all` builds in_all=yes rows; `make upgrade` walks home_volume=yes rows (codemonkey is
-# prepended explicitly, as it always was). Row order in fleet.conf is the build order.
+# `make all` builds in_all=yes rows; `make upgrade` walks home_volume=yes rows — codemonkey
+# included, since its row says home_volume=yes and it has a codemonkey-home volume like any
+# other. Row order in fleet.conf is the build order.
 FLEET := $(REPO_ROOT)/primates/fleet.conf
 TARGETS := $(shell awk -F: '!/^#/ && $$3=="yes" {print $$1}' $(FLEET) 2>/dev/null)
-UPGRADE_TARGETS := $(shell awk -F: '!/^#/ && $$7=="yes" && $$1!="codemonkey" {print $$1}' $(FLEET) 2>/dev/null)
+UPGRADE_TARGETS := $(shell awk -F: '!/^#/ && $$7=="yes" {print $$1}' $(FLEET) 2>/dev/null)
 
 BUILD_ARGS ?=
 ifdef FORCE
@@ -132,7 +133,7 @@ claude.build:
 
 .PHONY:
 upgrade: _fleet_check
-	@for name in codemonkey $(UPGRADE_TARGETS); do \
+	@for name in $(UPGRADE_TARGETS); do \
 		$(MAKE) --no-print-directory $$name.upgrade; \
 	done
 

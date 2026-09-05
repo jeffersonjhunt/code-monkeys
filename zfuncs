@@ -201,15 +201,15 @@ function primate-upgrade() {
   local __IMAGES=("$@")
 
   if [[ "$1" == "--all" ]]; then
-    # home_volume=yes rows from primates/fleet.conf, minus codemonkey (upgraded unconditionally
-    # below via _primate_ensure_image). Same field the Makefile's UPGRADE_TARGETS reads, so the
-    # two entry points cannot drift.
+    # home_volume=yes rows from primates/fleet.conf — codemonkey included, exactly as the
+    # Makefile's UPGRADE_TARGETS reads it. _primate_ensure_image below only PULLS that image;
+    # it does not upgrade codemonkey-home, so excluding it here would skip that volume.
     local __FLEET="${__REPO}/primates/fleet.conf"
     if [[ ! -r "$__FLEET" ]]; then
       echo "ERROR: ${__FLEET} missing or unreadable — refusing to silently upgrade zero primates" >&2
       return 1
     fi
-    local known=(${(f)"$(awk -F: '!/^#/ && $7=="yes" && $1!="codemonkey" {print $1}' "$__FLEET")"})
+    local known=(${(f)"$(awk -F: '!/^#/ && $7=="yes" {print $1}' "$__FLEET")"})
     if [[ ${#known[@]} -eq 0 ]]; then
       echo "ERROR: ${__FLEET} parsed to zero home_volume=yes primates — check its format" >&2
       return 1
