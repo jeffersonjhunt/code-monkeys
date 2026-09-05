@@ -64,6 +64,20 @@ function _primate_ensure_image() {
   fi
 }
 
+# gid to --group-add alongside the /var/run/docker.sock mount so the unprivileged codemonkey
+# user can open the socket without anyone touching its perms (mirrors bin/spark-bench).
+# Linux: the socket's real group (the host's `docker` group, or 0 inside a Docker Desktop VM).
+# macOS: the host-side stat is meaningless — Docker Desktop's VM presents the socket to
+# containers as root:root 660 — so the answer is always 0. --group-add 0 grants only the root
+# *group* (the socket's rw group bit), not root privileges.
+function _primate_docker_gid() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo 0
+  else
+    stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 0
+  fi
+}
+
 # starts a primate container with a persistent home volume
 function primate() {
 
@@ -131,7 +145,7 @@ function primate() {
 
   local __DOCKER_MOUNT=()
   if [[ -S /var/run/docker.sock ]]; then
-    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock)
+    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock --group-add "$(_primate_docker_gid)")
   fi
 
   docker run --rm -it \
@@ -333,7 +347,7 @@ function primate-session() {
 
   local __DOCKER_MOUNT=()
   if [[ -S /var/run/docker.sock ]]; then
-    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock)
+    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock --group-add "$(_primate_docker_gid)")
   fi
 
   echo "creating detached session ${__NAME} from ${__IMAGE} (home volume ${__IMAGE}-home)"
