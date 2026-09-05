@@ -78,16 +78,24 @@ RUN curl $([ "$UNSAFE_SSL" = "true" ] && echo "--insecure") -sL "https://awscli.
   && /tmp/aws/install \
   && rm -rf /tmp/aws /tmp/awscliv2.zip
 
-# Docker CLI + Buildx (for Docker-out-of-Docker via socket mount)
+# Docker CLI + Buildx + Compose (for Docker-out-of-Docker via socket mount), plus acl for
+# setfacl. The compose plugin was missing until 2026-09, which left `docker compose` an
+# "unknown command" inside every primate even once the socket worked.
 RUN install -m 0755 -d /etc/apt/keyrings \
   && curl $([ "$UNSAFE_SSL" = "true" ] && echo "--insecure") -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
   && chmod a+r /etc/apt/keyrings/docker.asc \
   && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list \
   && if [ "$UNSAFE_SSL" = "true" ]; then echo 'Acquire::https::Verify-Peer "false";' > /etc/apt/apt.conf.d/99no-ssl-verify; fi \
   && apt-get update \
-  && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin \
+  && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin docker-compose-plugin acl \
   && rm -f /etc/apt/apt.conf.d/99no-ssl-verify \
   && rm -rf /var/lib/apt/lists/*
+
+# Docker-out-of-Docker shim: /usr/local/bin/docker shadows /usr/bin/docker on PATH. When the
+# mounted socket is group-accessible (primate() passes --group-add <socket gid>) it exec's the
+# real CLI; when it is denied it falls back to the NOPASSWD sudo quietly. See docker-shim.
+COPY docker-shim /usr/local/bin/docker
+RUN chmod 0755 /usr/local/bin/docker
 
 # make clams fresh (skip if FRESH=false, or if UNSAFE_SSL=true since freshclam requires valid certs)
 RUN if [ "${FRESH}" != "false" ] && [ "${UNSAFE_SSL}" != "true" ]; then \
