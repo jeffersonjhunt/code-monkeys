@@ -20,7 +20,7 @@ Three things matter and the rest follows:
 
 1. **Bench host is x86** (intel-nuc.tworivers). SWE-Bench's testbed Docker images are published as `swebench/sweb.eval.x86_64.*` — they qemu-emulate badly on aarch64. The bench harness runs here; vLLM stays on the GPU box (hutch).
 2. **Bench host needs the host Docker daemon** for SWE-Bench's sandbox spawning. Pattern is Docker-out-of-Docker — mount `/var/run/docker.sock`, add the matching group GID. The `spark-bench` wrapper does this automatically.
-3. **Endpoint URL switches the model under test.** Default points at the cluster LB — the **LiteLLM router** at `http://minerva.tworivers:8888/v1`, which routes the `qwen3-coder-next` model to hutch. (The old HAProxy LB on `starsky:8080` was retired in June 2026; that endpoint is dead.) Override `VLLM_BASE_URL` and `SPARK_BENCH_MODEL` to point at any other OpenAI-compatible endpoint (e.g. an ad-hoc `vllm serve` on `http://hutch.tworivers:8001/v1`).
+3. **Endpoint URL switches the model under test.** Default points at the cluster LB — the **LiteLLM router** at `http://minerva.tworivers:8888/v1`, which routes the `code` model to starsky (Qwen3.8-27B-FP8; the standalone coder was retired 2026-09). (The old HAProxy LB on `starsky:8080` was retired in June 2026; that endpoint is dead.) Override `VLLM_BASE_URL` and `SPARK_BENCH_MODEL` to point at any other OpenAI-compatible endpoint (e.g. an ad-hoc `vllm serve` on `http://hutch.tworivers:8001/v1`).
 
 ## When to Use
 
@@ -166,7 +166,7 @@ rsync -av jhunt@intel-nuc.tworivers:~/spark-bench/results/ ./bench-results/
 
 When the user asks to run a benchmark or compare two models:
 
-1. Confirm which endpoint(s) and model name(s) — the cluster LB (LiteLLM on `minerva:8888`, model `qwen3-coder-next`) is the default baseline; test endpoints are ad-hoc per investigation.
+1. Confirm which endpoint(s) and model name(s) — the cluster LB (LiteLLM on `minerva:8888`, model `code`) is the default baseline; test endpoints are ad-hoc per investigation.
 2. Default to **subsets first** (e.g. `--instances.slice=:20` for SWE-Bench, `--num_tasks 20` for tau2-bench) — full runs take hours-to-days on the 4-core bench host.
 3. After each run, summarise the headline metric and save raw output for rsync-back. Do not commit raw output to the repo.
 4. For A/B comparisons, run the **same harness invocation** against both endpoints back-to-back so sampling parameters and prompt templates are identical.

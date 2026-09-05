@@ -59,7 +59,7 @@ When the `cuda-vllm` image is rebuilt, **push it to ECR** (native-on-host → `c
 
 ## Status
 
-The sole coding replica `hutch` is healthy on `RedHatAI/Qwen3-Coder-Next-NVFP4`, served by the locally-built **`cuda-vllm`** image (native sm_121 cutlass; the NVFP4 path was first unblocked 2026-05-08 under the image's former name `vllm-spark`, renamed to `cuda-vllm` 2026-06-07). Tool calling works in `auto` mode via the `qwen3_coder` parser (known caveat: occasional malformed JSON in tool-call arguments — see memory note). The **LiteLLM router** on `minerva:8888` routes by model name (`qwen3-coder-next` → hutch); failover drill validated. Cluster peak ~752 tok/s aggregate at c=32 (measured on the prior AWQ canary; NVFP4 numbers in `CHANGELOG.md`). Current phase and history live in `TASKS.md` and `CHANGELOG.md`.
+**Coding is served by the consolidated `Qwen/Qwen3.8-27B-FP8` engine on `starsky`** (served-name `reasoning`, run no-think for code) via the **LiteLLM** `code` route on `minerva:8888`. The standalone `RedHatAI/Qwen3-Coder-Next-NVFP4` on `hutch` was **retired 2026-09-05** — a bake-off had the 27B FP8 beat it on both code and tool-calling (HumanEval 0.967 vs 0.850, tau2 0.95 vs 0.60), so one engine now serves reason+code+caption+vision and hutch's ~80 GB was freed (it now runs the g.deceiver memory stack + is the bench/failover box). The route was renamed `qwen3-coder-next` → `code` on 2026-09-05 (the old name lied about the model). Current phase and history live in `TASKS.md` and `CHANGELOG.md`.
 
 ## Layout
 

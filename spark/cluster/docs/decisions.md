@@ -8,7 +8,7 @@ The 2026-06-10 split left two boxes serving two different models (coder on hutch
 
 Replaced the HAProxy LB with a **LiteLLM proxy** (`src/compose/litellm/`, pinned `ghcr.io/berriai/litellm:v1.90.0`, `network_mode: host` on `minerva:8888`). It routes by the OpenAI `model` field via a declarative `config.yaml` map:
 
-- `qwen3-coder-next` → `hutch.tworivers:8000` (coding cluster / opencode)
+- `code` → `starsky.tworivers:8000` (coding — Qwen3.8-27B-FP8 no-think; standalone coder retired 2026-09-05, renamed from `qwen3-coder-next`)
 - `reasoning` → `starsky.tworivers:8000` (g.deceiver reasoning-llm)
 - unknown `model` → HTTP 400 (no silent misroute)
 

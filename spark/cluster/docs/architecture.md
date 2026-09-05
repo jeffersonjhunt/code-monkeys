@@ -18,7 +18,7 @@ ConnectX-7 direct link between the two boxes is left in place but unused. If we 
 A **LiteLLM** model-aware router on `$LB_HOST` (replaced the round-robin HAProxy 2026-06-28; see `docs/decisions.md` + CHANGELOG):
 
 - Front: HTTP on `0.0.0.0:$LB_PORT`
-- Routing: **by request `model` name**, not round-robin — a single endpoint fronts both GPU boxes serving *different* models. `qwen3-coder-next` → hutch, `reasoning` → starsky, `caption` → starsky. Backends are addressed by FQDN (DNS is the source of truth); an unknown `model` is rejected rather than fanned out.
+- Routing: **by request `model` name**, not round-robin — a single endpoint fronts both GPU boxes serving *different* models. `code` → starsky, `reasoning` → starsky, `caption` → starsky (all one 27B FP8 engine; standalone coder retired 2026-09). Backends are addressed by FQDN (DNS is the source of truth); an unknown `model` is rejected rather than fanned out.
 - Config: `src/compose/litellm/config.yaml` (`model_list` maps each model name to a `hosted_vllm/` backend `api_base`)
 - Failover behavior: a second backend for the same model name is just another `model_list` entry, load-balanced by LiteLLM
 

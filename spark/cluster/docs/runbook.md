@@ -20,7 +20,7 @@ exactly what happened after the 2026-07-01 bare-metal migration). Restore it (co
 ```bash
 ./src/scripts/deploy.sh minerva.tworivers litellm   # tars config -> /home/gdeceiver/spark-deploy/litellm, up -d
 # verify both routes through the LB:
-curl -s http://minerva.tworivers:8888/v1/models   # expect reasoning, qwen3-coder-next (+ caption)
+curl -s http://minerva.tworivers:8888/v1/models   # expect reasoning, code (+ caption)
 ```
 
 `restart: unless-stopped` survives reboots, so this is only needed after a host rebuild or an explicit
@@ -33,7 +33,7 @@ rows gated on the LB actually routing them, g.deceiver `v0.7.19`), so a dead rou
 |-----------------------------------|---------------------|-----------------------------------------------|
 | `http://minerva:8888`             | LB (LiteLLM)        | OpenAI-compatible API; what clients use        |
 | `http://hutch:8000`               | direct replica      | Bypass LB; debugging                           |
-| `http://minerva:8888/v1/models`   | LB (LiteLLM)        | Configured model routes (`reasoning`, `qwen3-coder-next`, `caption`) |
+| `http://minerva:8888/v1/models`   | LB (LiteLLM)        | Configured model routes (`reasoning`, `code`, `caption`) |
 | `http://minerva:8888/health/liveliness` | LB (LiteLLM)  | LiteLLM router self-healthcheck                |
 
 ## Health check
@@ -81,7 +81,7 @@ Hit rate ≈ `hits / queries`. Healthy agent traffic should see ≥ 50 %.
 LiteLLM has no `:8404` stats UI. Ask the router which model routes are live, and hit its healthcheck:
 
 ```bash
-curl -s http://minerva:8888/v1/models          # expect reasoning, qwen3-coder-next, caption
+curl -s http://minerva:8888/v1/models          # expect reasoning, code, caption
 curl -s http://minerva:8888/health/liveliness   # LiteLLM self-healthcheck
 ```
 
