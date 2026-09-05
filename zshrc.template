@@ -5,7 +5,14 @@ source ${HOME}/.zbase
 #
 
 if [[ -f /.dockerenv ]]; then
-  find "${HOME}" -maxdepth 1 -not -user codemonkey -exec sudo chown -R codemonkey:codemonkey {} +
+  # Only the workspace bind mount is ours to rewrite. The home volume's own contents are already
+  # uid-1000 owned (codemonkey.dockerfile chowns them at build), and ~/.ssh / ~/.aws are HOST
+  # credential mounts — a recursive chown there mutates the host's inodes, outside the container.
+  # This is an allowlist on purpose: a denylist would have to be remembered every time another
+  # mount appears under $HOME, which is the failure mode that produced this bug.
+  if [[ -d "${HOME}/workspace" ]] && [[ "$(stat -c %U "${HOME}/workspace" 2>/dev/null)" != codemonkey ]]; then
+    sudo chown -R codemonkey:codemonkey "${HOME}/workspace"
+  fi
 
   # Docker socket GID fixup for containers started WITHOUT primate()'s --group-add: put
   # codemonkey in the socket's group for future logins (docker exec / newgrp). The current
