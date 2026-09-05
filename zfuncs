@@ -66,6 +66,24 @@ function _primate_ensure_image() {
   fi
 }
 
+# Resolve the fleet inventory. On the host, ~/.zfuncs is a symlink into the repo checkout, so the
+# repo-relative path wins. Inside a primate, ~/.zfuncs is a COPY (upgrade-home.sh / the image bake),
+# so that path does not exist and we fall back to ~/.fleet.conf — which is itself a copy of the same
+# primates/fleet.conf, installed by codemonkey.dockerfile and refreshed by upgrade-home.sh. Both are
+# derived from the one source of truth; neither is a hand-maintained list. Prints the resolved path.
+function _primate_fleet_conf() {
+  local __repo_fleet="${${(%):-%x}:A:h}/primates/fleet.conf"
+  local __home_fleet="${HOME}/.fleet.conf"
+  local __f
+  for __f in "$__repo_fleet" "$__home_fleet"; do
+    if [[ -r "$__f" && -s "$__f" ]]; then
+      print -r -- "$__f"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # gid to --group-add alongside the /var/run/docker.sock mount so the unprivileged codemonkey
 # user can open the socket without anyone touching its perms (mirrors bin/spark-bench).
 # Linux: the socket's real group (the host's `docker` group, or 0 inside a Docker Desktop VM).
@@ -174,12 +192,15 @@ function primate() {
 function _primate() {
   # All fleet primates — any not present locally is pulled from ECR on demand by _primate_ensure_image,
   # so offer the full set (names match the ECR repos under codemonkeys/*), not just locally-built images.
-  # Read from primates/fleet.conf with no predicate: every row is a valid completion target, whether or
-  # not a bare build-push/manifest-push run sweeps it up. Read inside the function, never at source time.
-  local __FLEET="${${(%):-%x}:A:h}/primates/fleet.conf"
-  local known_primates=(${(f)"$(awk -F: '!/^#/{print $1}' "$__FLEET" 2>/dev/null)"})
+  # No membership predicate: every well-formed row is a valid completion target, whether or not a bare
+  # build-push/manifest-push run sweeps it up. NF==7 is a SHAPE check, not a membership one — without it
+  # a malformed inventory would be offered verbatim as primate names instead of erroring like the other
+  # consumers do. Read inside the function, never at source time.
+  local __FLEET
+  __FLEET="$(_primate_fleet_conf)"
+  local known_primates=(${(f)"$(awk -F: '!/^#/ && NF==7 {print $1}' "$__FLEET" 2>/dev/null)"})
   if [[ ${#known_primates[@]} -eq 0 ]]; then
-    _message "ERROR: ${__FLEET} missing/empty/unreadable — primate name completion unavailable"
+    _message "ERROR: no readable, well-formed fleet inventory (primates/fleet.conf or ~/.fleet.conf) — primate name completion unavailable"
     return 1
   fi
 
@@ -204,12 +225,12 @@ function primate-upgrade() {
     # home_volume=yes rows from primates/fleet.conf — codemonkey included, exactly as the
     # Makefile's UPGRADE_TARGETS reads it. _primate_ensure_image below only PULLS that image;
     # it does not upgrade codemonkey-home, so excluding it here would skip that volume.
-    local __FLEET="${__REPO}/primates/fleet.conf"
-    if [[ ! -r "$__FLEET" ]]; then
-      echo "ERROR: ${__FLEET} missing or unreadable — refusing to silently upgrade zero primates" >&2
+    local __FLEET
+    if ! __FLEET="$(_primate_fleet_conf)"; then
+      echo "ERROR: no readable fleet inventory (tried the repo's primates/fleet.conf and ${HOME}/.fleet.conf) — refusing to silently upgrade zero primates" >&2
       return 1
     fi
-    local known=(${(f)"$(awk -F: '!/^#/ && $7=="yes" {print $1}' "$__FLEET")"})
+    local known=(${(f)"$(awk -F: '!/^#/ && NF==7 && $7=="yes" {print $1}' "$__FLEET")"})
     if [[ ${#known[@]} -eq 0 ]]; then
       echo "ERROR: ${__FLEET} parsed to zero home_volume=yes primates — check its format" >&2
       return 1

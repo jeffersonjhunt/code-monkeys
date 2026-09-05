@@ -26,6 +26,10 @@ cp "$SRC/toprc"          "$HOME/.toprc"
 cp "$SRC/tmux.conf"      "$HOME/.tmux.conf"
 cp "$SRC/zshrc.template" "$HOME/.zshrc"
 cp "$SRC/zfuncs"         "$HOME/.zfuncs"
+# ~/.zfuncs is a COPY in here, not the repo symlink, so its fleet consumers cannot reach
+# $SRC/primates/fleet.conf at runtime. Install the inventory beside it, derived from the same
+# single source — never a second hand-maintained list.
+cp "$SRC/primates/fleet.conf" "$HOME/.fleet.conf"
 
 # oh-my-zsh update
 if [ -d "$HOME/.oh-my-zsh" ]; then

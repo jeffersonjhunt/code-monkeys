@@ -27,7 +27,7 @@ esac
 # build them on a GPU host by passing their names explicitly.
 FLEET="$HERE/fleet.conf"
 [ -r "$FLEET" ] || { echo "ERROR: $FLEET missing or unreadable — refusing to guess the fleet" >&2; exit 9; }
-mapfile -t DEFAULT < <(awk -F: -v arch="$ARCH" '!/^#/ && $5=="yes" && index($4,arch) {print $1}' "$FLEET")
+mapfile -t DEFAULT < <(awk -F: -v arch="$ARCH" '!/^#/ && NF==7 && $5=="yes" && index($4,arch) {print $1}' "$FLEET")
 if [ "$#" -gt 0 ]; then PRIMATES=("$@"); else PRIMATES=("${DEFAULT[@]}"); fi
 [ "${#PRIMATES[@]}" -gt 0 ] || { echo "ERROR: zero primates selected (fleet.conf parsed empty for push_default=yes, arch=$ARCH) — aborting rather than silently doing nothing" >&2; exit 9; }
 

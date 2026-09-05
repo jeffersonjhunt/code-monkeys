@@ -17,7 +17,7 @@ REGION="${AWS_REGION:-us-east-1}"
 # or, for cuda-vllm, the spark-cluster's own deploy pipeline. See fleet.conf's header.
 FLEET="$(cd "$(dirname "$0")" && pwd)/fleet.conf"
 [ -r "$FLEET" ] || { echo "ERROR: $FLEET missing or unreadable — refusing to guess the fleet" >&2; exit 9; }
-mapfile -t ALL < <(awk -F: '!/^#/ && $6=="yes" {print $1}' "$FLEET")
+mapfile -t ALL < <(awk -F: '!/^#/ && NF==7 && $6=="yes" {print $1}' "$FLEET")
 if [ "$#" -gt 0 ]; then ALL=("$@"); fi
 [ "${#ALL[@]}" -gt 0 ] || { echo "ERROR: zero primates selected (fleet.conf parsed empty for manifest_default=yes) — aborting" >&2; exit 9; }
 
