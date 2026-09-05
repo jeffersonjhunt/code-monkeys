@@ -27,6 +27,7 @@ COPY zprofile /home/codemonkey/.zprofile
 COPY gitignore /home/codemonkey/.gitignore
 COPY vimrc /home/codemonkey/.vimrc
 COPY toprc /home/codemonkey/.toprc
+COPY tmux.conf /home/codemonkey/.tmux.conf
 
 # Configure apt and install packages
 RUN apt-get update \

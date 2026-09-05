@@ -376,14 +376,15 @@ function primate-kill() {
     return 1
   fi
   local __NAME="$1"
-  if ! docker inspect "${__NAME}" &>/dev/null; then
-    # accept the bare image name too (maps to <image>-session)
-    if docker inspect "${__NAME}-session" &>/dev/null; then
-      __NAME="${__NAME}-session"
-    else
-      echo "no such container: ${1}"
-      return 1
-    fi
+  # Documented usage is `primate-kill <image>`, so resolve <image>-session FIRST: trying the bare
+  # name first let an unrelated container literally named e.g. "claude" shadow claude-session and
+  # be killed instead. A custom session name (primate-session <image> <name>) still resolves via
+  # the exact-match fallback, as does an already-suffixed <name>-session.
+  if docker inspect "${__NAME}-session" &>/dev/null; then
+    __NAME="${__NAME}-session"
+  elif ! docker inspect "${__NAME}" &>/dev/null; then
+    echo "no such container: ${1}"
+    return 1
   fi
   echo "removing ${__NAME} (home volume persists)"
   docker rm -f "${__NAME}" >/dev/null

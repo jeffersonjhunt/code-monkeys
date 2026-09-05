@@ -139,7 +139,7 @@ upgrade: _fleet_check
 .PHONY:
 clean: _fleet_check
 	echo "Cleaning up images..."
-	docker rmi -f $(TARGETS:%=%:latest) codemonkey:latest cuda-llama-cpp:latest cuda-comfy:latest cuda-vllm:latest cuda-base:runtime cuda-base:devel || true
+	docker rmi -f $(TARGETS:%=%:latest) spark-bench:latest codemonkey:latest cuda-llama-cpp:latest cuda-comfy:latest cuda-vllm:latest cuda-base:runtime cuda-base:devel || true
 
 # Guard for the CUDA image targets. Passes on any host that can build/run
 # them: a DGX Spark (-nvidia kernel), or an x86/other box with an NVIDIA GPU
