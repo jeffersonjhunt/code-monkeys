@@ -21,7 +21,9 @@ mapfile -t ALL < <(awk -F: '!/^#/ && $6=="yes" {print $1}' "$FLEET")
 if [ "$#" -gt 0 ]; then ALL=("$@"); fi
 [ "${#ALL[@]}" -gt 0 ] || { echo "ERROR: zero primates selected (fleet.conf parsed empty for manifest_default=yes) — aborting" >&2; exit 9; }
 
-TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-login-password --region "$REGION")"
+TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" \
+  -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
+  amazon/aws-cli ecr get-login-password --region "$REGION")"
 [ -n "$TOKEN" ] || { echo "ERROR: empty ECR token" >&2; exit 8; }
 echo "$TOKEN" | docker login --username AWS --password-stdin "$ECR" >/dev/null || exit 8
 

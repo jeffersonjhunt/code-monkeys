@@ -53,7 +53,9 @@ function _primate_ensure_image() {
   local __ecr="${CODEMONKEYS_ECR:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
   local __ref="${__ecr}/codemonkeys/${__img}:latest"
   echo "  ${__img}:latest not present locally — pulling ${__ref}"
-  docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli \
+  docker run --rm -v "$HOME/.aws:/root/.aws:ro" \
+    -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
+    amazon/aws-cli \
     ecr get-login-password --region "${AWS_REGION:-us-east-1}" 2>/dev/null \
     | docker login --username AWS --password-stdin "$__ecr" >/dev/null 2>&1
   if docker pull "$__ref"; then
