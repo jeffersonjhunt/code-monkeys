@@ -97,7 +97,7 @@ def patch_tau2_judge_model(judge_llm: str, judge_temp: float):
 
 def main():
     ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--spark-model", default=os.environ.get("SPARK_BENCH_MODEL", "qwen3-coder-next"))
+    ap.add_argument("--spark-model", default=os.environ.get("SPARK_BENCH_MODEL", "code"))
     ap.add_argument("--domain", default="retail")
     ap.add_argument("--num-tasks", type=int, default=20)
     ap.add_argument("--max-steps", type=int, default=30)

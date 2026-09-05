@@ -6,7 +6,7 @@ proxy that routes by the OpenAI `model` field. One endpoint, multiple backends s
 
 | `model` in request | Backend | Workload |
 |--------------------|---------|----------|
-| `qwen3-coder-next` | `hutch.tworivers:8000`   | coding cluster / opencode |
+| `code` | `starsky.tworivers:8000` | coding — Qwen3.8-27B-FP8 no-think (renamed from `qwen3-coder-next`; standalone coder retired 2026-09) |
 | `reasoning`        | `starsky.tworivers:8000` | g.deceiver reasoning-llm |
 | `caption` *(Phase 6)* | `starsky.tworivers:8001` | g.deceiver Sees VLM (Qwen2.5-VL, co-resident on starsky's spare UMA) |
 
@@ -40,7 +40,7 @@ what `deploy.sh all` puts there. Routine deploy / restore (idempotent):
 ```bash
 ./src/scripts/deploy.sh minerva.tworivers litellm   # tars this dir to ~/spark-deploy/litellm, up -d
 
-# verify the routes (expect qwen3-coder-next, reasoning, caption):
+# verify the routes (expect code, reasoning, caption):
 curl -s http://minerva:8888/v1/models
 curl -s http://minerva:8888/v1/chat/completions -H 'content-type: application/json' \
   -d '{"model":"reasoning","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
@@ -54,14 +54,14 @@ ssh gdeceiver@minerva 'cd ~/spark-deploy/litellm && LITELLM_PORT=8889 docker com
 ```
 
 Clients: g.deceiver's orchestrator `REASONING_URL` points at `http://minerva:8888/v1` (model
-`reasoning`); opencode targets `minerva:8888` and sends `qwen3-coder-next` (`primates/opencode.json`).
+`reasoning`); opencode targets `minerva:8888` and sends `code` (`primates/opencode.json`).
 
 ## Health
 
 - `GET /health/liveliness` — process up (used by the compose healthcheck).
 - `GET /health/readiness` — proxy ready.
 - `GET /v1/models` — lists the routable model names. All three entries in `config.yaml` are
-  active, so expect `qwen3-coder-next`, `reasoning`, and `caption`.
+  active, so expect `code`, `reasoning`, and `caption`.
 
 There is no `:8404`-style stats UI (that was HAProxy's). Per-backend health is the vLLM `/health`
 on each box direct; `/v1/models` is how you ask the router what it will route.

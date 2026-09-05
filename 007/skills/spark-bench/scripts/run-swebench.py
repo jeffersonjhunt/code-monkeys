@@ -34,7 +34,7 @@ from pathlib import Path
 
 def main():
     ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--spark-model", default=os.environ.get("SPARK_BENCH_MODEL", "qwen3-coder-next"))
+    ap.add_argument("--spark-model", default=os.environ.get("SPARK_BENCH_MODEL", "code"))
     ap.add_argument("--endpoint", default=os.environ.get("OPENAI_API_BASE"))
     ap.add_argument("--n", type=int, default=20, help="number of problems (0 for all 500)")
     ap.add_argument("--workers", type=int, default=1, help="concurrent problems (keep low on 4-core box)")

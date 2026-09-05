@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LiveCodeBench v6 runner — wraps lcb_runner.runner.main with two patches:
-  1. Registers our spark-cluster model (default: qwen3-coder-next) in LCB's
+  1. Registers our spark-cluster model (default: code) in LCB's
      hard-coded LanguageModelList as an OpenAIChat-style model so the existing
      OpenAI client path is used.
   2. Chdir's to /opt/livecodebench before invoking main, because lcb_runner
@@ -85,7 +85,7 @@ def patch_extract_code_for_none():
 
 def main():
     ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--spark-model", default=os.environ.get("SPARK_BENCH_MODEL", "qwen3-coder-next"),
+    ap.add_argument("--spark-model", default=os.environ.get("SPARK_BENCH_MODEL", "code"),
                     help="cluster-served model name to register in lcb_runner (default from $SPARK_BENCH_MODEL)")
     ap.add_argument("--lcb-dir", default="/opt/livecodebench",
                     help="path to the LiveCodeBench source clone (cwd for relative prompt paths)")
