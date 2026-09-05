@@ -5,8 +5,14 @@
       "Bash(make *)",
       "Bash(docker build*)",
       "Bash(docker buildx*)",
+      "Bash(docker compose*)",
       "Bash(docker images*)",
-      "Bash(docker ps*)"
+      "Bash(docker image ls*)",
+      "Bash(docker info*)",
+      "Bash(docker inspect*)",
+      "Bash(docker logs*)",
+      "Bash(docker ps*)",
+      "Bash(docker version*)"
     ]
   }
 }

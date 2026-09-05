@@ -251,6 +251,7 @@ function primate-upgrade() {
         if [ -d "$SRC/claude" ]; then
           mkdir -p "$HOME/.claude/commands"
           cp "$SRC/claude/settings.json" "$HOME/.claude/settings.json"
+          [ -f "$SRC/claude/CLAUDE.md" ] && cp "$SRC/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
           cp "$SRC/claude/commands/"* "$HOME/.claude/commands/" 2>/dev/null
         fi
 

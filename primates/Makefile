@@ -127,6 +127,7 @@ cp "$$SRC/jjh.zsh-theme" "$$HOME/.oh-my-zsh/custom/themes/jjh.zsh-theme"
 if [ -d "$$SRC/claude" ]; then
   mkdir -p "$$HOME/.claude/commands"
   cp "$$SRC/claude/settings.json" "$$HOME/.claude/settings.json"
+  [ -f "$$SRC/claude/CLAUDE.md" ] && cp "$$SRC/claude/CLAUDE.md" "$$HOME/.claude/CLAUDE.md"
   cp "$$SRC/claude/commands/"* "$$HOME/.claude/commands/" 2>/dev/null
 fi
 # Image-baked ~/.config files are shadowed by the persistent home volume, so a rebuild alone
