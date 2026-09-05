@@ -13,6 +13,14 @@
 # socket is ever chmod'ed or chgrp'ed: on a real Linux host that inode IS the host's socket,
 # and changing its group would break the host's docker group.
 #
+# The sudo fallback's --preserve-env list is an ALLOWLIST: anything absent is stripped before the
+# real CLI ever runs. AWS_PROFILE/AWS_REGION/AWS_DEFAULT_REGION are on it because the ECR login
+# paths (zfuncs' _primate_ensure_image, primates/build-push.sh, primates/manifest-push.sh) forward
+# them into a containerized aws-cli with `docker run -e AWS_PROFILE ...` — evaluated by THIS
+# process, so if sudo has already dropped them the flag forwards nothing and the login silently
+# falls back to a [default] profile that may not exist. Any future credential-selecting variable
+# these paths rely on has to be added here too, or it dies the same quiet death.
+#
 # Bypass the shim (e.g. to prove the negative) with /usr/bin/docker.
 
 real=/usr/bin/docker
@@ -26,7 +34,7 @@ esac
 
 if [ "$(id -u)" != 0 ] && [ -S "$sock" ] && [ ! -w "$sock" ] && sudo -n true 2>/dev/null; then
   exec sudo -n \
-    --preserve-env=DOCKER_HOST,DOCKER_CONFIG,DOCKER_CONTEXT,DOCKER_BUILDKIT,BUILDKIT_PROGRESS,COMPOSE_FILE,COMPOSE_PROJECT_NAME,COMPOSE_PROFILES,COMPOSE_ENV_FILES \
+    --preserve-env=DOCKER_HOST,DOCKER_CONFIG,DOCKER_CONTEXT,DOCKER_BUILDKIT,BUILDKIT_PROGRESS,COMPOSE_FILE,COMPOSE_PROJECT_NAME,COMPOSE_PROFILES,COMPOSE_ENV_FILES,AWS_PROFILE,AWS_REGION,AWS_DEFAULT_REGION \
     "$real" "$@"
 fi
 
