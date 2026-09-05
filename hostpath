@@ -1,0 +1,42 @@
+#!/bin/sh
+# hostpath — translate a path inside this primate into the path the Docker DAEMON HOST sees,
+# for use in `docker run -v`, `--mount`, or compose `--project-directory`. Installed as
+# /usr/local/bin/hostpath by codemonkey.dockerfile. See CLAUDE.md "Docker-out-of-Docker".
+#
+# Bind mounts resolve on the daemon host, not inside the primate: `-v /tmp/x:/x` makes the
+# host create an EMPTY /tmp/x (or fail with Docker Desktop's file-sharing error), because the
+# primate's /tmp does not exist on the host. Only directories shared from the host can be
+# bind-mounted, and only under their host path. primate()/primate-session() export those:
+#   HOST_WORKSPACE  host dir mounted at /home/codemonkey/workspace
+#   HOST_SSH_DIR    host dir mounted at /home/codemonkey/.ssh
+#   HOST_AWS_DIR    host dir mounted at /home/codemonkey/.aws
+#
+# Usage: hostpath <path>          -> prints the host path, exit 0
+#        exit 1 (prints nothing)  -> path is not under a shared mount; it cannot be mounted
+#        exit 2                   -> usage
+#
+#   docker run -v "$(hostpath ~/workspace/evoc/data):/data" alpine ls /data
+#   docker compose -f ~/workspace/evoc/compose.yaml --project-directory "$(hostpath ~/workspace/evoc)" up
+
+[ $# -eq 1 ] || { echo "usage: hostpath <path>" >&2; exit 2; }
+
+# absolute, without resolving through the mount point itself (readlink -f on a virtiofs share
+# is fine, but a missing leaf must still translate, so fall back to a lexical join)
+p=$1
+case "$p" in /*) ;; *) p="$(pwd)/$p" ;; esac
+r=$(readlink -f -- "$p" 2>/dev/null) && [ -n "$r" ] && p=$r
+p=${p%/}
+
+map() { # map <container prefix> <host prefix>
+  [ -n "$2" ] || return 1
+  case "$p" in
+    "$1")   printf '%s\n' "$2"; exit 0 ;;
+    "$1"/*) printf '%s/%s\n' "$2" "${p#"$1"/}"; exit 0 ;;
+  esac
+  return 1
+}
+
+map /home/codemonkey/workspace "${HOST_WORKSPACE:-}"
+map /home/codemonkey/.ssh      "${HOST_SSH_DIR:-}"
+map /home/codemonkey/.aws      "${HOST_AWS_DIR:-}"
+exit 1

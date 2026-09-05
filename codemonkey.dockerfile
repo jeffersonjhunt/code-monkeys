@@ -95,7 +95,10 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 # mounted socket is group-accessible (primate() passes --group-add <socket gid>) it exec's the
 # real CLI; when it is denied it falls back to the NOPASSWD sudo quietly. See docker-shim.
 COPY docker-shim /usr/local/bin/docker
-RUN chmod 0755 /usr/local/bin/docker
+# hostpath: bind mounts resolve on the daemon host, so `-v` needs host paths — this maps
+# ~/workspace, ~/.ssh, ~/.aws to the HOST_* paths primate() exports. See hostpath.
+COPY hostpath /usr/local/bin/hostpath
+RUN chmod 0755 /usr/local/bin/docker /usr/local/bin/hostpath
 
 # make clams fresh (skip if FRESH=false, or if UNSAFE_SSL=true since freshclam requires valid certs)
 RUN if [ "${FRESH}" != "false" ] && [ "${UNSAFE_SSL}" != "true" ]; then \

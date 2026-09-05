@@ -102,9 +102,13 @@ function primate() {
 
   _primate_ensure_image "$__IMAGE" || return 1
 
+  # HOST_* carry the host-side path of each shared dir into the container: bind mounts made
+  # from inside a primate resolve on the daemon host, so `docker run -v` / compose volumes
+  # need these paths, not the container's (see `hostpath` and CLAUDE.md Docker-out-of-Docker).
   local __WORKSPACE_MOUNT=()
   if [[ "$__NO_WORKSPACE" == false ]]; then
-    __WORKSPACE_MOUNT=(--volume "$(pwd):/home/codemonkey/workspace")
+    local __HOST_WS="$(pwd)"
+    __WORKSPACE_MOUNT=(--volume "${__HOST_WS}:/home/codemonkey/workspace" --env "HOST_WORKSPACE=${__HOST_WS}")
   fi
 
   local __ZFUNCS_DIR="${${(%):-%x}:A:h}"
@@ -135,12 +139,14 @@ function primate() {
 
   local __SSH_MOUNT=()
   if [[ -d ~/.ssh ]]; then
-    __SSH_MOUNT=(--volume "$(cd -P ~/.ssh && pwd):/home/codemonkey/.ssh")
+    local __HOST_SSH="$(cd -P ~/.ssh && pwd)"
+    __SSH_MOUNT=(--volume "${__HOST_SSH}:/home/codemonkey/.ssh" --env "HOST_SSH_DIR=${__HOST_SSH}")
   fi
 
   local __AWS_MOUNT=()
   if [[ -d ~/.aws ]]; then
-    __AWS_MOUNT=(--volume "$(cd -P ~/.aws && pwd):/home/codemonkey/.aws")
+    local __HOST_AWS="$(cd -P ~/.aws && pwd)"
+    __AWS_MOUNT=(--volume "${__HOST_AWS}:/home/codemonkey/.aws" --env "HOST_AWS_DIR=${__HOST_AWS}")
   fi
 
   local __DOCKER_MOUNT=()
@@ -312,9 +318,13 @@ function primate-session() {
   fi
 
   # otherwise create it detached with the same mounts primate() uses.
+  # HOST_* carry the host-side path of each shared dir into the container: bind mounts made
+  # from inside a primate resolve on the daemon host, so `docker run -v` / compose volumes
+  # need these paths, not the container's (see `hostpath` and CLAUDE.md Docker-out-of-Docker).
   local __WORKSPACE_MOUNT=()
   if [[ "$__NO_WORKSPACE" == false ]]; then
-    __WORKSPACE_MOUNT=(--volume "$(pwd):/home/codemonkey/workspace")
+    local __HOST_WS="$(pwd)"
+    __WORKSPACE_MOUNT=(--volume "${__HOST_WS}:/home/codemonkey/workspace" --env "HOST_WORKSPACE=${__HOST_WS}")
   fi
 
   local __ZFUNCS_DIR="${${(%):-%x}:A:h}"
@@ -337,12 +347,14 @@ function primate-session() {
 
   local __SSH_MOUNT=()
   if [[ -d ~/.ssh ]]; then
-    __SSH_MOUNT=(--volume "$(cd -P ~/.ssh && pwd):/home/codemonkey/.ssh")
+    local __HOST_SSH="$(cd -P ~/.ssh && pwd)"
+    __SSH_MOUNT=(--volume "${__HOST_SSH}:/home/codemonkey/.ssh" --env "HOST_SSH_DIR=${__HOST_SSH}")
   fi
 
   local __AWS_MOUNT=()
   if [[ -d ~/.aws ]]; then
-    __AWS_MOUNT=(--volume "$(cd -P ~/.aws && pwd):/home/codemonkey/.aws")
+    local __HOST_AWS="$(cd -P ~/.aws && pwd)"
+    __AWS_MOUNT=(--volume "${__HOST_AWS}:/home/codemonkey/.aws" --env "HOST_AWS_DIR=${__HOST_AWS}")
   fi
 
   local __DOCKER_MOUNT=()
