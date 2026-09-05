@@ -236,49 +236,13 @@ function primate-upgrade() {
     fi
 
     echo "upgrading ${__IMAGE}..."
+    # The sync logic lives in primates/upgrade-home.sh — the same file `make <name>.upgrade`
+    # runs, reached through the read-only repo mount. PRIMATE drives its per-image blocks.
     docker run --rm \
+      --env "PRIMATE=${__IMAGE}" \
       --volume "${__REPO}:/opt/user-jhunt:ro" \
       --volume "${__VOL}:/home/codemonkey" \
-      codemonkey:latest bash -c '
-        SRC=/opt/user-jhunt
-        HOME=/home/codemonkey
-
-        # dotfiles
-        cp "$SRC/zaliases"  "$HOME/.zaliases"
-        cp "$SRC/zbase"     "$HOME/.zbase"
-        cp "$SRC/zprofile"  "$HOME/.zprofile"
-        [ -f "$SRC/gitconfig" ] && cp "$SRC/gitconfig" "$HOME/.gitconfig"
-        cp "$SRC/gitignore" "$HOME/.gitignore"
-        cp "$SRC/vimrc"     "$HOME/.vimrc"
-        cp "$SRC/toprc"     "$HOME/.toprc"
-        cp "$SRC/zshrc.template" "$HOME/.zshrc"
-        cp "$SRC/zfuncs"    "$HOME/.zfuncs"
-
-        # oh-my-zsh update
-        if [ -d "$HOME/.oh-my-zsh" ]; then
-          git -C "$HOME/.oh-my-zsh" pull --quiet 2>/dev/null || true
-          for plugin in zsh-autosuggestions zsh-completions zsh-syntax-highlighting; do
-            if [ -d "$HOME/.oh-my-zsh/custom/plugins/$plugin" ]; then
-              git -C "$HOME/.oh-my-zsh/custom/plugins/$plugin" pull --quiet 2>/dev/null || true
-            fi
-          done
-        fi
-
-        # oh-my-zsh theme
-        mkdir -p "$HOME/.oh-my-zsh/custom/themes"
-        cp "$SRC/jjh.zsh-theme" "$HOME/.oh-my-zsh/custom/themes/jjh.zsh-theme"
-
-        # claude config
-        if [ -d "$SRC/claude" ]; then
-          mkdir -p "$HOME/.claude/commands"
-          cp "$SRC/claude/settings.json" "$HOME/.claude/settings.json"
-          [ -f "$SRC/claude/CLAUDE.md" ] && cp "$SRC/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
-          cp "$SRC/claude/commands/"* "$HOME/.claude/commands/" 2>/dev/null
-        fi
-
-        # fix ownership
-        chown -R codemonkey:codemonkey "$HOME"
-      '
+      codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh
     echo "  done: ${__IMAGE}"
   done
 }

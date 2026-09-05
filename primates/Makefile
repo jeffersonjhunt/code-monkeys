@@ -113,47 +113,8 @@ claude.build:
 	echo $@; \
 	docker buildx build $(BUILD_ARGS) --build-arg IMAGE_NAME=$(basename $@) -t $(basename $@):latest -f ./$(basename $@).dockerfile .
 
-define UPGRADE_SCRIPT
-SRC=/opt/user-jhunt
-HOME=/home/codemonkey
-cp "$$SRC/zaliases"  "$$HOME/.zaliases"
-cp "$$SRC/zbase"     "$$HOME/.zbase"
-cp "$$SRC/zprofile"  "$$HOME/.zprofile"
-[ -f "$$SRC/gitconfig" ] && cp "$$SRC/gitconfig" "$$HOME/.gitconfig"
-cp "$$SRC/gitignore" "$$HOME/.gitignore"
-cp "$$SRC/vimrc"     "$$HOME/.vimrc"
-cp "$$SRC/toprc"     "$$HOME/.toprc"
-cp "$$SRC/zshrc.template" "$$HOME/.zshrc"
-cp "$$SRC/zfuncs"    "$$HOME/.zfuncs"
-if [ -d "$$HOME/.oh-my-zsh" ]; then
-  git -C "$$HOME/.oh-my-zsh" pull --quiet 2>/dev/null || true
-  for plugin in zsh-autosuggestions zsh-completions zsh-syntax-highlighting; do
-    if [ -d "$$HOME/.oh-my-zsh/custom/plugins/$$plugin" ]; then
-      git -C "$$HOME/.oh-my-zsh/custom/plugins/$$plugin" pull --quiet 2>/dev/null || true
-    fi
-  done
-fi
-mkdir -p "$$HOME/.oh-my-zsh/custom/themes"
-cp "$$SRC/jjh.zsh-theme" "$$HOME/.oh-my-zsh/custom/themes/jjh.zsh-theme"
-if [ -d "$$SRC/claude" ]; then
-  mkdir -p "$$HOME/.claude/commands"
-  cp "$$SRC/claude/settings.json" "$$HOME/.claude/settings.json"
-  [ -f "$$SRC/claude/CLAUDE.md" ] && cp "$$SRC/claude/CLAUDE.md" "$$HOME/.claude/CLAUDE.md"
-  cp "$$SRC/claude/commands/"* "$$HOME/.claude/commands/" 2>/dev/null
-fi
-# Image-baked ~/.config files are shadowed by the persistent home volume, so a rebuild alone
-# can't refresh them — sync them here too. opencode.json carries the real model + MCP server
-# config; it is gitignored and lives SOPS+age-encrypted in hemlighet (the public image ships
-# only opencode.json.example). Decrypt it first (see README) — the [ -f ] guard means this is
-# skipped and the image's placeholder stands if the real file isn't present.
-if [ "$$PRIMATE" = "opencode" ] && [ -f "$$SRC/primates/opencode.json" ]; then
-  mkdir -p "$$HOME/.config/opencode"
-  cp "$$SRC/primates/opencode.json" "$$HOME/.config/opencode/opencode.json"
-fi
-chown -R codemonkey:codemonkey "$$HOME"
-endef
-export UPGRADE_SCRIPT
-
+# The home-volume dotfile sync lives in ONE place — primates/upgrade-home.sh — reached through the
+# read-only repo mount below. zfuncs' primate-upgrade runs the same file the same way.
 .PHONY:
 %.upgrade:
 	@VOL=$(basename $@)-home; \
@@ -165,7 +126,7 @@ export UPGRADE_SCRIPT
 			--env "PRIMATE=$(basename $@)" \
 			--volume "$(REPO_ROOT):/opt/user-jhunt:ro" \
 			--volume "$$VOL:/home/codemonkey" \
-			codemonkey:latest bash -c "$$UPGRADE_SCRIPT"; \
+			codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh; \
 		echo "  done: $(basename $@)"; \
 	fi
 
