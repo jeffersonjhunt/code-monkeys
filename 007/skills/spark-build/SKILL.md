@@ -1,6 +1,6 @@
 ---
 name: spark-build
-description: Build the cuda-* primate images (cuda-llama-cpp, cuda-comfy, cuda-vllm) on a cluster node, draining that node first so the remaining replicas keep serving. Stops the vLLM container on the target node (freeing the unified memory the build needs) and restarts it afterwards. Checks capacity BEFORE stopping anything; on a single-replica cluster a drain is an outage, so it refuses unless --allow-outage is passed.
+description: Build the cuda-* primate images (cuda-llama-cpp, cuda-comfy, cuda-vllm — the shared base for g.deceiver's six vLLM services) on a Blackwell GB10, freeing that box's unified memory first by stopping whatever it runs, then restarting it. NOTE the standalone coding cluster (qwen3-coder-next) was RETIRED 2026-09-05, so a "drain" is no longer a coding outage — it's a g.deceiver-service outage (hutch = memory stack; starsky = the live 27B brain, never build there mid-stream). Checks memory BEFORE stopping anything; --allow-outage / --skip-drain control the trade.
 license: Apache-2.0
 metadata:
   author: ooe
@@ -94,22 +94,29 @@ ssh gdeceiver@hutch.tworivers 'cd ~/spark-deploy/vllm && docker compose up -d'
 
 The replica serves again ~2 min after restart (model cold-load); the script polls its `/health` and tells you when it's back.
 
-## ⚠️ Today the cluster has ONE replica — a "drain" is an outage
+## ⚠️ The coding cluster is RETIRED (2026-09-05) — this builds a shared base, not a serving replica
 
-This skill's premise — drain a node, the others keep serving — assumed a multi-replica pool.
-Since `starsky` was repurposed (2026-06-10), `REPLICAS="hutch.tworivers"` is the whole coding
-cluster. Stopping vLLM on hutch therefore takes `qwen3-coder-next` **offline for the entire
-build**, with nothing to fail over to.
+The old premise — hutch is a `qwen3-coder-next` coding replica you drain so peers keep serving — is
+**gone**. The standalone coder (`RedHatAI/Qwen3-Coder-Next-NVFP4`) was retired 2026-09-05; coding
+folded onto g.deceiver's `Qwen3.8-27B-FP8` on starsky (route renamed `qwen3-coder-next` → `code`; see
+the g.deceiver `model-consolidation-27b` note). `REPLICAS="hutch.tworivers"` no longer names a
+*coding* replica: **hutch now runs g.deceiver's memory stack** (embeddings + reranker), and **starsky
+runs the live co-host reasoning brain** (the 27B).
 
-The script no longer pretends otherwise: it refuses to drain a sole replica unless you pass
-`--allow-outage`, and it refuses **before** stopping anything. Your options:
+This skill still matters — **`cuda-vllm` is the shared base for all six g.deceiver vLLM services**, so
+it's still rebuilt here on a Blackwell (sm_121) GB10. But a "drain" is no longer a *coding* outage;
+it's whatever **g.deceiver service** shares the target GB10's UMA:
 
-- **`--allow-outage`** — accept the downtime (fastest build; the model is unavailable meanwhile).
-- **`--skip-drain`** — leave vLLM running and build alongside it. No downtime, but the build
-  competes with the server for the 128 GB unified memory, so it is slower and can OOM.
+- **Build on hutch** → contends with / stops the **memory stack** (embeddings, reranker). Retrieval
+  degrades during the build; no coding impact — lower stakes.
+- **Build on starsky** → contends with the **live co-host brain** (reason + code + caption + vision).
+  **NEVER build on starsky while a stream is live** — it takes Gay's reasoning down mid-stream.
+- **`--skip-drain`** — build alongside the running g.deceiver service (no downtime, but competes for
+  the 128 GB UMA — slower, can OOM). Fine next to hutch's memory stack; risky next to starsky's 27B.
 
-When a second coding replica returns, the original drain semantics resume automatically — the
-capacity gate simply finds a healthy peer and proceeds.
+The `--allow-outage` / capacity-gate machinery still runs, but "peer replica serving" maps onto
+nothing now — read the gate as "is it safe to starve this box's g.deceiver service right now," which
+for starsky means **not streaming**.
 
 ## What This Skill Doesn't Do
 
@@ -128,9 +135,9 @@ capacity gate simply finds a healthy peer and proceeds.
 When the user asks to rebuild a spark-class image or roll a vLLM update through the cluster:
 
 1. Confirm which images and which host they want (default to the non-LB replica — today, hutch)
-2. **Warn that draining takes the coding API down**: there is one replica, so there is nothing to fail over to. The script enforces this — it refuses to drain a sole replica without `--allow-outage`, and refuses *before* stopping anything. Get explicit agreement, then choose:
-   - `--allow-outage` — accept the downtime, fastest build
-   - `--skip-drain` — no downtime, but the build competes with vLLM for unified memory and can OOM
-3. Let the script's output stream so the user sees the capacity check → drain → build → restore progression
-4. After a vLLM rebuild, remind the user to test tool-calling and (if relevant) update the Qwen3-Coder-Next-NVFP4 bug memory note
-5. If a second replica ever returns, roll the build one replica at a time — never drain both at once
+2. **Warn which g.deceiver service the build starves** (the coding cluster is retired — see the ⚠️ section): building on **hutch** stops the memory stack (retrieval degrades — low stakes); building on **starsky** stops the live 27B brain — **confirm no stream is live first**, never take Gay's reasoning down mid-stream. The script still refuses to stop a box's service without `--allow-outage` and refuses *before* stopping anything. Get explicit agreement, then choose:
+   - `--allow-outage` — accept the service downtime, fastest build
+   - `--skip-drain` — no downtime, but the build competes for unified memory and can OOM (fine next to hutch's memory stack, risky next to starsky's 27B)
+3. Let the script's output stream so the user sees the memory check → stop → build → restore progression
+4. After a `cuda-vllm` rebuild, the six g.deceiver vLLM services (reasoning, embeddings, reranker, guard, …) that layer on it can be rebuilt/redeployed via the g.deceiver config-layer pipeline; test tool-calling on the `code`/`reasoning` routes through minerva:8888
+5. Never build on both GB10s at once — starsky's is the live co-host brain
