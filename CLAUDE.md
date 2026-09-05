@@ -17,7 +17,7 @@ This is a personal development environment repository (dotfiles + containerized 
 - **`zfuncs`**: Shell functions for launching containers (`primate()`, `primate-session()`, `primate-kill()`, `primate-upgrade()`, `clamscan()`, etc.). `primate()` runs a foreground `--rm` container tied to the TTY; `primate-session()` runs a **detached, named, long-lived** container (PID 1 = `sleep infinity`) and `docker exec`s into an in-container `tmux` session, so the session survives SSH disconnects — reconnect and re-run `primate-session <image>` to re-attach. `primate-kill <image|name>` tears it down (the `<image>-home` volume persists).
 - **`env`**: Environment variable definitions (tokens, API keys) — never commit secrets here
 - **`aws/`**: AWS CLI config and credentials — managed by vault, never commit plaintext
-- **`claude/`**: Claude Code settings and custom slash commands. `setup` links these **into** the real `~/.claude` (via `CHILD_LINKS`): `~/.claude/settings.json` and `~/.claude/commands` → this repo. Note `~/.claude` itself must stay a **real directory** — it is Claude Code's live state (credentials, history, projects, daemon cache), so it can never *be* a symlink. (The old `DIR_LINKS` entry `claude::claude` created `~/.claude/claude`, a path nothing reads; the settings never reached Claude Code at all. Fixed.) An existing real `settings.json`/`commands` is never clobbered — setup skips it and tells you to remove it first if you want the repo to manage it. Also copied into the claude primate image by `make -C primates <img>.upgrade`.
+- **`claude/`**: Claude Code settings, custom slash commands, and `CLAUDE.md` (global user memory copied to `~/.claude/CLAUDE.md` in the claude primate — carries the Docker-out-of-Docker note). `setup` links the settings and commands **into** the real `~/.claude` (via `CHILD_LINKS`): `~/.claude/settings.json` and `~/.claude/commands` → this repo. Note `~/.claude` itself must stay a **real directory** — it is Claude Code's live state (credentials, history, projects, daemon cache), so it can never *be* a symlink. (The old `DIR_LINKS` entry `claude::claude` created `~/.claude/claude`, a path nothing reads; the settings never reached Claude Code at all. Fixed.) An existing real `settings.json`/`commands` is never clobbered — setup skips it and tells you to remove it first if you want the repo to manage it. Also copied into the claude primate image by `make -C primates <img>.upgrade`.
 - **`007/skills/`**: Agent skills library — portable skills installed into `~/.kiro/skills/` and `~/.claude/skills/` by `setup`. Run `make test` from `007/` to test. See `007/skills/CONTRIBUTING.md` for authoring guidelines.
 - **`Library/`**: macOS-only assets (`KeyBindings/DefaultKeyBinding.dict` is copied to `~/Library/KeyBindings` by setup)
 - **`spark/`**: DGX Spark cluster ops. `spark/cluster/` is a host-name-agnostic vLLM replica cluster (compose stacks, scripts, runbook) that consumes the `cuda-vllm` primate, fronted by a model-aware LiteLLM router. Hosts and roles come from a gitignored `spark/cluster/cluster.env`; the maintainer's deployment is currently a single DGX Spark replica (`REPLICAS="hutch.tworivers"`) with the router on the control-plane host (`LB_HOST=minerva.tworivers`, port 8888) — `starsky` was repurposed out of the pool 2026-06-10. See `spark/cluster/CLAUDE.md`.
@@ -92,6 +92,40 @@ up only as "could not be pulled from ECR".
 
 The **`primate <name>` shell function pulls from ECR on demand** (`_primate_ensure_image`) and
 retags to the local name, so a fresh host runs any primate without building it first.
+
+## Docker-out-of-Docker
+
+Every codemonkey-based primate can drive the **host's** Docker daemon. **Never conclude Docker is
+unavailable without running `docker version` first** — agents have repeatedly given up on
+Docker-dependent verification for want of this check.
+
+- **Installed:** `docker-ce-cli`, `docker-buildx-plugin` and `docker-compose-plugin` are in the
+  base image, so `docker build`, `docker buildx` and `docker compose` all work in every primate
+  (`acl`/`setfacl` is there too).
+- **How the socket gets in:** `primate()` / `primate-session()` bind-mount `/var/run/docker.sock`
+  and pass `--group-add <socket gid>` (`_primate_docker_gid`: `stat -c %g` on Linux; always `0` on
+  macOS, where Docker Desktop's VM presents the socket as `root:root 660` — `--group-add 0` grants
+  only the root *group's* rw bit on the socket, not root privileges). That makes plain `docker …`
+  work as the unprivileged `codemonkey` user: no sudo, no chmod, no chgrp.
+- **If the socket is still denied** (container started by hand without `--group-add`, an older
+  `zfuncs` on the host): `/usr/local/bin/docker` is a shim that shadows `/usr/bin/docker` — when
+  the socket is not writable and `sudo -n true` succeeds it re-execs the CLI under `sudo -n`,
+  quietly, so `docker …` still works. `sudo docker …` is the manual equivalent. Never
+  `chmod`/`chgrp` the socket: on a Linux host that inode *is* the host's socket.
+- **Bind mounts resolve on the DAEMON HOST, not inside the primate.** `-v /path:/x`, `--mount`,
+  and compose `volumes:` are interpreted by the host daemon, so container-local paths (`/tmp/…`,
+  `/home/codemonkey/…`) either come up as an EMPTY directory created on the host (a compose
+  `./data` mount silently empty) or fail with Docker Desktop's file-sharing error. Only dirs shared
+  from the host can be bind-mounted, and only under their HOST path. `primate()` exports those:
+  `HOST_WORKSPACE` (host dir at `~/workspace`), `HOST_SSH_DIR`, `HOST_AWS_DIR`. Translation rule:
+  `/home/codemonkey/workspace/<x>` → `$HOST_WORKSPACE/<x>`, e.g.
+  `docker run -v "$HOST_WORKSPACE/evoc/data:/data" …`; `hostpath ~/workspace/evoc/data` prints it
+  (exit 1 for a path that cannot be mounted at all). For compose keep the file local but resolve
+  `./` on the host: `docker compose -f ~/workspace/evoc/compose.yaml --project-directory
+  "$(hostpath ~/workspace/evoc)" up`. `docker build .`, `docker cp` and `COPY` are unaffected —
+  the client streams those from inside the primate.
+- The `claude` primate also ships this note as `~/.claude/CLAUDE.md` (from `claude/CLAUDE.md`), so
+  Claude Code sees it in every project.
 
 ## Key Conventions
 

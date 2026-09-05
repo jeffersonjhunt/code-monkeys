@@ -7,7 +7,9 @@ source ${HOME}/.zbase
 if [[ -f /.dockerenv ]]; then
   find "${HOME}" -maxdepth 1 -not -user codemonkey -exec sudo chown -R codemonkey:codemonkey {} +
 
-  # Docker socket GID fixup — match host socket group so codemonkey can use docker
+  # Docker socket GID fixup for containers started WITHOUT primate()'s --group-add: put
+  # codemonkey in the socket's group for future logins (docker exec / newgrp). The current
+  # shell is not affected — that is what the /usr/local/bin/docker sudo-fallback shim is for.
   if [[ -S /var/run/docker.sock ]]; then
     SOCK_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null)
     if [[ -n "$SOCK_GID" ]] && ! id -G codemonkey | grep -qw "$SOCK_GID"; then

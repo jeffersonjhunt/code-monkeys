@@ -134,14 +134,31 @@ RUN /opt/miniforge3/bin/conda create -y -n ${IMAGE_NAME}-env python \
 
 ## Docker-out-of-Docker
 
-All codemonkey-based containers include `docker-ce-cli` and `docker-buildx-plugin`. When launched via `primate()`, the host's `/var/run/docker.sock` is bind-mounted automatically (if present). Two ways to use the daemon from inside a primate:
+All codemonkey-based primates ship `docker-ce-cli`, `docker-buildx-plugin` and
+`docker-compose-plugin`, and `primate()` / `primate-session()` bind-mount the host's
+`/var/run/docker.sock` **with `--group-add <socket gid>`** (Linux: `stat -c %g`; macOS: `0`,
+since Docker Desktop's VM presents the socket as `root:root 660`). So plain `docker …`,
+`docker compose …` and `docker build …` work as the unprivileged `codemonkey` user — no sudo, no
+socket fiddling. **Never mark Docker "unavailable" without running `docker version`.**
 
-- **`sudo docker …`** — works immediately. `codemonkey` has NOPASSWD sudo, so this is the simplest path for scripts and `make` invocations.
-- **Plain `docker …`** — `zshrc.template` adds `codemonkey` to a group matching the socket's GID on first login, but `usermod -aG` doesn't update an already-running shell's credentials. After exiting and re-entering the container (or `newgrp <group>`), plain `docker` works without sudo.
+- **Socket denied anyway?** (container started by hand without `--group-add`, older host
+  `zfuncs`) `/usr/local/bin/docker` is a shim ahead of `/usr/bin/docker` on PATH: if the socket
+  is not writable and sudo is passwordless it re-execs the CLI under `sudo -n`, quietly. `sudo
+  docker …` is the manual equivalent. Do not `chmod`/`chgrp` the socket — it is the host's inode.
+  `zshrc.template` additionally puts `codemonkey` in the socket's group for *future* logins
+  (`docker exec` / `newgrp`); it cannot fix the current shell, hence the shim.
+- **Bind mounts resolve on the DAEMON HOST, not in the primate.** `-v /tmp/x:/x` or a compose
+  `./data` volume yields an EMPTY host-created dir (or Docker Desktop's file-sharing error).
+  Mount only host-shared dirs, under their HOST path: `/home/codemonkey/workspace/<x>` →
+  `$HOST_WORKSPACE/<x>` (`HOST_SSH_DIR`, `HOST_AWS_DIR` likewise; all exported by `primate()`).
+  `hostpath <path>` does the translation:
+  `docker run -v "$(hostpath ~/workspace/proj/data):/data" …` /
+  `docker compose -f ~/workspace/proj/compose.yaml --project-directory "$(hostpath ~/workspace/proj)" up`.
+  `docker build .`/`docker cp` are unaffected (streamed by the client).
 
 This means you can build primate images from inside a running container:
 
 ```bash
 cd workspace/primates   # assuming code-monkeys repo is the workspace
-sudo make all           # builds all images via the host daemon
+make all                # builds all images via the host daemon (plain docker; sudo not needed)
 ```

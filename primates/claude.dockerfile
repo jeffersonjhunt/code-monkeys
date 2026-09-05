@@ -15,4 +15,7 @@ RUN su -c "curl $([ "$UNSAFE_SSL" = "true" ] && echo "--insecure") -fsSL https:/
 # Claude Code configuration (settings + custom commands)
 COPY --chown=codemonkey:codemonkey claude/settings.json /home/codemonkey/.claude/settings.json
 COPY --chown=codemonkey:codemonkey claude/commands/ /home/codemonkey/.claude/commands/
+# Global user memory: Claude Code reads ~/.claude/CLAUDE.md in every project, so the
+# Docker-out-of-Docker note reaches agents that never open the repo's CLAUDE.md.
+COPY --chown=codemonkey:codemonkey claude/CLAUDE.md /home/codemonkey/.claude/CLAUDE.md
 # Fin

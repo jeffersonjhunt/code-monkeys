@@ -1,0 +1,33 @@
+#!/bin/sh
+# docker — the codemonkey Docker-out-of-Docker shim. codemonkey.dockerfile installs this as
+# /usr/local/bin/docker, ahead of /usr/bin/docker on PATH. See CLAUDE.md "Docker-out-of-Docker".
+#
+# Normal path: primate()/primate-session() start the container with --group-add <socket gid>,
+# the unprivileged codemonkey user can open /var/run/docker.sock, and this exec's the real CLI
+# unchanged (no sudo, no root-owned files).
+#
+# Fallback: the container was started without that (a bare `docker run`, an older zfuncs, a
+# host whose socket gid differs from the one we guessed) and the socket is denied. Then run
+# the CLI under the NOPASSWD sudo the image already grants — quietly, so scripts, make and
+# agents never see "permission denied" and conclude Docker is unavailable. Nothing on the
+# socket is ever chmod'ed or chgrp'ed: on a real Linux host that inode IS the host's socket,
+# and changing its group would break the host's docker group.
+#
+# Bypass the shim (e.g. to prove the negative) with /usr/bin/docker.
+
+real=/usr/bin/docker
+sock=/var/run/docker.sock
+
+case "${DOCKER_HOST:-}" in
+  "")       ;;
+  unix://*) sock="${DOCKER_HOST#unix://}" ;;
+  *)        exec "$real" "$@" ;;          # tcp/ssh daemon — socket perms are irrelevant
+esac
+
+if [ "$(id -u)" != 0 ] && [ -S "$sock" ] && [ ! -w "$sock" ] && sudo -n true 2>/dev/null; then
+  exec sudo -n \
+    --preserve-env=DOCKER_HOST,DOCKER_CONFIG,DOCKER_CONTEXT,DOCKER_BUILDKIT,BUILDKIT_PROGRESS,COMPOSE_FILE,COMPOSE_PROJECT_NAME,COMPOSE_PROFILES,COMPOSE_ENV_FILES \
+    "$real" "$@"
+fi
+
+exec "$real" "$@"

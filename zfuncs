@@ -64,6 +64,20 @@ function _primate_ensure_image() {
   fi
 }
 
+# gid to --group-add alongside the /var/run/docker.sock mount so the unprivileged codemonkey
+# user can open the socket without anyone touching its perms (mirrors bin/spark-bench).
+# Linux: the socket's real group (the host's `docker` group, or 0 inside a Docker Desktop VM).
+# macOS: the host-side stat is meaningless — Docker Desktop's VM presents the socket to
+# containers as root:root 660 — so the answer is always 0. --group-add 0 grants only the root
+# *group* (the socket's rw group bit), not root privileges.
+function _primate_docker_gid() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo 0
+  else
+    stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 0
+  fi
+}
+
 # starts a primate container with a persistent home volume
 function primate() {
 
@@ -88,9 +102,13 @@ function primate() {
 
   _primate_ensure_image "$__IMAGE" || return 1
 
+  # HOST_* carry the host-side path of each shared dir into the container: bind mounts made
+  # from inside a primate resolve on the daemon host, so `docker run -v` / compose volumes
+  # need these paths, not the container's (see `hostpath` and CLAUDE.md Docker-out-of-Docker).
   local __WORKSPACE_MOUNT=()
   if [[ "$__NO_WORKSPACE" == false ]]; then
-    __WORKSPACE_MOUNT=(--volume "$(pwd):/home/codemonkey/workspace")
+    local __HOST_WS="$(pwd)"
+    __WORKSPACE_MOUNT=(--volume "${__HOST_WS}:/home/codemonkey/workspace" --env "HOST_WORKSPACE=${__HOST_WS}")
   fi
 
   local __ZFUNCS_DIR="${${(%):-%x}:A:h}"
@@ -121,17 +139,19 @@ function primate() {
 
   local __SSH_MOUNT=()
   if [[ -d ~/.ssh ]]; then
-    __SSH_MOUNT=(--volume "$(cd -P ~/.ssh && pwd):/home/codemonkey/.ssh")
+    local __HOST_SSH="$(cd -P ~/.ssh && pwd)"
+    __SSH_MOUNT=(--volume "${__HOST_SSH}:/home/codemonkey/.ssh" --env "HOST_SSH_DIR=${__HOST_SSH}")
   fi
 
   local __AWS_MOUNT=()
   if [[ -d ~/.aws ]]; then
-    __AWS_MOUNT=(--volume "$(cd -P ~/.aws && pwd):/home/codemonkey/.aws")
+    local __HOST_AWS="$(cd -P ~/.aws && pwd)"
+    __AWS_MOUNT=(--volume "${__HOST_AWS}:/home/codemonkey/.aws" --env "HOST_AWS_DIR=${__HOST_AWS}")
   fi
 
   local __DOCKER_MOUNT=()
   if [[ -S /var/run/docker.sock ]]; then
-    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock)
+    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock --group-add "$(_primate_docker_gid)")
   fi
 
   docker run --rm -it \
@@ -231,6 +251,7 @@ function primate-upgrade() {
         if [ -d "$SRC/claude" ]; then
           mkdir -p "$HOME/.claude/commands"
           cp "$SRC/claude/settings.json" "$HOME/.claude/settings.json"
+          [ -f "$SRC/claude/CLAUDE.md" ] && cp "$SRC/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
           cp "$SRC/claude/commands/"* "$HOME/.claude/commands/" 2>/dev/null
         fi
 
@@ -298,9 +319,13 @@ function primate-session() {
   fi
 
   # otherwise create it detached with the same mounts primate() uses.
+  # HOST_* carry the host-side path of each shared dir into the container: bind mounts made
+  # from inside a primate resolve on the daemon host, so `docker run -v` / compose volumes
+  # need these paths, not the container's (see `hostpath` and CLAUDE.md Docker-out-of-Docker).
   local __WORKSPACE_MOUNT=()
   if [[ "$__NO_WORKSPACE" == false ]]; then
-    __WORKSPACE_MOUNT=(--volume "$(pwd):/home/codemonkey/workspace")
+    local __HOST_WS="$(pwd)"
+    __WORKSPACE_MOUNT=(--volume "${__HOST_WS}:/home/codemonkey/workspace" --env "HOST_WORKSPACE=${__HOST_WS}")
   fi
 
   local __ZFUNCS_DIR="${${(%):-%x}:A:h}"
@@ -323,17 +348,19 @@ function primate-session() {
 
   local __SSH_MOUNT=()
   if [[ -d ~/.ssh ]]; then
-    __SSH_MOUNT=(--volume "$(cd -P ~/.ssh && pwd):/home/codemonkey/.ssh")
+    local __HOST_SSH="$(cd -P ~/.ssh && pwd)"
+    __SSH_MOUNT=(--volume "${__HOST_SSH}:/home/codemonkey/.ssh" --env "HOST_SSH_DIR=${__HOST_SSH}")
   fi
 
   local __AWS_MOUNT=()
   if [[ -d ~/.aws ]]; then
-    __AWS_MOUNT=(--volume "$(cd -P ~/.aws && pwd):/home/codemonkey/.aws")
+    local __HOST_AWS="$(cd -P ~/.aws && pwd)"
+    __AWS_MOUNT=(--volume "${__HOST_AWS}:/home/codemonkey/.aws" --env "HOST_AWS_DIR=${__HOST_AWS}")
   fi
 
   local __DOCKER_MOUNT=()
   if [[ -S /var/run/docker.sock ]]; then
-    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock)
+    __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock --group-add "$(_primate_docker_gid)")
   fi
 
   echo "creating detached session ${__NAME} from ${__IMAGE} (home volume ${__IMAGE}-home)"
