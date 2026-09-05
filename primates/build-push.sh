@@ -21,9 +21,15 @@ case "$(uname -m)" in
   *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
 esac
 
-# Dependency-ordered CPU chain (base first). GPU primates (cuda-*) build on a GPU host — pass explicitly.
-DEFAULT=(codemonkey minion embedded miniforge3 lamp huggingface claude opencode aichat kiro spark-bench)
+# Dependency-ordered CPU chain (base first), derived from primates/fleet.conf: push_default=yes
+# rows whose `arches` column includes this host's arch. Row order in fleet.conf IS the build order,
+# so miniforge3 stays ahead of everything that FROMs it. GPU primates (cuda-*) are push_default=no —
+# build them on a GPU host by passing their names explicitly.
+FLEET="$HERE/fleet.conf"
+[ -r "$FLEET" ] || { echo "ERROR: $FLEET missing or unreadable — refusing to guess the fleet" >&2; exit 9; }
+mapfile -t DEFAULT < <(awk -F: -v arch="$ARCH" '!/^#/ && $5=="yes" && index($4,arch) {print $1}' "$FLEET")
 if [ "$#" -gt 0 ]; then PRIMATES=("$@"); else PRIMATES=("${DEFAULT[@]}"); fi
+[ "${#PRIMATES[@]}" -gt 0 ] || { echo "ERROR: zero primates selected (fleet.conf parsed empty for push_default=yes, arch=$ARCH) — aborting rather than silently doing nothing" >&2; exit 9; }
 
 # ECR login (containerized aws-cli — no host aws install; fail closed on an empty token).
 docker image inspect amazon/aws-cli >/dev/null 2>&1 || docker pull -q amazon/aws-cli >/dev/null

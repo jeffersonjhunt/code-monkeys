@@ -172,7 +172,14 @@ function primate() {
 function _primate() {
   # All fleet primates — any not present locally is pulled from ECR on demand by _primate_ensure_image,
   # so offer the full set (names match the ECR repos under codemonkeys/*), not just locally-built images.
-  local known_primates=(codemonkey minion embedded miniforge3 claude opencode kiro lamp huggingface spark-bench nyckel cuda-base cuda-vllm cuda-comfy cuda-llama-cpp)
+  # Read from primates/fleet.conf with no predicate: every row is a valid completion target, whether or
+  # not a bare build-push/manifest-push run sweeps it up. Read inside the function, never at source time.
+  local __FLEET="${${(%):-%x}:A:h}/primates/fleet.conf"
+  local known_primates=(${(f)"$(awk -F: '!/^#/{print $1}' "$__FLEET" 2>/dev/null)"})
+  if [[ ${#known_primates[@]} -eq 0 ]]; then
+    _message "ERROR: ${__FLEET} missing/empty/unreadable — primate name completion unavailable"
+    return 1
+  fi
 
   case "$CURRENT" in
     2) _describe 'primate image' known_primates ;;
@@ -192,8 +199,20 @@ function primate-upgrade() {
   local __IMAGES=("$@")
 
   if [[ "$1" == "--all" ]]; then
+    # home_volume=yes rows from primates/fleet.conf, minus codemonkey (upgraded unconditionally
+    # below via _primate_ensure_image). Same field the Makefile's UPGRADE_TARGETS reads, so the
+    # two entry points cannot drift.
+    local __FLEET="${__REPO}/primates/fleet.conf"
+    if [[ ! -r "$__FLEET" ]]; then
+      echo "ERROR: ${__FLEET} missing or unreadable — refusing to silently upgrade zero primates" >&2
+      return 1
+    fi
+    local known=(${(f)"$(awk -F: '!/^#/ && $7=="yes" && $1!="codemonkey" {print $1}' "$__FLEET")"})
+    if [[ ${#known[@]} -eq 0 ]]; then
+      echo "ERROR: ${__FLEET} parsed to zero home_volume=yes primates — check its format" >&2
+      return 1
+    fi
     __IMAGES=()
-    local known=(codemonkey minion embedded miniforge3 claude opencode kiro lamp huggingface)
     for name in "${known[@]}"; do
       if docker volume inspect "${name}-home" &>/dev/null; then
         __IMAGES+=("$name")

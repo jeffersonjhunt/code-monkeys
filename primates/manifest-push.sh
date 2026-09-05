@@ -12,8 +12,14 @@ ECR="${ECR_REGISTRY:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
 NS=codemonkeys
 REGION="${AWS_REGION:-us-east-1}"
 
-ALL=(codemonkey minion embedded miniforge3 lamp huggingface claude opencode kiro spark-bench cuda-comfy cuda-llama-cpp)
+# Derived from primates/fleet.conf: the manifest_default=yes rows. Anything excluded there
+# (nyckel, samba, cuda-base, cuda-vllm) still reaches ECR — just via an explicit name argument,
+# or, for cuda-vllm, the spark-cluster's own deploy pipeline. See fleet.conf's header.
+FLEET="$(cd "$(dirname "$0")" && pwd)/fleet.conf"
+[ -r "$FLEET" ] || { echo "ERROR: $FLEET missing or unreadable — refusing to guess the fleet" >&2; exit 9; }
+mapfile -t ALL < <(awk -F: '!/^#/ && $6=="yes" {print $1}' "$FLEET")
 if [ "$#" -gt 0 ]; then ALL=("$@"); fi
+[ "${#ALL[@]}" -gt 0 ] || { echo "ERROR: zero primates selected (fleet.conf parsed empty for manifest_default=yes) — aborting" >&2; exit 9; }
 
 TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-login-password --region "$REGION")"
 [ -n "$TOKEN" ] || { echo "ERROR: empty ECR token" >&2; exit 8; }

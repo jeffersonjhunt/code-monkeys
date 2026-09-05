@@ -1,10 +1,16 @@
 # Makefile for primates project
 
-TARGETS := minion embedded miniforge3 claude opencode aichat kiro lamp huggingface nyckel samba
-
 MAKEFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 DIR := $(notdir $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))
 KERNEL := $(shell uname -r)
+REPO_ROOT := $(abspath $(dir $(MAKEFILE_PATH))/..)
+
+# Single source of truth for the fleet roster — see primates/fleet.conf for the field layout.
+# `make all` builds in_all=yes rows; `make upgrade` walks home_volume=yes rows (codemonkey is
+# prepended explicitly, as it always was). Row order in fleet.conf is the build order.
+FLEET := $(REPO_ROOT)/primates/fleet.conf
+TARGETS := $(shell awk -F: '!/^#/ && $$3=="yes" {print $$1}' $(FLEET) 2>/dev/null)
+UPGRADE_TARGETS := $(shell awk -F: '!/^#/ && $$7=="yes" && $$1!="codemonkey" {print $$1}' $(FLEET) 2>/dev/null)
 
 BUILD_ARGS ?=
 ifdef FORCE
@@ -79,8 +85,15 @@ cuda-vllm.build: _nv_check cuda-base.build
 	echo "Building cuda-vllm image..."
 	docker buildx build $(BUILD_ARGS) -t cuda-vllm:latest -f cuda-vllm.dockerfile .
 
+# Refuse to act on a missing/empty/unparseable inventory: an empty derived list must never
+# look like "nothing to do" (F1/F4/F5/F10 were exactly that failure mode, silently).
+.PHONY: _fleet_check
+_fleet_check:
+	@test -s "$(FLEET)" || { echo "ERROR: $(FLEET) missing or empty — refusing to build/upgrade an empty fleet" >&2; exit 1; }
+	@test -n "$(TARGETS)" || { echo "ERROR: $(FLEET) parsed to zero in_all=yes targets — check its format" >&2; exit 1; }
+
 .PHONY:
-all: codemonkey.build $(addsuffix .build,$(TARGETS))
+all: _fleet_check codemonkey.build $(addsuffix .build,$(TARGETS))
 
 .PHONY:
 cuda: all cuda-llama-cpp.build cuda-comfy.build cuda-vllm.build
@@ -99,8 +112,6 @@ claude.build:
 %.build:
 	echo $@; \
 	docker buildx build $(BUILD_ARGS) --build-arg IMAGE_NAME=$(basename $@) -t $(basename $@):latest -f ./$(basename $@).dockerfile .
-
-REPO_ROOT := $(abspath $(dir $(MAKEFILE_PATH))/..)
 
 define UPGRADE_SCRIPT
 SRC=/opt/user-jhunt
@@ -159,13 +170,13 @@ export UPGRADE_SCRIPT
 	fi
 
 .PHONY:
-upgrade:
-	@for name in codemonkey $(TARGETS); do \
+upgrade: _fleet_check
+	@for name in codemonkey $(UPGRADE_TARGETS); do \
 		$(MAKE) --no-print-directory $$name.upgrade; \
 	done
 
 .PHONY:
-clean:
+clean: _fleet_check
 	echo "Cleaning up images..."
 	docker rmi -f $(TARGETS:%=%:latest) codemonkey:latest cuda-llama-cpp:latest cuda-comfy:latest cuda-vllm:latest cuda-base:runtime cuda-base:devel || true
 
