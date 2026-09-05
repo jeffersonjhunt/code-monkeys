@@ -48,7 +48,7 @@ The shell config is layered:
 1. **`zshrc.template`** — installed as `~/.zshrc` inside containers; sources `~/.zbase`, fixes ownership of mounted directories, activates the image's conda environment if present
 2. **`zbase`** — main config: oh-my-zsh setup, plugins, PATH, editor, history settings
 3. **`zaliases`** — aliases (`dps`, `dpi`, `probe`, `nvtop` (GPU monitor via the cuda-base primate), `ocd`, `git.all`, etc.)
-4. **`zfuncs`** — functions: `primate()`, `primate-upgrade()`, `which-os()`, `code-here()`, `tree()`, `clamscan()`, `tad()`, `watch()`
+4. **`zfuncs`** — functions: `primate()`, `primate-session()`, `primate-kill()`, `primate-upgrade()`, `which-os()`, `code-here()`, `tree()`, `clamscan()`, `tad()`, `watch()`
 
 ## Primates
 
@@ -59,6 +59,7 @@ Primates are purpose-built Docker images for different development domains. They
 ```
 debian:13-slim → codemonkey → miniforge3 → claude
                              │            → opencode
+                             │            → aichat
                              │            → kiro
                              │            → spark-bench   (x86-only)
                              → embedded
@@ -92,7 +93,7 @@ debian:trixie-slim → samba     (standalone — file-server daemon)
 | **cuda-base** | Shared CUDA base for the GPU images (one dockerfile, two flavors — `cuda-base:runtime` + `cuda-base:devel`). Adds `nvtop`, the codemonkey user, and cross-GPU arch defaults (sm_89 RTX 4090 / sm_120 RTX 5090 / sm_121 DGX Spark) so the family runs on x86 NVIDIA boxes as well as Spark |
 | **cuda-llama-cpp** | llama.cpp for NVIDIA GPUs (from `cuda-base`; cross-GPU default arch sm_89/120/121) |
 | **cuda-comfy** | ComfyUI for NVIDIA GPUs (from `cuda-base:runtime`; cross-GPU via PyTorch wheels) |
-| **cuda-vllm** | vLLM v0.21.0 source build with native sm_89/120/121 cutlass (runtime from `cuda-base:devel`) — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE that crashes on upstream `vllm/vllm-openai`, and runs on the 4090s |
+| **cuda-vllm** | vLLM v0.28.0 source build with native sm_89/120/121 cutlass (runtime from `cuda-base:devel`) — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE that crashes on upstream `vllm/vllm-openai`, and runs on the 4090s |
 
 ### Building
 
@@ -121,30 +122,60 @@ primate embedded --no-workspace  # start without mounting current directory
 What `primate` does:
 - Creates a persistent Docker volume `<image>-home` for the home directory
 - Mounts `~/.ssh` and `~/.aws` into the container if present
-- Mounts `/var/run/docker.sock` into the container if present (Docker-out-of-Docker)
+- Mounts `/var/run/docker.sock` into the container if present, with `--group-add <socket gid>` (Docker-out-of-Docker)
 - Mounts the current directory as `/home/codemonkey/workspace`
+- Exports `HOST_WORKSPACE` / `HOST_SSH_DIR` / `HOST_AWS_DIR` — the *host-side* path of each mount, needed for nested bind mounts (see below)
 - Loads environment variables from the `env` file if present
 - Auto-publishes any exposed ports
 - Enables `--gpus all` on NVIDIA kernel hosts
 - Runs as user `codemonkey` with zsh
+
+#### Long-lived sessions
+
+`primate` runs a foreground `--rm` container tied to the TTY: close the terminal (or drop an SSH
+connection) and the container is gone. For work that must outlive the connection, use
+`primate-session`, which starts a **detached, named** container (PID 1 = `sleep infinity`) and
+`docker exec`s into an in-container `tmux` session:
+
+```bash
+primate-session claude                # start (or re-attach to) the claude-session container
+primate-session claude scratch        # ...under an explicit container/session name
+# ctrl-b d detaches; re-run the same command from anywhere to re-attach
+primate-kill claude                   # tear it down (accepts the image name or the container name)
+```
+
+The `<image>-home` volume survives `primate-kill`, so a torn-down session loses nothing but the
+running processes.
 
 ### Docker-out-of-Docker
 
 Primate containers can build and manage sibling containers via the host Docker daemon. This lets AI agents (claude, opencode, kiro) run `docker build`, `make all`, etc. directly.
 
 **How it works:**
-- The `codemonkey` base image includes `docker-ce-cli` and `docker-buildx-plugin`
-- `primate()` bind-mounts `/var/run/docker.sock` when the socket exists on the host
-- `zshrc.template` adds `codemonkey` to a group matching the socket's GID on first login (so plain `docker` works after a second login or `newgrp`)
+- The `codemonkey` base image includes `docker-ce-cli`, `docker-buildx-plugin`, `docker-compose-plugin` and `acl`, so `docker build`, `docker buildx` and `docker compose` all work
+- `primate()` / `primate-session()` bind-mount `/var/run/docker.sock` when it exists on the host, and pass `--group-add <socket gid>` (Linux: `stat -c %g`; macOS: `0`, since Docker Desktop's VM presents the socket as `root:root 660` — that grants only the root *group's* rw bit on the socket, not root privileges)
+- That is enough for plain `docker …` as the unprivileged `codemonkey` user: **no sudo, no `chmod`, no `chgrp`**
+- Belt and braces: `/usr/local/bin/docker` (the `docker-shim` in this repo) shadows `/usr/bin/docker` and quietly re-execs under `sudo -n` if the socket is still not writable — so `docker` works even in a container started by hand without `--group-add`. `zshrc.template` also adds `codemonkey` to the socket's group for *future* logins (`docker exec` / `newgrp`); it cannot fix the shell it runs in, which is what the shim is for
 
 **Usage from inside a primate container:**
 ```bash
-cd workspace                     # if code-monkeys repo is your workspace
-cd primates && sudo make all     # build all images from inside the container
-sudo docker ps                   # manage sibling containers
+cd workspace/primates            # if code-monkeys repo is your workspace
+make all                         # build all images from inside the container — no sudo
+docker ps                        # manage sibling containers
+docker compose version
 ```
 
-`sudo` works immediately (codemonkey has NOPASSWD sudo) and is the most reliable path for scripts and `make`. Plain `docker …` (no sudo) only works after re-entering the container — `usermod -aG` doesn't update an already-running shell's credentials.
+Never `chmod`/`chgrp` the socket: on a Linux host that inode *is* the host's socket.
+
+**Bind mounts resolve on the daemon host, not inside the container.** A `-v /path:/x`, `--mount`, or compose `volumes:` entry is interpreted by the *host* daemon, so a container-local path (`/tmp/…`, `/home/codemonkey/…`) comes up as an empty host-created directory — or fails with Docker Desktop's file-sharing error. Mount only host-shared directories, under their host path. `primate()` exports those as `HOST_WORKSPACE`, `HOST_SSH_DIR`, `HOST_AWS_DIR`, and the `hostpath` helper (baked into the image) does the translation:
+
+```bash
+docker run -v "$(hostpath ~/workspace/proj/data):/data" …
+docker compose -f ~/workspace/proj/compose.yaml \
+  --project-directory "$(hostpath ~/workspace/proj)" up
+```
+
+`docker build .`, `docker cp` and `COPY` are unaffected — the client streams those from inside the container.
 
 **Security note:** Mounting the Docker socket grants root-equivalent access to the host. This is standard for personal dev environments but should not be used in multi-tenant or production contexts.
 
@@ -222,8 +253,11 @@ can already decrypt, then commit + push hemlighet.
 ├── vault                  # secrets manager (SOPS + age via the nyckel primate; store = ~/.local/share/hemlighet)
 ├── bin/                   # host shim scripts symlinked into ~/.local/bin/
 │   ├── aws                # local-first AWS CLI wrapper (falls back to minion container)
+│   ├── spark-bench        # runs an eval harness in the spark-bench primate (see 007/skills/spark-bench/)
 │   └── sops, age, age-keygen  # shims running the tools in the nyckel primate
 ├── codemonkey.dockerfile  # base Docker image (debian:13-slim)
+├── docker-shim            # /usr/local/bin/docker in every image — sudo -n fallback if the socket is denied
+├── hostpath               # /usr/local/bin/hostpath — translates a container path to its daemon-host path
 ├── primates/              # specialized Docker images built on codemonkey
 │   ├── Makefile
 │   └── *.dockerfile
@@ -235,6 +269,7 @@ can already decrypt, then commit + push hemlighet.
 ├── zaliases               # shell aliases
 ├── zfuncs                 # shell functions (primate launcher, utilities)
 ├── zprofile               # zsh profile
+├── tmux.conf              # tmux config (not installed by setup or baked into any image — see TODO.md)
 ├── gitconfig              # global git config (gitignored, vault-managed)
 ├── gitignore              # global gitignore
 ├── vimrc                  # vim config
@@ -242,8 +277,9 @@ can already decrypt, then commit + push hemlighet.
 ├── hooks/                 # git hooks (installed by setup)
 │   └── pre-commit         # warns if vault is stale, or if stored credentials are >30 days old
 ├── jjh.zsh-theme          # custom zsh prompt theme (based on ys, adds conda env)
-├── claude/                # Claude Code settings + custom commands
+├── claude/                # Claude Code settings, global memory + custom commands
 │   ├── settings.json
+│   ├── CLAUDE.md          # global user memory (copied to ~/.claude/CLAUDE.md in the claude primate)
 │   └── commands/
 ├── fastfetch/             # fastfetch config
 ├── Library/               # macOS-only assets
