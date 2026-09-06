@@ -29,7 +29,7 @@ The `setup` script symlinks dotfiles from this repo into `$HOME`:
 
 What it does:
 - Installs Oh-My-Zsh if it isn't already there, and sets zsh as the default shell
-- Symlinks `gitconfig` (if present), `gitignore`, `vimrc`, `toprc`, `zaliases`, `zbase`, `zfuncs`, `zprofile` as dotfiles in `$HOME`
+- Symlinks `gitconfig` (if present), `gitignore`, `vimrc`, `toprc`, `tmux.conf`, `zaliases`, `zbase`, `zfuncs`, `zprofile` as dotfiles in `$HOME`
 - Symlinks `ssh` and `aws` if present (created by `vault unlock`)
 - Symlinks `fastfetch` into `~/.config/` and `jjh.zsh-theme` into `~/.oh-my-zsh/custom/themes/`
 - Links `claude/settings.json` and `claude/commands` **into** `~/.claude` (which stays a real directory — it holds Claude Code's live state). Existing real files there are left alone, not overwritten
@@ -53,6 +53,8 @@ The shell config is layered:
 ## Primates
 
 Primates are purpose-built Docker images for different development domains. They all share the `codemonkey` base image and a common shell environment.
+
+The roster lives in **`primates/fleet.conf`** — one row per image recording whether it is in `make all`, which arches it targets, whether a bare `build-push.sh`/`manifest-push.sh` run sweeps it up, and whether it has a home volume worth upgrading. The Makefile, both push scripts and `zfuncs` all *derive* their lists from it with `awk`, so adding a primate is one row rather than five edits that drift apart. Row order is build order. See `primates/CLAUDE.md`.
 
 ### Image Hierarchy
 
@@ -260,6 +262,8 @@ can already decrypt, then commit + push hemlighet.
 ├── hostpath               # /usr/local/bin/hostpath — translates a container path to its daemon-host path
 ├── primates/              # specialized Docker images built on codemonkey
 │   ├── Makefile
+│   ├── fleet.conf         # SINGLE SOURCE OF TRUTH for the roster — every "which primates exist" list derives from it
+│   ├── upgrade-home.sh    # the one home-volume dotfile sync (used by both primate-upgrade and make *.upgrade)
 │   └── *.dockerfile
 ├── 007/                   # agent skills library (installed by setup via `make -C 007/skills install`)
 │   ├── Makefile           # `make test` runs the skill test suite
@@ -269,7 +273,7 @@ can already decrypt, then commit + push hemlighet.
 ├── zaliases               # shell aliases
 ├── zfuncs                 # shell functions (primate launcher, utilities)
 ├── zprofile               # zsh profile
-├── tmux.conf              # tmux config (not installed by setup or baked into any image — see TODO.md)
+├── tmux.conf              # tmux config (-> ~/.tmux.conf by setup; baked into images; used by primate-session)
 ├── gitconfig              # global git config (gitignored, vault-managed)
 ├── gitignore              # global gitignore
 ├── vimrc                  # vim config
