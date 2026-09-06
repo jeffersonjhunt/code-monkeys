@@ -66,22 +66,15 @@ function _primate_ensure_image() {
   fi
 }
 
-# Resolve the fleet inventory. On the host, ~/.zfuncs is a symlink into the repo checkout, so the
-# repo-relative path wins. Inside a primate, ~/.zfuncs is a COPY (upgrade-home.sh / the image bake),
-# so that path does not exist and we fall back to ~/.fleet.conf — which is itself a copy of the same
-# primates/fleet.conf, installed by codemonkey.dockerfile and refreshed by upgrade-home.sh. Both are
-# derived from the one source of truth; neither is a hand-maintained list. Prints the resolved path.
+# Resolve the fleet inventory: the repo checkout's primates/fleet.conf, found relative to this
+# file. On the host ~/.zfuncs is a symlink into the checkout, so this resolves. Inside a primate it
+# does not — and that is fine: the base image ships no zfuncs, so these helpers only exist there in
+# a home volume that upgrade-home.sh has copied one into, where primate-upgrade cannot work anyway.
+# The inventory is a repo file. It is deliberately NOT distributed into images. Prints the path.
 function _primate_fleet_conf() {
-  local __repo_fleet="${${(%):-%x}:A:h}/primates/fleet.conf"
-  local __home_fleet="${HOME}/.fleet.conf"
-  local __f
-  for __f in "$__repo_fleet" "$__home_fleet"; do
-    if [[ -r "$__f" && -s "$__f" ]]; then
-      print -r -- "$__f"
-      return 0
-    fi
-  done
-  return 1
+  local __f="${${(%):-%x}:A:h}/primates/fleet.conf"
+  [[ -r "$__f" && -s "$__f" ]] || return 1
+  print -r -- "$__f"
 }
 
 # gid to --group-add alongside the /var/run/docker.sock mount so the unprivileged codemonkey
@@ -198,7 +191,7 @@ function _primate() {
   # consumers do. Read inside the function, never at source time.
   local __FLEET
   if ! __FLEET="$(_primate_fleet_conf)"; then
-    _message "ERROR: no readable fleet inventory (primates/fleet.conf or ~/.fleet.conf) — primate name completion unavailable"
+    _message "ERROR: primates/fleet.conf not readable from this checkout — primate name completion unavailable"
     return 1
   fi
   # `< "$__FLEET"` and not `awk ... "$__FLEET"`: mawk (Debian's awk, so every primate's) treats an
@@ -234,7 +227,7 @@ function primate-upgrade() {
     # it does not upgrade codemonkey-home, so excluding it here would skip that volume.
     local __FLEET
     if ! __FLEET="$(_primate_fleet_conf)"; then
-      echo "ERROR: no readable fleet inventory (tried the repo's primates/fleet.conf and ${HOME}/.fleet.conf) — refusing to silently upgrade zero primates" >&2
+      echo "ERROR: primates/fleet.conf not readable from this checkout — refusing to silently upgrade zero primates" >&2
       return 1
     fi
     local known=(${(f)"$(awk -F: '/^#/{next} {gsub(/[ \t\r]+/,"")} NF==7 && $7=="yes" {print $1}' < "$__FLEET")"})

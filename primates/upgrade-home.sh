@@ -20,7 +20,7 @@ HOME=/home/codemonkey
 # is interpreted by the DAEMON HOST — a container-local path there is an empty host-created dir, not
 # the repo (see CLAUDE.md "Docker-out-of-Docker"). Both callers now translate with hostpath, so this
 # is the backstop: fail before the first cp, not halfway through, and say what is actually wrong.
-for __req in zshrc.template zfuncs jjh.zsh-theme primates/fleet.conf; do
+for __req in zshrc.template zfuncs jjh.zsh-theme; do
   [ -f "$SRC/$__req" ] || {
     echo "ERROR: $SRC/$__req missing — the repo mount at $SRC is empty or is not this repo." >&2
     echo "       Bind mounts resolve on the Docker DAEMON HOST: from inside a primate the source" >&2
@@ -48,10 +48,6 @@ cp "$SRC/toprc"          "$HOME/.toprc"
 cp "$SRC/tmux.conf"      "$HOME/.tmux.conf"
 cp "$SRC/zshrc.template" "$HOME/.zshrc"
 cp "$SRC/zfuncs"         "$HOME/.zfuncs"
-# ~/.zfuncs is a COPY in here, not the repo symlink, so its fleet consumers cannot reach
-# $SRC/primates/fleet.conf at runtime. Install the inventory beside it, derived from the same
-# single source — never a second hand-maintained list.
-cp "$SRC/primates/fleet.conf" "$HOME/.fleet.conf"
 
 # oh-my-zsh update
 if [ -d "$HOME/.oh-my-zsh" ]; then

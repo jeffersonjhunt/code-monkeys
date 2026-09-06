@@ -103,9 +103,13 @@ Rules that are load-bearing:
 - **Every consumer fails loudly** on a missing, empty or malformed inventory. An empty derived list
   must never look like "nothing to do" — that silence is exactly how the four findings above stayed
   invisible.
-- **In-container copy.** `zfuncs` inside a primate is a *copy*, so it cannot find the repo-relative
-  path; `codemonkey.dockerfile` bakes the inventory to `~/.fleet.conf` and `upgrade-home.sh` syncs
-  it, and the `zfuncs` helpers try the repo path first, then `~/.fleet.conf`.
+- **Repo file only — not shipped into images.** The `zfuncs` helpers find it relative to the
+  checkout. Inside a primate they cannot, and that is deliberate: the base image ships no `zfuncs`,
+  so `primate`/`primate-upgrade`/completion only exist in a home volume that `upgrade-home.sh` has
+  copied one into — where `primate-upgrade` cannot work regardless, since its repo mount resolves
+  on the daemon host. Distributing the inventory into images to prop up that path cost a dockerfile
+  COPY, a sync line, a two-path resolver and one shell-hanging bug, for a tab-completion nicety.
+  Don't.
 
 ### Adding a primate
 
