@@ -205,7 +205,7 @@ function _primate() {
   # EMPTY filename argument as stdin, which at completion time is the terminal — the shell hangs
   # instead of reaching the guard below. A redirection of "" fails immediately instead. Belt and
   # braces on top of the return check above, because the cost of getting this wrong is a wedged tab.
-  local known_primates=(${(f)"$(awk -F: '!/^#/ && NF==7 {print $1}' < "$__FLEET" 2>/dev/null)"})
+  local known_primates=(${(f)"$(awk -F: '/^#/{next} {gsub(/[ \t\r]+/,"")} NF==7 {print $1}' < "$__FLEET" 2>/dev/null)"})
   if [[ ${#known_primates[@]} -eq 0 ]]; then
     _message "ERROR: ${__FLEET} is not a well-formed fleet inventory — primate name completion unavailable"
     return 1
@@ -237,7 +237,7 @@ function primate-upgrade() {
       echo "ERROR: no readable fleet inventory (tried the repo's primates/fleet.conf and ${HOME}/.fleet.conf) — refusing to silently upgrade zero primates" >&2
       return 1
     fi
-    local known=(${(f)"$(awk -F: '!/^#/ && NF==7 && $7=="yes" {print $1}' < "$__FLEET")"})
+    local known=(${(f)"$(awk -F: '/^#/{next} {gsub(/[ \t\r]+/,"")} NF==7 && $7=="yes" {print $1}' < "$__FLEET")"})
     if [[ ${#known[@]} -eq 0 ]]; then
       echo "ERROR: ${__FLEET} parsed to zero home_volume=yes primates — check its format" >&2
       return 1

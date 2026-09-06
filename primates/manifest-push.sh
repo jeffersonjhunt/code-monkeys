@@ -16,10 +16,17 @@ REGION="${AWS_REGION:-us-east-1}"
 # (nyckel, samba, cuda-base, cuda-vllm) still reaches ECR — just via an explicit name argument,
 # or, for cuda-vllm, the spark-cluster's own deploy pipeline. See fleet.conf's header.
 FLEET="$(cd "$(dirname "$0")" && pwd)/fleet.conf"
-[ -r "$FLEET" ] || { echo "ERROR: $FLEET missing or unreadable — refusing to guess the fleet" >&2; exit 9; }
-mapfile -t ALL < <(awk -F: '!/^#/ && NF==7 && $6=="yes" {print $1}' < "$FLEET")
-if [ "$#" -gt 0 ]; then ALL=("$@"); fi
-[ "${#ALL[@]}" -gt 0 ] || { echo "ERROR: zero primates selected (fleet.conf parsed empty for manifest_default=yes) — aborting" >&2; exit 9; }
+if [ "$#" -gt 0 ]; then
+  # Explicit names (e.g. ./manifest-push.sh cuda-vllm) read nothing from the inventory.
+  ALL=("$@")
+else
+  [ -r "$FLEET" ] || { echo "ERROR: $FLEET missing or unreadable — refusing to guess the fleet" >&2; exit 9; }
+  # while-read, not mapfile — see the note in build-push.sh (bash 3.2 on stock macOS).
+  ALL=()
+  while IFS= read -r p; do ALL+=("$p"); done < <(
+    awk -F: '/^#/{next} {gsub(/[ \t\r]+/,"")} NF==7 && $6=="yes" {print $1}' < "$FLEET")
+  [ "${#ALL[@]}" -gt 0 ] || { echo "ERROR: zero primates selected (fleet.conf parsed empty for manifest_default=yes) — aborting" >&2; exit 9; }
+fi
 
 TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" \
   -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \

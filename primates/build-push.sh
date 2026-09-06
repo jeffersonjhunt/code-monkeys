@@ -26,10 +26,19 @@ esac
 # so miniforge3 stays ahead of everything that FROMs it. GPU primates (cuda-*) are push_default=no —
 # build them on a GPU host by passing their names explicitly.
 FLEET="$HERE/fleet.conf"
-[ -r "$FLEET" ] || { echo "ERROR: $FLEET missing or unreadable — refusing to guess the fleet" >&2; exit 9; }
-mapfile -t DEFAULT < <(awk -F: -v arch="$ARCH" '!/^#/ && NF==7 && $5=="yes" && index($4,arch) {print $1}' < "$FLEET")
-if [ "$#" -gt 0 ]; then PRIMATES=("$@"); else PRIMATES=("${DEFAULT[@]}"); fi
-[ "${#PRIMATES[@]}" -gt 0 ] || { echo "ERROR: zero primates selected (fleet.conf parsed empty for push_default=yes, arch=$ARCH) — aborting rather than silently doing nothing" >&2; exit 9; }
+if [ "$#" -gt 0 ]; then
+  # Explicit names (the documented way to push the GPU images) read nothing from the inventory,
+  # so do not couple them to it.
+  PRIMATES=("$@")
+else
+  [ -r "$FLEET" ] || { echo "ERROR: $FLEET missing or unreadable — refusing to guess the fleet" >&2; exit 9; }
+  # while-read, not mapfile: mapfile is bash 4+, and #!/usr/bin/env bash on a stock macOS host
+  # resolves to 3.2, where `set -u` would then abort on DEFAULT with a message pointing nowhere.
+  PRIMATES=()
+  while IFS= read -r p; do PRIMATES+=("$p"); done < <(
+    awk -F: -v arch="$ARCH" '/^#/{next} {gsub(/[ \t\r]+/,"")} NF==7 && $5=="yes" && index($4,arch) {print $1}' < "$FLEET")
+  [ "${#PRIMATES[@]}" -gt 0 ] || { echo "ERROR: zero primates selected (fleet.conf parsed empty for push_default=yes, arch=$ARCH) — aborting rather than silently doing nothing" >&2; exit 9; }
+fi
 
 # ECR login (containerized aws-cli — no host aws install; fail closed on an empty token).
 docker image inspect amazon/aws-cli >/dev/null 2>&1 || docker pull -q amazon/aws-cli >/dev/null
