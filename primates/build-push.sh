@@ -27,7 +27,9 @@ if [ "$#" -gt 0 ]; then PRIMATES=("$@"); else PRIMATES=("${DEFAULT[@]}"); fi
 
 # ECR login (containerized aws-cli — no host aws install; fail closed on an empty token).
 docker image inspect amazon/aws-cli >/dev/null 2>&1 || docker pull -q amazon/aws-cli >/dev/null
-TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-login-password --region "$REGION")"
+TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" \
+  -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
+  amazon/aws-cli ecr get-login-password --region "$REGION")"
 [ -n "$TOKEN" ] || { echo "ERROR: empty ECR token" >&2; exit 8; }
 echo "$TOKEN" | docker login --username AWS --password-stdin "$ECR" >/dev/null || exit 8
 

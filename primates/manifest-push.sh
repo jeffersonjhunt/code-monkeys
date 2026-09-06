@@ -12,10 +12,17 @@ ECR="${ECR_REGISTRY:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
 NS=codemonkeys
 REGION="${AWS_REGION:-us-east-1}"
 
-ALL=(codemonkey minion embedded miniforge3 lamp huggingface claude opencode kiro spark-bench cuda-comfy cuda-llama-cpp)
+# The default sweep. Deliberately excluded, publish these by name instead:
+#   nyckel, samba  — standalone primates, published explicitly (see primates/CLAUDE.md)
+#   cuda-base      — ships :runtime + :devel, has no :latest to assemble
+#   cuda-vllm      — reaches ECR through the spark-cluster's own deploy pipeline, not this sweep
+#                    (see spark/cluster/README.md); run `./manifest-push.sh cuda-vllm` to do it here
+ALL=(codemonkey minion embedded miniforge3 lamp huggingface claude opencode aichat kiro spark-bench cuda-comfy cuda-llama-cpp)
 if [ "$#" -gt 0 ]; then ALL=("$@"); fi
 
-TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-login-password --region "$REGION")"
+TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" \
+  -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
+  amazon/aws-cli ecr get-login-password --region "$REGION")"
 [ -n "$TOKEN" ] || { echo "ERROR: empty ECR token" >&2; exit 8; }
 echo "$TOKEN" | docker login --username AWS --password-stdin "$ECR" >/dev/null || exit 8
 

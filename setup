@@ -11,7 +11,7 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Configuration ---
 
-DOT_LINKS="ssh aws gitconfig gitignore toprc vimrc zaliases zbase zfuncs zprofile"
+DOT_LINKS="ssh aws gitconfig gitignore toprc tmux.conf vimrc zaliases zbase zfuncs zprofile"
 DIR_LINKS="fastfetch::config jjh.zsh-theme::oh-my-zsh/custom/themes"
 
 # Individual items linked INTO an existing directory under $HOME: "<path-under-SRC>::<parent>"

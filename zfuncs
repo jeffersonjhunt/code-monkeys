@@ -53,7 +53,9 @@ function _primate_ensure_image() {
   local __ecr="${CODEMONKEYS_ECR:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
   local __ref="${__ecr}/codemonkeys/${__img}:latest"
   echo "  ${__img}:latest not present locally — pulling ${__ref}"
-  docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli \
+  docker run --rm -v "$HOME/.aws:/root/.aws:ro" \
+    -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
+    amazon/aws-cli \
     ecr get-login-password --region "${AWS_REGION:-us-east-1}" 2>/dev/null \
     | docker login --username AWS --password-stdin "$__ecr" >/dev/null 2>&1
   if docker pull "$__ref"; then
@@ -62,6 +64,24 @@ function _primate_ensure_image() {
     echo "  ERROR: ${__img} is not local and could not be pulled from ECR (${__ref})" >&2
     return 1
   fi
+}
+
+# The primate roster, read off the dockerfiles that define it: codemonkey (whose dockerfile lives
+# at the repo root) plus every primates/<name>.dockerfile, resolved relative to this file. The
+# dockerfiles ARE the roster — anything else is a second copy of a list already on disk, and a copy
+# is what drifted. One name per line.
+function _primate_roster() {
+  local __repo="${${(%):-%x}:A:h}" __f
+  local __found=("${__repo}"/primates/*.dockerfile(N))
+  # No dockerfiles means this is not a repo checkout — inside a primate ~/.zfuncs is a copy, so the
+  # sibling primates/ does not exist. Return nothing rather than the bare `codemonkey` the glob
+  # would leave behind: a one-item completion list reads as the whole roster, which is worse than
+  # an empty one. Callers treat a non-zero return as "no roster here" and offer nothing.
+  (( $#__found )) || return 1
+  print -r -- codemonkey
+  for __f in "${__found[@]}"; do
+    print -r -- "${${__f:t}%.dockerfile}"
+  done
 }
 
 # gid to --group-add alongside the /var/run/docker.sock mount so the unprivileged codemonkey
@@ -170,9 +190,10 @@ function primate() {
 }
 
 function _primate() {
-  # All fleet primates — any not present locally is pulled from ECR on demand by _primate_ensure_image,
-  # so offer the full set (names match the ECR repos under codemonkeys/*), not just locally-built images.
-  local known_primates=(codemonkey minion embedded miniforge3 claude opencode kiro lamp huggingface spark-bench nyckel cuda-base cuda-vllm cuda-comfy cuda-llama-cpp)
+  # Every primate, not just the locally-built ones — _primate_ensure_image pulls anything missing
+  # from ECR on demand, and the ECR repo names under codemonkeys/* match the dockerfile names.
+  # Computed inside the function, so sourcing zfuncs costs nothing.
+  local known_primates=(${(f)"$(_primate_roster)"})
 
   case "$CURRENT" in
     2) _describe 'primate image' known_primates ;;
@@ -192,12 +213,17 @@ function primate-upgrade() {
   local __IMAGES=("$@")
 
   if [[ "$1" == "--all" ]]; then
+    # Don't guess names and then ask whether each one has a volume — ask which volumes exist.
+    # Intersected with the dockerfile roster so a stray, unrelated <something>-home volume is
+    # never handed codemonkey's dotfiles. Both sides are derived; neither is maintained by hand,
+    # which is what let aichat and spark-bench fall out of the old hardcoded list.
+    local __roster=(${(f)"$(_primate_roster)"})
+    local __vol __name
     __IMAGES=()
-    local known=(codemonkey minion embedded miniforge3 claude opencode kiro lamp huggingface)
-    for name in "${known[@]}"; do
-      if docker volume inspect "${name}-home" &>/dev/null; then
-        __IMAGES+=("$name")
-      fi
+    for __vol in ${(f)"$(docker volume ls --format '{{.Name}}' 2>/dev/null)"}; do
+      [[ "$__vol" == *-home ]] || continue
+      __name="${__vol%-home}"
+      (( ${__roster[(I)$__name]} )) && __IMAGES+=("$__name")
     done
     if [[ ${#__IMAGES[@]} -eq 0 ]]; then
       echo "No primate home volumes found."
@@ -207,6 +233,18 @@ function primate-upgrade() {
 
   _primate_ensure_image codemonkey || return 1
 
+  # The upgrade container's repo mount is resolved by the DAEMON HOST, so a container-local path
+  # comes up empty when primate-upgrade is run from inside a primate. Translate it there.
+  local __SRC="${__REPO}"
+  if [[ -f /.dockerenv ]] && (( $+commands[hostpath] )); then
+    if ! __SRC="$(hostpath "${__REPO}")"; then
+      echo "ERROR: ${__REPO} is not under a host-shared mount, so the upgrade container cannot see it." >&2
+      echo "       Bind mounts resolve on the Docker daemon host — run this from the host checkout." >&2
+      return 1
+    fi
+  fi
+
+  local __rc=0
   for __IMAGE in "${__IMAGES[@]}"; do
     local __VOL="${__IMAGE}-home"
     if ! docker volume inspect "$__VOL" &>/dev/null; then
@@ -215,51 +253,20 @@ function primate-upgrade() {
     fi
 
     echo "upgrading ${__IMAGE}..."
-    docker run --rm \
-      --volume "${__REPO}:/opt/user-jhunt:ro" \
+    # The sync logic lives in primates/upgrade-home.sh — the same file `make <name>.upgrade`
+    # runs, reached through the read-only repo mount. PRIMATE drives its per-image blocks.
+    if docker run --rm \
+      --env "PRIMATE=${__IMAGE}" \
+      --volume "${__SRC}:/opt/user-jhunt:ro" \
       --volume "${__VOL}:/home/codemonkey" \
-      codemonkey:latest bash -c '
-        SRC=/opt/user-jhunt
-        HOME=/home/codemonkey
-
-        # dotfiles
-        cp "$SRC/zaliases"  "$HOME/.zaliases"
-        cp "$SRC/zbase"     "$HOME/.zbase"
-        cp "$SRC/zprofile"  "$HOME/.zprofile"
-        [ -f "$SRC/gitconfig" ] && cp "$SRC/gitconfig" "$HOME/.gitconfig"
-        cp "$SRC/gitignore" "$HOME/.gitignore"
-        cp "$SRC/vimrc"     "$HOME/.vimrc"
-        cp "$SRC/toprc"     "$HOME/.toprc"
-        cp "$SRC/zshrc.template" "$HOME/.zshrc"
-        cp "$SRC/zfuncs"    "$HOME/.zfuncs"
-
-        # oh-my-zsh update
-        if [ -d "$HOME/.oh-my-zsh" ]; then
-          git -C "$HOME/.oh-my-zsh" pull --quiet 2>/dev/null || true
-          for plugin in zsh-autosuggestions zsh-completions zsh-syntax-highlighting; do
-            if [ -d "$HOME/.oh-my-zsh/custom/plugins/$plugin" ]; then
-              git -C "$HOME/.oh-my-zsh/custom/plugins/$plugin" pull --quiet 2>/dev/null || true
-            fi
-          done
-        fi
-
-        # oh-my-zsh theme
-        mkdir -p "$HOME/.oh-my-zsh/custom/themes"
-        cp "$SRC/jjh.zsh-theme" "$HOME/.oh-my-zsh/custom/themes/jjh.zsh-theme"
-
-        # claude config
-        if [ -d "$SRC/claude" ]; then
-          mkdir -p "$HOME/.claude/commands"
-          cp "$SRC/claude/settings.json" "$HOME/.claude/settings.json"
-          [ -f "$SRC/claude/CLAUDE.md" ] && cp "$SRC/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
-          cp "$SRC/claude/commands/"* "$HOME/.claude/commands/" 2>/dev/null
-        fi
-
-        # fix ownership
-        chown -R codemonkey:codemonkey "$HOME"
-      '
-    echo "  done: ${__IMAGE}"
+      codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh; then
+      echo "  done: ${__IMAGE}"
+    else
+      echo "  FAILED: ${__IMAGE} (home volume may be partially upgraded)" >&2
+      __rc=1
+    fi
   done
+  return $__rc
 }
 
 # starts (or re-attaches to) a long-lived, detached primate running an
@@ -391,14 +398,15 @@ function primate-kill() {
     return 1
   fi
   local __NAME="$1"
-  if ! docker inspect "${__NAME}" &>/dev/null; then
-    # accept the bare image name too (maps to <image>-session)
-    if docker inspect "${__NAME}-session" &>/dev/null; then
-      __NAME="${__NAME}-session"
-    else
-      echo "no such container: ${1}"
-      return 1
-    fi
+  # Documented usage is `primate-kill <image>`, so resolve <image>-session FIRST: trying the bare
+  # name first let an unrelated container literally named e.g. "claude" shadow claude-session and
+  # be killed instead. A custom session name (primate-session <image> <name>) still resolves via
+  # the exact-match fallback, as does an already-suffixed <name>-session.
+  if docker inspect "${__NAME}-session" &>/dev/null; then
+    __NAME="${__NAME}-session"
+  elif ! docker inspect "${__NAME}" &>/dev/null; then
+    echo "no such container: ${1}"
+    return 1
   fi
   echo "removing ${__NAME} (home volume persists)"
   docker rm -f "${__NAME}" >/dev/null

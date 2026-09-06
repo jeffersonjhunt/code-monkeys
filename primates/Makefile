@@ -1,10 +1,18 @@
 # Makefile for primates project
 
+# What `make all` builds, in dependency order (codemonkey is built first, separately).
+# spark-bench is deliberately absent: it is x86-only and built on its own host.
 TARGETS := minion embedded miniforge3 claude opencode aichat kiro lamp huggingface nyckel samba
+
+# What `make upgrade` syncs dotfiles into. NOT $(TARGETS): spark-bench has a home volume even
+# though `all` does not build it here, and nyckel/samba have none (neither is codemonkey-based,
+# so there is nothing to sync). Different question, different list.
+UPGRADE_TARGETS := codemonkey minion embedded miniforge3 claude opencode aichat kiro lamp huggingface spark-bench
 
 MAKEFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 DIR := $(notdir $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))
 KERNEL := $(shell uname -r)
+REPO_ROOT := $(abspath $(dir $(MAKEFILE_PATH))/..)
 
 BUILD_ARGS ?=
 ifdef FORCE
@@ -100,74 +108,45 @@ claude.build:
 	echo $@; \
 	docker buildx build $(BUILD_ARGS) --build-arg IMAGE_NAME=$(basename $@) -t $(basename $@):latest -f ./$(basename $@).dockerfile .
 
-REPO_ROOT := $(abspath $(dir $(MAKEFILE_PATH))/..)
-
-define UPGRADE_SCRIPT
-SRC=/opt/user-jhunt
-HOME=/home/codemonkey
-cp "$$SRC/zaliases"  "$$HOME/.zaliases"
-cp "$$SRC/zbase"     "$$HOME/.zbase"
-cp "$$SRC/zprofile"  "$$HOME/.zprofile"
-[ -f "$$SRC/gitconfig" ] && cp "$$SRC/gitconfig" "$$HOME/.gitconfig"
-cp "$$SRC/gitignore" "$$HOME/.gitignore"
-cp "$$SRC/vimrc"     "$$HOME/.vimrc"
-cp "$$SRC/toprc"     "$$HOME/.toprc"
-cp "$$SRC/zshrc.template" "$$HOME/.zshrc"
-cp "$$SRC/zfuncs"    "$$HOME/.zfuncs"
-if [ -d "$$HOME/.oh-my-zsh" ]; then
-  git -C "$$HOME/.oh-my-zsh" pull --quiet 2>/dev/null || true
-  for plugin in zsh-autosuggestions zsh-completions zsh-syntax-highlighting; do
-    if [ -d "$$HOME/.oh-my-zsh/custom/plugins/$$plugin" ]; then
-      git -C "$$HOME/.oh-my-zsh/custom/plugins/$$plugin" pull --quiet 2>/dev/null || true
-    fi
-  done
-fi
-mkdir -p "$$HOME/.oh-my-zsh/custom/themes"
-cp "$$SRC/jjh.zsh-theme" "$$HOME/.oh-my-zsh/custom/themes/jjh.zsh-theme"
-if [ -d "$$SRC/claude" ]; then
-  mkdir -p "$$HOME/.claude/commands"
-  cp "$$SRC/claude/settings.json" "$$HOME/.claude/settings.json"
-  [ -f "$$SRC/claude/CLAUDE.md" ] && cp "$$SRC/claude/CLAUDE.md" "$$HOME/.claude/CLAUDE.md"
-  cp "$$SRC/claude/commands/"* "$$HOME/.claude/commands/" 2>/dev/null
-fi
-# Image-baked ~/.config files are shadowed by the persistent home volume, so a rebuild alone
-# can't refresh them — sync them here too. opencode.json carries the real model + MCP server
-# config; it is gitignored and lives SOPS+age-encrypted in hemlighet (the public image ships
-# only opencode.json.example). Decrypt it first (see README) — the [ -f ] guard means this is
-# skipped and the image's placeholder stands if the real file isn't present.
-if [ "$$PRIMATE" = "opencode" ] && [ -f "$$SRC/primates/opencode.json" ]; then
-  mkdir -p "$$HOME/.config/opencode"
-  cp "$$SRC/primates/opencode.json" "$$HOME/.config/opencode/opencode.json"
-fi
-chown -R codemonkey:codemonkey "$$HOME"
-endef
-export UPGRADE_SCRIPT
-
+# The home-volume dotfile sync lives in ONE place — primates/upgrade-home.sh — reached through the
+# read-only repo mount below. zfuncs' primate-upgrade runs the same file the same way.
 .PHONY:
 %.upgrade:
 	@VOL=$(basename $@)-home; \
+	SRC='$(REPO_ROOT)'; \
+	if [ -f /.dockerenv ] && command -v hostpath >/dev/null 2>&1; then \
+		SRC=$$(hostpath '$(REPO_ROOT)') || { \
+			echo "ERROR: $(REPO_ROOT) is not under a host-shared mount, so the upgrade container cannot see it." >&2; \
+			echo "       Bind mounts resolve on the Docker daemon host — run this from the host checkout." >&2; \
+			exit 1; \
+		}; \
+	fi; \
 	if ! docker volume inspect "$$VOL" >/dev/null 2>&1; then \
 		echo "skip: volume $$VOL does not exist"; \
 	else \
 		echo "upgrading $(basename $@)..."; \
 		docker run --rm \
 			--env "PRIMATE=$(basename $@)" \
-			--volume "$(REPO_ROOT):/opt/user-jhunt:ro" \
+			--volume "$$SRC:/opt/user-jhunt:ro" \
 			--volume "$$VOL:/home/codemonkey" \
-			codemonkey:latest bash -c "$$UPGRADE_SCRIPT"; \
+			codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh \
+			|| { echo "  FAILED: $(basename $@) (home volume may be partially upgraded)" >&2; exit 1; }; \
 		echo "  done: $(basename $@)"; \
 	fi
 
 .PHONY:
 upgrade:
-	@for name in codemonkey $(TARGETS); do \
-		$(MAKE) --no-print-directory $$name.upgrade; \
-	done
+	@rc=0; \
+	for name in $(UPGRADE_TARGETS); do \
+		$(MAKE) --no-print-directory $$name.upgrade || rc=1; \
+	done; \
+	if [ "$$rc" -ne 0 ]; then echo "ERROR: one or more upgrades FAILED (see above)" >&2; fi; \
+	exit $$rc
 
 .PHONY:
 clean:
 	echo "Cleaning up images..."
-	docker rmi -f $(TARGETS:%=%:latest) codemonkey:latest cuda-llama-cpp:latest cuda-comfy:latest cuda-vllm:latest cuda-base:runtime cuda-base:devel || true
+	docker rmi -f $(TARGETS:%=%:latest) spark-bench:latest codemonkey:latest cuda-llama-cpp:latest cuda-comfy:latest cuda-vllm:latest cuda-base:runtime cuda-base:devel || true
 
 # Guard for the CUDA image targets. Passes on any host that can build/run
 # them: a DGX Spark (-nvidia kernel), or an x86/other box with an NVIDIA GPU

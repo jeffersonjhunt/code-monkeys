@@ -12,9 +12,11 @@ This is a personal development environment repository (dotfiles + containerized 
 - **`codemonkey.dockerfile`**: Base Docker image (debian:13-slim) that all primates inherit from
 - **`primates/`**: Specialized Docker images built on top of codemonkey (see `primates/CLAUDE.md` for details)
 - **`setup`**: Host machine setup script that symlinks dotfiles into `$HOME` and `bin/` shims into `~/.local/bin/`
-- **`bin/`**: Host shim scripts symlinked individually into `~/.local/bin/` (e.g. `aws` — local-first wrapper that falls back to running in the `minion` container if no `aws` binary is on PATH; `sops`/`age`/`age-keygen` — run in the `nyckel` primate)
+- **`bin/`**: Host shim scripts symlinked individually into `~/.local/bin/` — `aws` (local-first wrapper that falls back to running in the `minion` container if no `aws` binary is on PATH), `sops`/`age`/`age-keygen` (run in the `nyckel` primate), and `spark-bench` (runs an eval harness in the `spark-bench` primate; see `007/skills/spark-bench/`)
 - **`vault`**: Secrets manager — stores `ssh/`, `aws/`, `env`, `face`, `gitconfig` SOPS+age-encrypted (binary mode, one `.sops` file per original) in the private `hemlighet` repo (`~/.local/share/hemlighet` by default — `VAULT_HEMLIGHET` overrides, a legacy `~/hemlighet` is still honoured; under `code-monkeys/personal/`); encrypt/decrypt runs in the containerized `nyckel` primate. `unlock`/`lock`/`status`/`rekey`; sync between machines is hemlighet git push/pull
 - **`zfuncs`**: Shell functions for launching containers (`primate()`, `primate-session()`, `primate-kill()`, `primate-upgrade()`, `clamscan()`, etc.). `primate()` runs a foreground `--rm` container tied to the TTY; `primate-session()` runs a **detached, named, long-lived** container (PID 1 = `sleep infinity`) and `docker exec`s into an in-container `tmux` session, so the session survives SSH disconnects — reconnect and re-run `primate-session <image>` to re-attach. `primate-kill <image|name>` tears it down (the `<image>-home` volume persists).
+- **`primates/upgrade-home.sh`**: The one home-volume dotfile-sync script, run inside a `codemonkey:latest` container against a `<image>-home` volume. Both `primate-upgrade` (in `zfuncs`) and `make <name>.upgrade` invoke it; it used to be duplicated inline in both, and the copies had drifted.
+- **`docker-shim`** / **`hostpath`**: Baked into every codemonkey-based image as `/usr/local/bin/docker` and `/usr/local/bin/hostpath` — see Docker-out-of-Docker below.
 - **`env`**: Environment variable definitions (tokens, API keys) — never commit secrets here
 - **`aws/`**: AWS CLI config and credentials — managed by vault, never commit plaintext
 - **`claude/`**: Claude Code settings, custom slash commands, and `CLAUDE.md` (global user memory copied to `~/.claude/CLAUDE.md` in the claude primate — carries the Docker-out-of-Docker note). `setup` links the settings and commands **into** the real `~/.claude` (via `CHILD_LINKS`): `~/.claude/settings.json` and `~/.claude/commands` → this repo. Note `~/.claude` itself must stay a **real directory** — it is Claude Code's live state (credentials, history, projects, daemon cache), so it can never *be* a symlink. (The old `DIR_LINKS` entry `claude::claude` created `~/.claude/claude`, a path nothing reads; the settings never reached Claude Code at all. Fixed.) An existing real `settings.json`/`commands` is never clobbered — setup skips it and tells you to remove it first if you want the repo to manage it. Also copied into the claude primate image by `make -C primates <img>.upgrade`.
@@ -34,9 +36,9 @@ make <name>.build           # Build a specific image (claude, miniforge3, embedd
 make all UNSAFE_SSL=true    # Build with SSL verification disabled (tainted build)
 make all FRESH=false        # Skip freshclam during codemonkey build (faster, no ClamAV DB update)
 make cuda-base.build        # Shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the cuda-* targets
-make cuda-llama-cpp.build   # Requires NVIDIA kernel — llama.cpp, cross-GPU sm_89/120/121
-make cuda-comfy.build       # Requires NVIDIA kernel — ComfyUI, cross-GPU
-make cuda-vllm.build        # Requires NVIDIA kernel — vLLM v0.21.0 source build, native sm_89/120/121 cutlass
+make cuda-llama-cpp.build   # Requires an NVIDIA host — llama.cpp, cross-GPU sm_89/120/121
+make cuda-comfy.build       # Requires an NVIDIA host — ComfyUI, cross-GPU
+make cuda-vllm.build        # Requires an NVIDIA host — vLLM v0.28.0 source build, native sm_89/120/121 cutlass
 make cuda                   # Base + all standard + the three cuda-* GPU images
 make clean                  # Remove all built images
 ```
@@ -44,8 +46,12 @@ make clean                  # Remove all built images
 ## Image Hierarchy
 
 ```
-debian:13-slim → codemonkey → miniforge3 (miniforge3-env) → claude (claude-env) | opencode (opencode-env) | kiro (kiro-env)
-                            → embedded                              → spark-bench (spark-bench-env)
+debian:13-slim → codemonkey → miniforge3 (miniforge3-env) → claude (claude-env)
+                            │                             → opencode (opencode-env)
+                            │                             → aichat (aichat-env)
+                            │                             → kiro (kiro-env)
+                            │                             → spark-bench (spark-bench-env, x86-only)
+                            → embedded
                             → lamp
                             → huggingface
                             → minion
@@ -53,7 +59,10 @@ debian:13-slim → codemonkey → miniforge3 (miniforge3-env) → claude (claude
 nvidia/cuda:13.2.1 → cuda-base (runtime + devel flavors; nvtop, codemonkey user, cross-GPU arch defaults)
                        → cuda-llama-cpp (multi-stage: full/light/server; cross-GPU sm_89/120/121)
                        → cuda-comfy
-                       → cuda-vllm       (vLLM v0.21.0 source, native sm_89/120/121 cutlass — backs the spark-cluster, runs on the 4090s)
+                       → cuda-vllm       (vLLM v0.28.0 source, native sm_89/120/121 cutlass — backs the spark-cluster, runs on the 4090s)
+
+alpine:3.21        → nyckel    (standalone, NOT from codemonkey — age + sops only; the engine behind `vault`)
+debian:trixie-slim → samba     (standalone, NOT from codemonkey — file-server daemon with the macOS/Time-Machine VFS modules)
 ```
 
 Miniforge3-derived images each get a conda environment (`<image>-env`) that is auto-activated at login. See `primates/CLAUDE.md` for details on adding this to new images.

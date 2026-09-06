@@ -9,13 +9,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-make all                    # Build codemonkey base + all targets (minion, embedded, miniforge3, claude, opencode, kiro, lamp, huggingface, nyckel, samba)
+make all                    # Build codemonkey base + all targets (minion, embedded, miniforge3, claude, opencode, aichat, kiro, lamp, huggingface, nyckel, samba)
 make codemonkey.build       # Build the codemonkey base image (from parent directory)
 make <name>.build           # Build a specific image, e.g. make claude.build
 make cuda-base.build        # Build the shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the cuda-* targets
-make cuda-llama-cpp.build   # Build llama.cpp, cross-GPU sm_89/120/121 (requires NVIDIA kernel)
-make cuda-comfy.build       # Build ComfyUI, cross-GPU (requires NVIDIA kernel)
-make cuda-vllm.build        # Build vLLM v0.21.0, native sm_89/120/121 cutlass (requires NVIDIA kernel)
+make cuda-llama-cpp.build   # Build llama.cpp, cross-GPU sm_89/120/121 (requires an NVIDIA host)
+make cuda-comfy.build       # Build ComfyUI, cross-GPU (requires an NVIDIA host)
+make cuda-vllm.build        # Build vLLM v0.28.0, native sm_89/120/121 cutlass (requires an NVIDIA host)
 make cuda                   # Build base + all standard + the three cuda-* GPU images
 make spark-bench.build      # Build the LLM-eval harness primate (build on x86 host — intel-nuc.tworivers — for SWE-Bench testbed compatibility)
 make all UNSAFE_SSL=true    # Build with SSL verification disabled (sets TAINTED_BUILD=true in images)
@@ -57,12 +57,27 @@ manifest.
   (`aws ecr create-repository --profile jhunt --repository-name codemonkeys/<name>`).
 - **Exceptions:** `spark-bench` is **amd64-only** (SWE-Bench testbeds are x86); `samba` is **amd64-only
   today** (only minerva serves files — `arm64` builds fine if an aarch64 host ever needs it); `cuda-base`
-  ships `:runtime` + `:devel`, no `:latest`.
+  ships `:runtime` + `:devel`, no `:latest`. **`cuda-vllm` is not in `manifest-push.sh`'s default
+  sweep** — it reaches ECR through the spark-cluster's own deploy pipeline
+  (`spark/cluster/README.md`), so publish it here by naming it explicitly:
+  `./manifest-push.sh cuda-vllm`.
 - **Standalone primates** (`nyckel`, `samba`) are NOT in `build-push.sh`/`manifest-push.sh`'s default
   arrays — publish them explicitly: `./build-push.sh samba` (on each arch) then `./manifest-push.sh samba`.
 
 `primate <name>` (in `../zfuncs`) pulls from ECR on demand and retags to the local name, so a fresh host
 runs any primate without building it first.
+
+## Adding a primate
+
+1. Write `primates/<name>.dockerfile`. That file *is* the roster entry — `zfuncs`' tab completion
+   and `primate-upgrade --all` both derive the set of primates from `codemonkey` plus
+   `primates/*.dockerfile`, so neither needs telling.
+2. If `make all` should build it, add it to `TARGETS` in the Makefile, **in dependency order**
+   (below whatever it `FROM`s). If it has a `<name>-home` volume worth syncing dotfiles into, add
+   it to `UPGRADE_TARGETS`. If a bare `build-push.sh` / `manifest-push.sh` run should publish it,
+   add it to `DEFAULT` / `ALL` there. These are four different questions and each script answers
+   its own; they are not copies of one roster.
+3. If it needs a conda env, follow *Conda Environments* below.
 
 ## Image Hierarchy
 
@@ -71,6 +86,7 @@ codemonkey (base, dockerfile in parent dir)
 ├── miniforge3       (adds Miniforge3 for aarch64/x86_64 via TARGETARCH, conda init for zsh, uv in base env)
 │   ├── claude       (adds claude-code via native installer, claude-env conda env)
 │   ├── opencode     (adds opencode via curl installer to /usr/local/bin, opencode-env conda env, pre-pointed at spark-cluster vLLM)
+│   ├── aichat       (adds aichat, a generic OpenAI-compatible chat REPL, static binary in /usr/local/bin, aichat-env conda env; provider-agnostic — ships only a placeholder config, point AICHAT_CONFIG_DIR at a real one at runtime)
 │   ├── kiro         (adds Amazon Kiro CLI via native installer, kiro-env conda env)
 │   └── spark-bench  (x86-only — LLM eval harnesses for the spark-cluster; SWE-Bench Verified via SWE-agent, tau2-bench, LiveCodeBench, AIME/GPQA. Runs on intel-nuc.tworivers)
 ├── embedded         (adds libfmt, libboost, cc65, vasm 6502 assembler)
@@ -82,7 +98,7 @@ nvidia/cuda:13.2.1-{runtime,devel}-ubuntu24.04
 └── cuda-base        (shared CUDA base; one dockerfile, two flavors — cuda-base:runtime + cuda-base:devel. Adds nvtop, the codemonkey user, the sudo/zsh/git/curl floor, and cross-GPU arch defaults sm_89/sm_120/sm_121)
     ├── cuda-llama-cpp   (build stage on raw cuda devel; shipping stages on cuda-base:runtime — full/light/server; cross-GPU sm_89/120/121)
     ├── cuda-comfy       (cuda-base:runtime; ComfyUI node-based Stable Diffusion GUI, cross-GPU via PyTorch wheels)
-    └── cuda-vllm        (build stage on raw cuda devel; runtime stage on cuda-base:devel; vLLM v0.21.0 source build with native sm_89/120/121 cutlass — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE on Blackwell, and runs on the 4090s)
+    └── cuda-vllm        (build stage on raw cuda devel; runtime stage on cuda-base:devel; vLLM v0.28.0 source build with native sm_89/120/121 cutlass — backs the spark-cluster, unblocks FP8 dense / NVFP4 MoE on Blackwell, and runs on the 4090s)
 
 alpine:3.21
 └── nyckel           (age + sops ONLY — the fleet's SOPS/age secrets-ops tooling for the `hemlighet` repo. Deliberately NOT FROM codemonkey: a secrets image stays tiny + minimal-surface and builds on any host/arch with no base. Run containerized, never host-installed.)
@@ -97,9 +113,9 @@ debian:trixie-slim
 
 The whole `cuda-*` family standardizes on **CUDA 13.2.1** (`CUDA_VERSION=13.2.1` in `cuda-base`/`cuda-llama-cpp`/`cuda-vllm`; `cuda-comfy` inherits it via `cuda-base`). Do **not** bump container toolkits to 13.3 yet: the DGX Spark cluster runs the **R580 / CUDA 13.0** appliance driver (`580.173.02` since the 2026-08-28 patch; was `580.142`), and while 13.2.1 and 13.3 containers both run on it via same-major minor-version compatibility, the CUDA 13.3 release notes flag that some Grace Blackwell (GB10) features require the R610 driver bundled with 13.3 — and these boxes are GB10. 13.2.1 is one driver branch above the host (R595); 13.3 is two (R610). Revisit 13.3 only after the appliance driver moves to R610+.
 
-PyTorch wheels stay on the **`cu130`** index (CUDA 13.0), not `cu132`: cu130 carries the `torch==2.11.0` that vLLM v0.21.0 pins (cu132 only ships torch 2.12.x), and cu130 matches the cluster's CUDA 13.0 *driver* exactly — the wheels bundle their own CUDA runtime, so the index need not match the container toolkit minor. cu130 also carries torch 2.12.1 if a future bump is wanted.
+PyTorch wheels stay on the **`cu130`** index (CUDA 13.0), not `cu132`: `TORCH_VERSION` follows the pin in vLLM's own `requirements/cuda.txt` exactly (v0.28.0 → `torch==2.13.0`) and cu130 is the index that publishes it — cu132 only ships 2.12.x, and cu128/cu129 were dropped in 2.13. cu130 also matches the cluster's CUDA 13.0 *driver* exactly; the wheels bundle their own CUDA runtime, so the index need not match the container toolkit minor. Per bump, verify the index actually publishes that torch for **aarch64** — the first `pip install torch` step is the proof, nothing earlier. (`cuda-comfy` pins its own `PYTORCH_VERSION`, currently 2.11.0, independently of vLLM's.)
 
-`cuda-vllm` keeps the `-devel` base at runtime (not `-runtime`) because FlashInfer and Triton JIT-compile CUDA kernels at first request — they need `nvcc`, `gcc`/`g++`, and `python3-dev` available inside the container. Its build parallelism (`MAX_JOBS`/`NVCC_THREADS`) defaults to Spark-sized (~48–60 GB peak); override both to a small equal value (e.g. `--build-arg MAX_JOBS=6 --build-arg NVCC_THREADS=6`) when building on a low-RAM host like the 30 GB 4090 boxes.
+`cuda-vllm` keeps the `-devel` base at runtime (not `-runtime`) because FlashInfer and Triton JIT-compile CUDA kernels at first request — they need `nvcc`, `gcc`/`g++`, and `python3-dev` available inside the container. Its build parallelism (`MAX_JOBS`/`NVCC_THREADS`) defaults to Spark-sized (24/4 → 6 parallel ninja jobs, ~70–90 GB peak on a 121 GB DGX Spark); override both to a small equal value (e.g. `--build-arg MAX_JOBS=6 --build-arg NVCC_THREADS=6`) when building on a low-RAM host like the 30 GB 4090 boxes.
 
 `opencode` installs its binary to `/usr/local/bin/opencode` (not `~/.opencode/bin`, where the installer defaults) so it sits outside `/home/codemonkey` and is not shadowed by the `<image>-home` volume that `primate()` mounts. The version is image-managed — rebuild the image to upgrade; opencode's runtime self-update is disabled in `opencode.json`. `make upgrade` does not touch it (it only syncs dotfiles into the home volume).
 

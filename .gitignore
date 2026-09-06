@@ -17,6 +17,13 @@ __pycache__/
 .pytest_cache/
 # sdlc skill: per-task lifecycle state, never committed
 .sdlc-state.json
+# review-adversarial skill: per-review loop state, never committed
+.review-state.json
+# agent-team skill: per-project orchestration state, never committed
+.agent-team-state.json
+# agent-team skill: per-project artifacts (brief/plan/architecture/test+review reports).
+# Process scratch, not repo content — the reasoning that matters lives in the commit messages.
+project-output/
 # retired openssl+S3 vault: legacy encrypted blobs and its sync marker. Secrets
 # never belong in this public repo, encrypted or not — see the Vault section in
 # README.md. Machines predating the SOPS+age migration still have these.
