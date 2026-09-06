@@ -72,8 +72,14 @@ function _primate_ensure_image() {
 # is what drifted. One name per line.
 function _primate_roster() {
   local __repo="${${(%):-%x}:A:h}" __f
+  local __found=("${__repo}"/primates/*.dockerfile(N))
+  # No dockerfiles means this is not a repo checkout — inside a primate ~/.zfuncs is a copy, so the
+  # sibling primates/ does not exist. Return nothing rather than the bare `codemonkey` the glob
+  # would leave behind: a one-item completion list reads as the whole roster, which is worse than
+  # an empty one. Callers treat a non-zero return as "no roster here" and offer nothing.
+  (( $#__found )) || return 1
   print -r -- codemonkey
-  for __f in "${__repo}"/primates/*.dockerfile(N); do
+  for __f in "${__found[@]}"; do
     print -r -- "${${__f:t}%.dockerfile}"
   done
 }
