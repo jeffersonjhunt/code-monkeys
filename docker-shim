@@ -41,9 +41,15 @@ case "${DOCKER_HOST:-}" in
 esac
 
 if [ "$(id -u)" != 0 ] && [ -S "$sock" ] && [ ! -w "$sock" ] && sudo -n true 2>/dev/null; then
-  # Preferred: -E, one flag, everything survives.
-  if sudo -n -E true 2>/dev/null; then
-    exec sudo -n -E "$real" "$@"
+  # Preferred: -E, one flag, everything survives. -H is not optional alongside it: -E preserves
+  # HOME too, and docker resolves its config dir from HOME, so the shimmed CLI would create
+  # ~/.docker as root:root 0700 inside the persistent <image>-home volume. The next ordinary
+  # (unshimmed) run as codemonkey then cannot read its own docker config — ECR auth fails,
+  # login cannot write, buildx state is unwritable — and since the login-time chown is now
+  # correctly scoped to ~/workspace, nothing repairs it. -H restores sudo's own HOME=/root, so
+  # root's docker state stays in root's home where it belongs.
+  if sudo -n -H -E true 2>/dev/null; then
+    exec sudo -n -H -E "$real" "$@"
   fi
 
   # A sudoers policy without SETENV refuses -E. Name every variable that is actually set instead,
@@ -51,6 +57,7 @@ if [ "$(id -u)" != 0 ] && [ -S "$sock" ] && [ ! -w "$sock" ] && sudo -n true 2>/
   # in particular are the ones an env-preserving sudo is normally protecting).
   keep=$(env 2>/dev/null | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' \
     | grep -Ev '^(PATH|HOME|SHELL|USER|USERNAME|LOGNAME|IFS|ENV|BASH_ENV|CDPATH|PS[1-4]|SUDO_.*|LD_.*|DYLD_.*)$' \
+    `# HOME is excluded deliberately, for the same reason -H is passed above, not by accident.` \
     | tr '\n' ',' | sed 's/,$//')
   if [ -n "$keep" ]; then
     exec sudo -n "--preserve-env=$keep" "$real" "$@"
