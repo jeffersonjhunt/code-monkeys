@@ -1,2 +1,0 @@
-# The fleet inventory is parsed field-by-field; a CRLF checkout would corrupt its last column.
-*.conf text eol=lf

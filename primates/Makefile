@@ -1,22 +1,18 @@
 # Makefile for primates project
 
+# What `make all` builds, in dependency order (codemonkey is built first, separately).
+# spark-bench is deliberately absent: it is x86-only and built on its own host.
+TARGETS := minion embedded miniforge3 claude opencode aichat kiro lamp huggingface nyckel samba
+
+# What `make upgrade` syncs dotfiles into. NOT $(TARGETS): spark-bench has a home volume even
+# though `all` does not build it here, and nyckel/samba have none (neither is codemonkey-based,
+# so there is nothing to sync). Different question, different list.
+UPGRADE_TARGETS := codemonkey minion embedded miniforge3 claude opencode aichat kiro lamp huggingface spark-bench
+
 MAKEFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 DIR := $(notdir $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))
 KERNEL := $(shell uname -r)
 REPO_ROOT := $(abspath $(dir $(MAKEFILE_PATH))/..)
-
-# Single source of truth for the fleet roster — see primates/fleet.conf for the field layout.
-# `make all` builds in_all=yes rows; `make upgrade` walks home_volume=yes rows — codemonkey
-# included, since its row says home_volume=yes and it has a codemonkey-home volume like any
-# other. Row order in fleet.conf is the build order.
-FLEET := $(REPO_ROOT)/primates/fleet.conf
-# The gsub strips spaces/tabs/CR before the field tests: field 7 is last, so it is the one a
-# trailing space or a CRLF checkout silently corrupts — and NF==7 still passes in both cases, so
-# without this a damaged row vanishes from `upgrade` while completion keeps listing it.
-FLEET_FILTER = /^\#/{next} {gsub(/[ \t\r]+/,"")} NF==7
-TARGETS := $(shell { awk -F: '$(FLEET_FILTER) && $$3=="yes" {print $$1}' < '$(FLEET)'; } 2>/dev/null)
-UPGRADE_TARGETS := $(shell { awk -F: '$(FLEET_FILTER) && $$7=="yes" {print $$1}' < '$(FLEET)'; } 2>/dev/null)
-CLEAN_TAGS := $(shell { awk -F: '$(FLEET_FILTER) && $$1!="cuda-base" {print $$1":latest"}' < '$(FLEET)'; } 2>/dev/null) cuda-base:runtime cuda-base:devel
 
 BUILD_ARGS ?=
 ifdef FORCE
@@ -91,16 +87,8 @@ cuda-vllm.build: _nv_check cuda-base.build
 	echo "Building cuda-vllm image..."
 	docker buildx build $(BUILD_ARGS) -t cuda-vllm:latest -f cuda-vllm.dockerfile .
 
-# Refuse to act on a missing/empty/unparseable inventory: an empty derived list must never
-# look like "nothing to do" (F1/F4/F5/F10 were exactly that failure mode, silently).
-.PHONY: _fleet_check
-_fleet_check:
-	@test -s "$(FLEET)" || { echo "ERROR: $(FLEET) missing or empty — refusing to build/upgrade an empty fleet" >&2; exit 1; }
-	@test -n "$(TARGETS)" || { echo "ERROR: $(FLEET) parsed to zero in_all=yes targets — check its format" >&2; exit 1; }
-	@test -n "$(UPGRADE_TARGETS)" || { echo "ERROR: $(FLEET) parsed to zero home_volume=yes primates — check its format" >&2; exit 1; }
-
 .PHONY:
-all: _fleet_check codemonkey.build $(addsuffix .build,$(TARGETS))
+all: codemonkey.build $(addsuffix .build,$(TARGETS))
 
 .PHONY:
 cuda: all cuda-llama-cpp.build cuda-comfy.build cuda-vllm.build
@@ -147,7 +135,7 @@ claude.build:
 	fi
 
 .PHONY:
-upgrade: _fleet_check
+upgrade:
 	@rc=0; \
 	for name in $(UPGRADE_TARGETS); do \
 		$(MAKE) --no-print-directory $$name.upgrade || rc=1; \
@@ -156,9 +144,9 @@ upgrade: _fleet_check
 	exit $$rc
 
 .PHONY:
-clean: _fleet_check
+clean:
 	echo "Cleaning up images..."
-	docker rmi -f $(CLEAN_TAGS) || true
+	docker rmi -f $(TARGETS:%=%:latest) spark-bench:latest codemonkey:latest cuda-llama-cpp:latest cuda-comfy:latest cuda-vllm:latest cuda-base:runtime cuda-base:devel || true
 
 # Guard for the CUDA image targets. Passes on any host that can build/run
 # them: a DGX Spark (-nvidia kernel), or an x86/other box with an NVIDIA GPU

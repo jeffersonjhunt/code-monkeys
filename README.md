@@ -54,8 +54,6 @@ The shell config is layered:
 
 Primates are purpose-built Docker images for different development domains. They all share the `codemonkey` base image and a common shell environment.
 
-The roster lives in **`primates/fleet.conf`** — one row per image recording whether it is in `make all`, which arches it targets, whether a bare `build-push.sh`/`manifest-push.sh` run sweeps it up, and whether it has a home volume worth upgrading. The Makefile, both push scripts and `zfuncs` all *derive* their lists from it with `awk`, so adding a primate is one row rather than five edits that drift apart. Row order is build order. See `primates/CLAUDE.md`.
-
 ### Image Hierarchy
 
 ```
@@ -262,7 +260,6 @@ can already decrypt, then commit + push hemlighet.
 ├── hostpath               # /usr/local/bin/hostpath — translates a container path to its daemon-host path
 ├── primates/              # specialized Docker images built on codemonkey
 │   ├── Makefile
-│   ├── fleet.conf         # SINGLE SOURCE OF TRUTH for the roster — every "which primates exist" list derives from it
 │   ├── upgrade-home.sh    # the one home-volume dotfile sync (used by both primate-upgrade and make *.upgrade)
 │   └── *.dockerfile
 ├── 007/                   # agent skills library (installed by setup via `make -C 007/skills install`)

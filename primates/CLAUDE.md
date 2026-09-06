@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-make all                    # Build codemonkey base + every in_all=yes row in fleet.conf, in file order
+make all                    # Build codemonkey base + all targets (minion, embedded, miniforge3, claude, opencode, aichat, kiro, lamp, huggingface, nyckel, samba)
 make codemonkey.build       # Build the codemonkey base image (from parent directory)
 make <name>.build           # Build a specific image, e.g. make claude.build
 make cuda-base.build        # Build the shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the cuda-* targets
@@ -57,69 +57,27 @@ manifest.
   (`aws ecr create-repository --profile jhunt --repository-name codemonkeys/<name>`).
 - **Exceptions:** `spark-bench` is **amd64-only** (SWE-Bench testbeds are x86); `samba` is **amd64-only
   today** (only minerva serves files — `arm64` builds fine if an aarch64 host ever needs it); `cuda-base`
-  ships `:runtime` + `:devel`, no `:latest`. **`cuda-vllm` is `manifest_default=no`** — it reaches ECR
-  through the spark-cluster's own deploy pipeline (`spark/cluster/README.md`), not a bare
-  `manifest-push.sh` run, so publish it by naming it explicitly. All of these are fields in
-  `fleet.conf`, not special cases in the scripts.
+  ships `:runtime` + `:devel`, no `:latest`. **`cuda-vllm` is not in `manifest-push.sh`'s default
+  sweep** — it reaches ECR through the spark-cluster's own deploy pipeline
+  (`spark/cluster/README.md`), so publish it here by naming it explicitly:
+  `./manifest-push.sh cuda-vllm`.
 - **Standalone primates** (`nyckel`, `samba`) are NOT in `build-push.sh`/`manifest-push.sh`'s default
   arrays — publish them explicitly: `./build-push.sh samba` (on each arch) then `./manifest-push.sh samba`.
 
 `primate <name>` (in `../zfuncs`) pulls from ECR on demand and retags to the local name, so a fresh host
 runs any primate without building it first.
 
-## The fleet inventory — `primates/fleet.conf`
+## Adding a primate
 
-**One source of truth for the roster.** Five hand-maintained arrays used to enumerate "the
-primates" and had drifted apart — `manifest-push.sh` was missing `aichat`, `zfuncs`' completion was
-missing `aichat` and `samba`, its `primate-upgrade --all` list was missing `aichat` and
-`spark-bench`, and the Makefile's `upgrade` loop reused `TARGETS` (which excludes the x86-only
-`spark-bench`), so that image could never be upgraded. Four review findings, one root cause: copies
-of a list with no source.
-
-Each row records the facts consumers actually filter on:
-
-```
-name:chain:in_all:arches:push_default:manifest_default:home_volume
-```
-
-| Consumer | Derives its list with |
-|---|---|
-| `Makefile` `TARGETS` | `in_all=yes` |
-| `Makefile` `UPGRADE_TARGETS` | `home_volume=yes` |
-| `build-push.sh` `DEFAULT` | `push_default=yes` **and** the host's arch ∈ `arches` |
-| `manifest-push.sh` `ALL` | `manifest_default=yes` |
-| `zfuncs` `_primate` completion | every well-formed row |
-| `zfuncs` `primate-upgrade --all` | `home_volume=yes` |
-
-Rules that are load-bearing:
-
-- **Row order is build order.** `make all` and `build-push.sh` preserve file order, and the chain is
-  `codemonkey → miniforge3 → {claude, opencode, aichat, kiro, spark-bench}`. `miniforge3` must stay
-  above everything that `FROM`s it. **Do not alphabetize.**
-- **`push_default=no` / `manifest_default=no` does not mean "never published."** `nyckel`, `samba`
-  and `cuda-vllm` all reach ECR — via an explicit `./build-push.sh <name>` / `./manifest-push.sh
-  <name>`, or, for `cuda-vllm`, the spark-cluster's own deploy pipeline. It means "not swept up by a
-  bare, argument-less run."
-- **Every consumer fails loudly** on a missing, empty or malformed inventory. An empty derived list
-  must never look like "nothing to do" — that silence is exactly how the four findings above stayed
-  invisible.
-- **Repo file only — not shipped into images.** The `zfuncs` helpers find it relative to the
-  checkout. Inside a primate they cannot, and that is deliberate: the base image ships no `zfuncs`,
-  so `primate`/`primate-upgrade`/completion only exist in a home volume that `upgrade-home.sh` has
-  copied one into — where `primate-upgrade` cannot work regardless, since its repo mount resolves
-  on the daemon host. Distributing the inventory into images to prop up that path cost a dockerfile
-  COPY, a sync line, a two-path resolver and one shell-hanging bug, for a tab-completion nicety.
-  Don't.
-
-### Adding a primate
-
-1. Write `primates/<name>.dockerfile`.
-2. Add **one row** to `primates/fleet.conf`, in dependency order — below whatever it `FROM`s.
-   Set `in_all`, `arches`, `push_default`, `manifest_default` and `home_volume` deliberately;
-   every derived list follows from them.
+1. Write `primates/<name>.dockerfile`. That file *is* the roster entry — `zfuncs`' tab completion
+   and `primate-upgrade --all` both derive the set of primates from `codemonkey` plus
+   `primates/*.dockerfile`, so neither needs telling.
+2. If `make all` should build it, add it to `TARGETS` in the Makefile, **in dependency order**
+   (below whatever it `FROM`s). If it has a `<name>-home` volume worth syncing dotfiles into, add
+   it to `UPGRADE_TARGETS`. If a bare `build-push.sh` / `manifest-push.sh` run should publish it,
+   add it to `DEFAULT` / `ALL` there. These are four different questions and each script answers
+   its own; they are not copies of one roster.
 3. If it needs a conda env, follow *Conda Environments* below.
-4. That is all. Do not add the name to a list anywhere else — if you find yourself doing that, the
-   list should have been derived from `fleet.conf` and the bug is there.
 
 ## Image Hierarchy
 

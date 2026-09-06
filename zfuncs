@@ -66,15 +66,16 @@ function _primate_ensure_image() {
   fi
 }
 
-# Resolve the fleet inventory: the repo checkout's primates/fleet.conf, found relative to this
-# file. On the host ~/.zfuncs is a symlink into the checkout, so this resolves. Inside a primate it
-# does not — and that is fine: the base image ships no zfuncs, so these helpers only exist there in
-# a home volume that upgrade-home.sh has copied one into, where primate-upgrade cannot work anyway.
-# The inventory is a repo file. It is deliberately NOT distributed into images. Prints the path.
-function _primate_fleet_conf() {
-  local __f="${${(%):-%x}:A:h}/primates/fleet.conf"
-  [[ -r "$__f" && -s "$__f" ]] || return 1
-  print -r -- "$__f"
+# The primate roster, read off the dockerfiles that define it: codemonkey (whose dockerfile lives
+# at the repo root) plus every primates/<name>.dockerfile, resolved relative to this file. The
+# dockerfiles ARE the roster — anything else is a second copy of a list already on disk, and a copy
+# is what drifted. One name per line.
+function _primate_roster() {
+  local __repo="${${(%):-%x}:A:h}" __f
+  print -r -- codemonkey
+  for __f in "${__repo}"/primates/*.dockerfile(N); do
+    print -r -- "${${__f:t}%.dockerfile}"
+  done
 }
 
 # gid to --group-add alongside the /var/run/docker.sock mount so the unprivileged codemonkey
@@ -183,26 +184,10 @@ function primate() {
 }
 
 function _primate() {
-  # All fleet primates — any not present locally is pulled from ECR on demand by _primate_ensure_image,
-  # so offer the full set (names match the ECR repos under codemonkeys/*), not just locally-built images.
-  # No membership predicate: every well-formed row is a valid completion target, whether or not a bare
-  # build-push/manifest-push run sweeps it up. NF==7 is a SHAPE check, not a membership one — without it
-  # a malformed inventory would be offered verbatim as primate names instead of erroring like the other
-  # consumers do. Read inside the function, never at source time.
-  local __FLEET
-  if ! __FLEET="$(_primate_fleet_conf)"; then
-    _message "ERROR: primates/fleet.conf not readable from this checkout — primate name completion unavailable"
-    return 1
-  fi
-  # `< "$__FLEET"` and not `awk ... "$__FLEET"`: mawk (Debian's awk, so every primate's) treats an
-  # EMPTY filename argument as stdin, which at completion time is the terminal — the shell hangs
-  # instead of reaching the guard below. A redirection of "" fails immediately instead. Belt and
-  # braces on top of the return check above, because the cost of getting this wrong is a wedged tab.
-  local known_primates=(${(f)"$(awk -F: '/^#/{next} {gsub(/[ \t\r]+/,"")} NF==7 {print $1}' < "$__FLEET" 2>/dev/null)"})
-  if [[ ${#known_primates[@]} -eq 0 ]]; then
-    _message "ERROR: ${__FLEET} is not a well-formed fleet inventory — primate name completion unavailable"
-    return 1
-  fi
+  # Every primate, not just the locally-built ones — _primate_ensure_image pulls anything missing
+  # from ECR on demand, and the ECR repo names under codemonkeys/* match the dockerfile names.
+  # Computed inside the function, so sourcing zfuncs costs nothing.
+  local known_primates=(${(f)"$(_primate_roster)"})
 
   case "$CURRENT" in
     2) _describe 'primate image' known_primates ;;
@@ -222,24 +207,17 @@ function primate-upgrade() {
   local __IMAGES=("$@")
 
   if [[ "$1" == "--all" ]]; then
-    # home_volume=yes rows from primates/fleet.conf — codemonkey included, exactly as the
-    # Makefile's UPGRADE_TARGETS reads it. _primate_ensure_image below only PULLS that image;
-    # it does not upgrade codemonkey-home, so excluding it here would skip that volume.
-    local __FLEET
-    if ! __FLEET="$(_primate_fleet_conf)"; then
-      echo "ERROR: primates/fleet.conf not readable from this checkout — refusing to silently upgrade zero primates" >&2
-      return 1
-    fi
-    local known=(${(f)"$(awk -F: '/^#/{next} {gsub(/[ \t\r]+/,"")} NF==7 && $7=="yes" {print $1}' < "$__FLEET")"})
-    if [[ ${#known[@]} -eq 0 ]]; then
-      echo "ERROR: ${__FLEET} parsed to zero home_volume=yes primates — check its format" >&2
-      return 1
-    fi
+    # Don't guess names and then ask whether each one has a volume — ask which volumes exist.
+    # Intersected with the dockerfile roster so a stray, unrelated <something>-home volume is
+    # never handed codemonkey's dotfiles. Both sides are derived; neither is maintained by hand,
+    # which is what let aichat and spark-bench fall out of the old hardcoded list.
+    local __roster=(${(f)"$(_primate_roster)"})
+    local __vol __name
     __IMAGES=()
-    for name in "${known[@]}"; do
-      if docker volume inspect "${name}-home" &>/dev/null; then
-        __IMAGES+=("$name")
-      fi
+    for __vol in ${(f)"$(docker volume ls --format '{{.Name}}' 2>/dev/null)"}; do
+      [[ "$__vol" == *-home ]] || continue
+      __name="${__vol%-home}"
+      (( ${__roster[(I)$__name]} )) && __IMAGES+=("$__name")
     done
     if [[ ${#__IMAGES[@]} -eq 0 ]]; then
       echo "No primate home volumes found."
