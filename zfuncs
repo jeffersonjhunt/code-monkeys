@@ -256,6 +256,18 @@ function primate-upgrade() {
 
   _primate_ensure_image codemonkey || return 1
 
+  # The upgrade container's repo mount is resolved by the DAEMON HOST, so a container-local path
+  # comes up empty when primate-upgrade is run from inside a primate. Translate it there.
+  local __SRC="${__REPO}"
+  if [[ -f /.dockerenv ]] && (( $+commands[hostpath] )); then
+    if ! __SRC="$(hostpath "${__REPO}")"; then
+      echo "ERROR: ${__REPO} is not under a host-shared mount, so the upgrade container cannot see it." >&2
+      echo "       Bind mounts resolve on the Docker daemon host — run this from the host checkout." >&2
+      return 1
+    fi
+  fi
+
+  local __rc=0
   for __IMAGE in "${__IMAGES[@]}"; do
     local __VOL="${__IMAGE}-home"
     if ! docker volume inspect "$__VOL" &>/dev/null; then
@@ -266,13 +278,18 @@ function primate-upgrade() {
     echo "upgrading ${__IMAGE}..."
     # The sync logic lives in primates/upgrade-home.sh — the same file `make <name>.upgrade`
     # runs, reached through the read-only repo mount. PRIMATE drives its per-image blocks.
-    docker run --rm \
+    if docker run --rm \
       --env "PRIMATE=${__IMAGE}" \
-      --volume "${__REPO}:/opt/user-jhunt:ro" \
+      --volume "${__SRC}:/opt/user-jhunt:ro" \
       --volume "${__VOL}:/home/codemonkey" \
-      codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh
-    echo "  done: ${__IMAGE}"
+      codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh; then
+      echo "  done: ${__IMAGE}"
+    else
+      echo "  FAILED: ${__IMAGE} (home volume may be partially upgraded)" >&2
+      __rc=1
+    fi
   done
+  return $__rc
 }
 
 # starts (or re-attaches to) a long-lived, detached primate running an

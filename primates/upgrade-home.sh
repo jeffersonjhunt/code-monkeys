@@ -15,6 +15,28 @@ set -euo pipefail
 SRC=/opt/user-jhunt
 HOME=/home/codemonkey
 
+# Assert the repo mount actually arrived before touching anything. The likely way it does not:
+# running `make upgrade` / `primate-upgrade` from INSIDE a primate, where `--volume "$REPO_ROOT:..."`
+# is interpreted by the DAEMON HOST — a container-local path there is an empty host-created dir, not
+# the repo (see CLAUDE.md "Docker-out-of-Docker"). Both callers now translate with hostpath, so this
+# is the backstop: fail before the first cp, not halfway through, and say what is actually wrong.
+for __req in zshrc.template zfuncs jjh.zsh-theme primates/fleet.conf; do
+  [ -f "$SRC/$__req" ] || {
+    echo "ERROR: $SRC/$__req missing — the repo mount at $SRC is empty or is not this repo." >&2
+    echo "       Bind mounts resolve on the Docker DAEMON HOST: from inside a primate the source" >&2
+    echo "       path must be a HOST path (see hostpath / \$HOST_WORKSPACE). Refusing to write a" >&2
+    echo "       partial upgrade into the home volume." >&2
+    exit 3
+  }
+done
+
+# Ownership repair on EVERY exit path, not just the happy one. This script runs as root, and
+# set -euo pipefail means any failure aborts partway — leaving $HOME and every file copied so far
+# root:root. That used to self-heal at the next login, when zshrc.template blanket-chowned any
+# $HOME child not owned by codemonkey; F6 correctly narrowed that to ~/workspace, so the repair no
+# longer exists and this script has to not create the damage in the first place.
+trap 'chown -R codemonkey:codemonkey "$HOME" 2>/dev/null || true' EXIT
+
 # dotfiles
 cp "$SRC/zaliases"       "$HOME/.zaliases"
 cp "$SRC/zbase"          "$HOME/.zbase"
@@ -63,5 +85,4 @@ if [ "${PRIMATE:-}" = "opencode" ] && [ -f "$SRC/primates/opencode.json" ]; then
   cp "$SRC/primates/opencode.json" "$HOME/.config/opencode/opencode.json"
 fi
 
-# fix ownership
-chown -R codemonkey:codemonkey "$HOME"
+# ownership is fixed by the EXIT trap above, on success and on failure alike.

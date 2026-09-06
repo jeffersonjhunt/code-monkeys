@@ -119,23 +119,35 @@ claude.build:
 .PHONY:
 %.upgrade:
 	@VOL=$(basename $@)-home; \
+	SRC='$(REPO_ROOT)'; \
+	if [ -f /.dockerenv ] && command -v hostpath >/dev/null 2>&1; then \
+		SRC=$$(hostpath '$(REPO_ROOT)') || { \
+			echo "ERROR: $(REPO_ROOT) is not under a host-shared mount, so the upgrade container cannot see it." >&2; \
+			echo "       Bind mounts resolve on the Docker daemon host — run this from the host checkout." >&2; \
+			exit 1; \
+		}; \
+	fi; \
 	if ! docker volume inspect "$$VOL" >/dev/null 2>&1; then \
 		echo "skip: volume $$VOL does not exist"; \
 	else \
 		echo "upgrading $(basename $@)..."; \
 		docker run --rm \
 			--env "PRIMATE=$(basename $@)" \
-			--volume "$(REPO_ROOT):/opt/user-jhunt:ro" \
+			--volume "$$SRC:/opt/user-jhunt:ro" \
 			--volume "$$VOL:/home/codemonkey" \
-			codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh; \
+			codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh \
+			|| { echo "  FAILED: $(basename $@) (home volume may be partially upgraded)" >&2; exit 1; }; \
 		echo "  done: $(basename $@)"; \
 	fi
 
 .PHONY:
 upgrade: _fleet_check
-	@for name in $(UPGRADE_TARGETS); do \
-		$(MAKE) --no-print-directory $$name.upgrade; \
-	done
+	@rc=0; \
+	for name in $(UPGRADE_TARGETS); do \
+		$(MAKE) --no-print-directory $$name.upgrade || rc=1; \
+	done; \
+	if [ "$$rc" -ne 0 ]; then echo "ERROR: one or more upgrades FAILED (see above)" >&2; fi; \
+	exit $$rc
 
 .PHONY:
 clean: _fleet_check
