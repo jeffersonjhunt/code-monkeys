@@ -52,17 +52,6 @@ if [ "$(id -u)" != 0 ] && [ -S "$sock" ] && [ ! -w "$sock" ] && sudo -n true 2>/
     exec sudo -n -H -E "$real" "$@"
   fi
 
-  # A sudoers policy without SETENV refuses -E. Name every variable that is actually set instead,
-  # minus the handful sudo and the shell must own for their own correctness (PATH and LD_*/DYLD_*
-  # in particular are the ones an env-preserving sudo is normally protecting).
-  keep=$(env 2>/dev/null | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' \
-    | grep -Ev '^(PATH|HOME|SHELL|USER|USERNAME|LOGNAME|IFS|ENV|BASH_ENV|CDPATH|PS[1-4]|SUDO_.*|LD_.*|DYLD_.*)$' \
-    `# HOME is excluded deliberately, for the same reason -H is passed above, not by accident.` \
-    | tr '\n' ',' | sed 's/,$//')
-  if [ -n "$keep" ]; then
-    exec sudo -n "--preserve-env=$keep" "$real" "$@"
-  fi
-
   exec sudo -n "$real" "$@"
 fi
 
