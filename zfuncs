@@ -399,6 +399,30 @@ function primate-session() {
 }
 compdef _primate primate-session
 
+# lists the primate sessions currently in flight, running or stopped.
+#
+# Sessions are found by their primate.session label, not by name: a named session's container is
+# called whatever you named it. `docker ps -a --filter label=...` prints nothing both when there
+# are no sessions and when it fails, so the query's exit status is checked separately — an empty
+# list because the daemon is unreachable is not "no sessions", and reporting it as such is how a
+# broken check passes for green.
+function primate-session-list() {
+  local __out __rc
+  __out="$(docker ps -a --filter 'label=primate.session' \
+    --format '{{.Label "primate.image"}}\t{{.Label "primate.name"}}\t{{.Names}}\t{{.Status}}' 2>&1)"
+  __rc=$?
+  if (( __rc != 0 )); then
+    echo "ERROR: could not query docker for primate sessions (exit ${__rc})" >&2
+    echo "${__out}" | sed 's/^/  /' >&2
+    return 1
+  fi
+  if [[ -z "$__out" ]]; then
+    echo "No primate sessions."
+    return 0
+  fi
+  { print -r -- $'IMAGE\tSESSION\tCONTAINER\tSTATUS'; print -r -- "$__out"; } | column -t -s $'\t'
+}
+
 # stops and removes a detached primate session container (home volume persists)
 function primate-kill() {
   if [[ "$#" -lt 1 ]]; then
