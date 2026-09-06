@@ -48,7 +48,7 @@ The shell config is layered:
 1. **`zshrc.template`** — installed as `~/.zshrc` inside containers; sources `~/.zbase`, fixes ownership of mounted directories, activates the image's conda environment if present
 2. **`zbase`** — main config: oh-my-zsh setup, plugins, PATH, editor, history settings
 3. **`zaliases`** — aliases (`dps`, `dpi`, `probe`, `nvtop` (GPU monitor via the cuda-base primate), `ocd`, `git.all`, etc.)
-4. **`zfuncs`** — functions: `primate()`, `primate-session()`, `primate-kill()`, `primate-upgrade()`, `which-os()`, `code-here()`, `tree()`, `clamscan()`, `tad()`, `watch()`
+4. **`zfuncs`** — functions: `primate()`, `primate-session()`, `primate-session-list()`, `primate-session-kill()`, `primate-upgrade()`, `which-os()`, `code-here()`, `tree()`, `clamscan()`, `tad()`, `watch()`
 
 ## Primates
 
@@ -139,13 +139,23 @@ connection) and the container is gone. For work that must outlive the connection
 
 ```bash
 primate-session claude                # start (or re-attach to) the claude-session container
-primate-session claude scratch        # ...under an explicit container/session name
+primate-session claude scratch        # ...under an explicit session name, so one image
+primate-session claude build          #    can have several sessions in flight at once
 # ctrl-b d detaches; re-run the same command from anywhere to re-attach
-primate-kill claude                   # tear it down (accepts the image name or the container name)
+
+primate-session-list                  # what is in flight, running or stopped
+primate-session-kill scratch          # tear one down (the home volume persists)
 ```
 
-The `<image>-home` volume survives `primate-kill`, so a torn-down session loses nothing but the
-running processes.
+The `<image>-home` volume survives `primate-session-kill`, so a torn-down session loses nothing
+but the running processes. Note the volume is per **image**, not per session — several sessions of
+one primate share one home.
+
+Sessions are found by a `primate.session` **label** set at creation, not by their container name:
+a session you name `scratch` is a container called `scratch`, with nothing in the name to say it is
+ours. Listing and killing therefore ask Docker rather than pattern-matching, and an unrelated
+container that happens to share the name cannot be matched. A session started before labels existed
+is still killable by `<image>`, via a suffix-only fallback, but will not appear in the listing.
 
 ### Docker-out-of-Docker
 
