@@ -10,8 +10,8 @@ REPO_ROOT := $(abspath $(dir $(MAKEFILE_PATH))/..)
 # included, since its row says home_volume=yes and it has a codemonkey-home volume like any
 # other. Row order in fleet.conf is the build order.
 FLEET := $(REPO_ROOT)/primates/fleet.conf
-TARGETS := $(shell awk -F: '!/^#/ && NF==7 && $$3=="yes" {print $$1}' $(FLEET) 2>/dev/null)
-UPGRADE_TARGETS := $(shell awk -F: '!/^#/ && NF==7 && $$7=="yes" {print $$1}' $(FLEET) 2>/dev/null)
+TARGETS := $(shell awk -F: '!/^#/ && NF==7 && $$3=="yes" {print $$1}' < '$(FLEET)' 2>/dev/null)
+UPGRADE_TARGETS := $(shell awk -F: '!/^#/ && NF==7 && $$7=="yes" {print $$1}' < '$(FLEET)' 2>/dev/null)
 
 BUILD_ARGS ?=
 ifdef FORCE

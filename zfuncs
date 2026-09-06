@@ -197,10 +197,17 @@ function _primate() {
   # a malformed inventory would be offered verbatim as primate names instead of erroring like the other
   # consumers do. Read inside the function, never at source time.
   local __FLEET
-  __FLEET="$(_primate_fleet_conf)"
-  local known_primates=(${(f)"$(awk -F: '!/^#/ && NF==7 {print $1}' "$__FLEET" 2>/dev/null)"})
+  if ! __FLEET="$(_primate_fleet_conf)"; then
+    _message "ERROR: no readable fleet inventory (primates/fleet.conf or ~/.fleet.conf) — primate name completion unavailable"
+    return 1
+  fi
+  # `< "$__FLEET"` and not `awk ... "$__FLEET"`: mawk (Debian's awk, so every primate's) treats an
+  # EMPTY filename argument as stdin, which at completion time is the terminal — the shell hangs
+  # instead of reaching the guard below. A redirection of "" fails immediately instead. Belt and
+  # braces on top of the return check above, because the cost of getting this wrong is a wedged tab.
+  local known_primates=(${(f)"$(awk -F: '!/^#/ && NF==7 {print $1}' < "$__FLEET" 2>/dev/null)"})
   if [[ ${#known_primates[@]} -eq 0 ]]; then
-    _message "ERROR: no readable, well-formed fleet inventory (primates/fleet.conf or ~/.fleet.conf) — primate name completion unavailable"
+    _message "ERROR: ${__FLEET} is not a well-formed fleet inventory — primate name completion unavailable"
     return 1
   fi
 
@@ -230,7 +237,7 @@ function primate-upgrade() {
       echo "ERROR: no readable fleet inventory (tried the repo's primates/fleet.conf and ${HOME}/.fleet.conf) — refusing to silently upgrade zero primates" >&2
       return 1
     fi
-    local known=(${(f)"$(awk -F: '!/^#/ && NF==7 && $7=="yes" {print $1}' "$__FLEET")"})
+    local known=(${(f)"$(awk -F: '!/^#/ && NF==7 && $7=="yes" {print $1}' < "$__FLEET")"})
     if [[ ${#known[@]} -eq 0 ]]; then
       echo "ERROR: ${__FLEET} parsed to zero home_volume=yes primates — check its format" >&2
       return 1
