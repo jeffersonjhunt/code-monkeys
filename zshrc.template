@@ -10,6 +10,13 @@ if [[ -f /.dockerenv ]]; then
   # credential mounts — a recursive chown there mutates the host's inodes, outside the container.
   # This is an allowlist on purpose: a denylist would have to be remembered every time another
   # mount appears under $HOME, which is the failure mode that produced this bug.
+  #
+  # Trade accepted knowingly: the old blanket find also repaired root-owned files ANYWHERE under
+  # $HOME — files left by `sudo` in the container, a `docker exec -u root` session, or a failed
+  # dotfile sync. That repair is gone. The sync case is handled at its source instead
+  # (primates/upgrade-home.sh chowns on an EXIT trap, so it cannot leave root-owned files even
+  # when it aborts); the others are rare and visible. Restoring a blanket repair would mean
+  # re-introducing the denylist this block exists to avoid, so: fix the cause, not the symptom.
   if [[ -d "${HOME}/workspace" ]] && [[ "$(stat -c %U "${HOME}/workspace" 2>/dev/null)" != codemonkey ]]; then
     sudo chown -R codemonkey:codemonkey "${HOME}/workspace"
   fi
