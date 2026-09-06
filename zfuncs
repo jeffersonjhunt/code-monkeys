@@ -371,8 +371,16 @@ function primate-session() {
   fi
 
   echo "creating detached session ${__NAME} from ${__IMAGE} (home volume ${__IMAGE}-home)"
+  # Label the container so `primate-session-list` and `primate-session-kill` can identify sessions
+  # by asking docker, rather than by pattern-matching a "-session" suffix. A named session
+  # (primate-session <image> <name>) is a container called <name> with nothing in the name to say
+  # it is ours — the suffix convention simply cannot find it, and matching bare names is what let
+  # an unrelated container get killed in its place. A label is a fact; a naming convention is a guess.
   docker run -d \
     --name "${__NAME}" \
+    --label primate.session \
+    --label "primate.image=${__IMAGE}" \
+    --label "primate.name=${__NAME}" \
     --hostname "${__IMAGE}" \
     "${__ENV_FILE_MOUNT[@]}" \
     "${__GPU_OPTS[@]}" \
@@ -386,7 +394,7 @@ function primate-session() {
     $@ \
     ${__IMAGE} sleep infinity >/dev/null || return 1
 
-  echo "attaching (tmux: ${__TMUX_SESSION}) — detach with ctrl-b d, kill with: primate-kill ${__NAME}"
+  echo "attaching (tmux: ${__TMUX_SESSION}) — detach with ctrl-b d, kill with: primate-session-kill ${__NAME}"
   docker exec -it -e TERM="${__TERM}" "${__NAME}" tmux new-session -A -s "${__TMUX_SESSION}"
 }
 compdef _primate primate-session
