@@ -4,7 +4,7 @@ description: Adversarial code review with structured findings and a review loop.
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.0"
+  version: "1.1.0"
 ---
 
 # review-adversarial
@@ -24,8 +24,8 @@ the review; the scripts manage findings state and loop convergence.
 1. Initialize:  python scripts/loop.py init [--max-rounds N] [--state PATH]
 2. You review the target artifact using an adversarial perspective
 3. Record:      python scripts/review.py --state .review-state.json < findings.json
-4. Present findings to the user
-5. User fixes code or disputes findings
+4. Present findings to the user                       <-- TRIAGE GATE, see below
+5. User dispositions each one: fix / dispute / accept  <-- do NOT skip or infer
 6. Respond:     python scripts/respond.py --state .review-state.json --resolve <id>=<disposition> ...
 7. Check:       python scripts/loop.py next --state .review-state.json
    → "continue" — unresolved findings remain or you found new issues; go to step 2
@@ -35,6 +35,39 @@ the review; the scripts manage findings state and loop convergence.
 9. Promote (optional): python scripts/promote.py --state .review-state.json --output docs/reviews/
    → Converts findings to markdown files for tracking via docs-issues skill
 ```
+
+
+## The triage gate (steps 4-6) — do not skip it
+
+**A finding is a proposal, not a work order. Nothing gets fixed before the user has dispositioned
+it.** This is the step most likely to be skipped, because a well-written finding reads like an
+instruction and fixing it feels like progress.
+
+Present every finding and get one of three answers:
+
+| Disposition | Meaning |
+|---|---|
+| `fixed` | the user wants it fixed — only now may you write code |
+| `disputed` | the finding is wrong, or the premise does not hold; record the rationale |
+| `accepted` | real, but not worth fixing; accepted as risk |
+
+Batch obviously-correct one-liners into a single question rather than asking one at a time, but
+un-triaged means un-implemented. Applies to findings you generated yourself, and to findings from
+a subagent — a tester or reviewer calling something a "regression" is that agent's opinion, not a
+verdict.
+
+**Why this is a hard gate, not advice.** Real case (code-monkeys, 2026-09): a tester reported that
+a config file was unreachable inside containers and labelled it a regression. It was dispatched
+for fixing within a minute. Correct triage was "do nothing — that code path was already broken in
+there and nobody uses it". Instead the fix added a dockerfile COPY, a sync line and a two-path
+resolver; the resolver's failure mode then hung the interactive shell on TAB; that took two more
+review rounds to find and fix, and the whole design was reverted a day later. **Every round of
+that work descended from one un-triaged finding.** The cost of asking is one message. The cost of
+not asking compounds silently, because each fix is individually defensible.
+
+Two questions worth putting to the user with the findings, not after:
+- Is this finding *real*, and is the premise behind it true?
+- Should the behaviour it asks for exist at all — or is refusing/deleting the better answer?
 
 ## Scripts
 
@@ -132,7 +165,9 @@ When performing an adversarial review:
 4. **Generate** findings as structured JSON (use the schema above)
 5. **Record** findings with `review.py`
 6. **Present** findings to the user in a readable format (table or list)
-7. **Wait** for the user to respond (fix, dispute, or accept)
+7. **STOP and wait** for a disposition on each (fix, dispute, or accept). Writing a fix for an
+   un-triaged finding is the single most expensive mistake this skill exists to prevent — see
+   *The triage gate* above. Never mark everything `fixed` at the end as bookkeeping.
 8. **Record** responses with `respond.py`
 9. **Advance** with `loop.py next` — if "continue", re-review focusing on:
    - Disputed findings (re-evaluate with the user's rationale)

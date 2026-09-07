@@ -4,7 +4,7 @@ description: Orchestrate a multi-agent development team (PM, Architect, Develope
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.0"
+  version: "1.1.0"
 dependencies:
   - sdlc
   - review-adversarial
@@ -145,9 +145,15 @@ The `next` command handles this automatically — it reads completed artifacts a
 ### Review Loop
 
 If the reviewer's output contains `NEEDS_CHANGES`:
-1. Present findings to the human
-2. If human approves rework: set phase back to implementation with review feedback
-3. Maximum 2 review loops before forcing a human decision on whether to ship anyway
+1. Present findings to the human **individually**, with your own recommendation on each
+2. Get a per-finding disposition — fix / dispute / accept-risk. Approving "the rework" as a block
+   is not a disposition; the point is to kill the findings that should not be acted on at all
+3. Send only the `fix` set back to implementation, with the human's feedback
+4. Maximum 2 review loops before forcing a human decision on whether to ship anyway
+
+The same gate applies to the **Tester's** output, not just the Reviewer's. A tester reporting a
+regression is reporting an opinion; it gets triaged like any other finding before a developer is
+sent to act on it.
 
 ### State File
 
@@ -187,3 +193,9 @@ python scripts/agents.py uninstall            # Remove team agent configs
 5. **On revision** — include the human's feedback in the re-run prompt.
 6. **On abort** — save current state; the project can resume later via `next`.
 7. **Developer follows sdlc** — the implementation phase is not freeform; it uses the sdlc skill internally.
+8. **Findings are proposals, not work orders.** Never dispatch a fix for a tester or reviewer
+   finding the human has not dispositioned. Agents write findings that read like instructions, and
+   acting on them feels like progress — but an un-triaged finding can send the team down a branch
+   of work that should never have started, and each fix along it looks individually reasonable. Ask
+   two things with the findings: is the premise true, and should the behaviour it asks for exist at
+   all? See the `review-adversarial` skill's *triage gate* for a worked example of the cost.
