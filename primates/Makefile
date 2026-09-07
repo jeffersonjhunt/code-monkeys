@@ -110,17 +110,23 @@ claude.build:
 
 # The home-volume dotfile sync lives in ONE place — primates/upgrade-home.sh — reached through the
 # read-only repo mount below. zfuncs' primate-upgrade runs the same file the same way.
+# The upgrade targets rewrite <image>-home volumes. Inside a primate, the volume belonging to the
+# image you are running IS this container's $HOME — upgrading it overwrites .zshrc/.zfuncs/.zbase
+# under a live shell and chowns your home while you are in it. A prerequisite rather than a check
+# inside %.upgrade's recipe, so `make upgrade` refuses once instead of once per image.
+.PHONY: _host_only
+_host_only:
+	@if [ -f /.dockerenv ]; then \
+		echo "make upgrade: cannot run from inside a primate." >&2; \
+		echo "  It rewrites <image>-home volumes — including the one mounted as this container's \$$HOME." >&2; \
+		echo "  Run it from the host checkout." >&2; \
+		exit 1; \
+	fi
+
 .PHONY:
-%.upgrade:
+%.upgrade: _host_only
 	@VOL=$(basename $@)-home; \
 	SRC='$(REPO_ROOT)'; \
-	if [ -f /.dockerenv ] && command -v hostpath >/dev/null 2>&1; then \
-		SRC=$$(hostpath '$(REPO_ROOT)') || { \
-			echo "ERROR: $(REPO_ROOT) is not under a host-shared mount, so the upgrade container cannot see it." >&2; \
-			echo "       Bind mounts resolve on the Docker daemon host — run this from the host checkout." >&2; \
-			exit 1; \
-		}; \
-	fi; \
 	if ! docker volume inspect "$$VOL" >/dev/null 2>&1; then \
 		echo "skip: volume $$VOL does not exist"; \
 	else \
@@ -135,7 +141,7 @@ claude.build:
 	fi
 
 .PHONY:
-upgrade:
+upgrade: _host_only
 	@rc=0; \
 	for name in $(UPGRADE_TARGETS); do \
 		$(MAKE) --no-print-directory $$name.upgrade || rc=1; \

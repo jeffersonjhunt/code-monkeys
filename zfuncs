@@ -210,6 +210,17 @@ function primate-upgrade() {
     return 1
   fi
 
+  # Refuse inside a container. This upgrades <image>-home volumes, and the one belonging to the
+  # primate you are sitting in IS your $HOME right now — it would overwrite .zshrc/.zfuncs/.zbase
+  # under a live shell and chown -R your home while you are in it. There is no version of that
+  # worth supporting, so it is not translated, worked around, or made to function: it stops here.
+  if [[ -f /.dockerenv ]]; then
+    echo "primate-upgrade: cannot run from inside a primate." >&2
+    echo "  It rewrites <image>-home volumes — including the one mounted as this container's \$HOME." >&2
+    echo "  Run it from the host checkout." >&2
+    return 1
+  fi
+
   local __REPO="${${(%):-%x}:A:h}"
   local __IMAGES=("$@")
 
@@ -236,14 +247,6 @@ function primate-upgrade() {
 
   # The upgrade container's repo mount is resolved by the DAEMON HOST, so a container-local path
   # comes up empty when primate-upgrade is run from inside a primate. Translate it there.
-  local __SRC="${__REPO}"
-  if [[ -f /.dockerenv ]] && (( $+commands[hostpath] )); then
-    if ! __SRC="$(hostpath "${__REPO}")"; then
-      echo "ERROR: ${__REPO} is not under a host-shared mount, so the upgrade container cannot see it." >&2
-      echo "       Bind mounts resolve on the Docker daemon host — run this from the host checkout." >&2
-      return 1
-    fi
-  fi
 
   local __rc=0
   for __IMAGE in "${__IMAGES[@]}"; do
@@ -258,7 +261,7 @@ function primate-upgrade() {
     # runs, reached through the read-only repo mount. PRIMATE drives its per-image blocks.
     if docker run --rm \
       --env "PRIMATE=${__IMAGE}" \
-      --volume "${__SRC}:/opt/user-jhunt:ro" \
+      --volume "${__REPO}:/opt/user-jhunt:ro" \
       --volume "${__VOL}:/home/codemonkey" \
       codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh; then
       echo "  done: ${__IMAGE}"
