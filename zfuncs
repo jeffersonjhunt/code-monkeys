@@ -16,7 +16,8 @@ flist+=(tad)
 flist+=(clamscan)
 flist+=(primate)
 flist+=(primate-session)
-flist+=(primate-kill)
+flist+=(primate-session-list)
+flist+=(primate-session-kill)
 
 function() {
   for fname in ${flist}; do
@@ -275,7 +276,8 @@ function primate-upgrade() {
 # server (and everything inside it) running. Re-run to re-attach.
 #
 #   primate-session <image> [session-name] [--no-workspace] [docker args...]
-#   primate-kill    <image|container-name>
+#   primate-session-list
+#   primate-session-kill <session|container>
 function primate-session() {
 
   local __NO_WORKSPACE=false
@@ -371,8 +373,16 @@ function primate-session() {
   fi
 
   echo "creating detached session ${__NAME} from ${__IMAGE} (home volume ${__IMAGE}-home)"
+  # Label the container so `primate-session-list` and `primate-session-kill` can identify sessions
+  # by asking docker, rather than by pattern-matching a "-session" suffix. A named session
+  # (primate-session <image> <name>) is a container called <name> with nothing in the name to say
+  # it is ours — the suffix convention simply cannot find it, and matching bare names is what let
+  # an unrelated container get killed in its place. A label is a fact; a naming convention is a guess.
   docker run -d \
     --name "${__NAME}" \
+    --label primate.session \
+    --label "primate.image=${__IMAGE}" \
+    --label "primate.name=${__NAME}" \
     --hostname "${__IMAGE}" \
     "${__ENV_FILE_MOUNT[@]}" \
     "${__GPU_OPTS[@]}" \
@@ -386,28 +396,77 @@ function primate-session() {
     $@ \
     ${__IMAGE} sleep infinity >/dev/null || return 1
 
-  echo "attaching (tmux: ${__TMUX_SESSION}) — detach with ctrl-b d, kill with: primate-kill ${__NAME}"
+  echo "attaching (tmux: ${__TMUX_SESSION}) — detach with ctrl-b d, kill with: primate-session-kill ${__NAME}"
   docker exec -it -e TERM="${__TERM}" "${__NAME}" tmux new-session -A -s "${__TMUX_SESSION}"
 }
 compdef _primate primate-session
 
-# stops and removes a detached primate session container (home volume persists)
-function primate-kill() {
+# Completes live session names for primate-session-kill, straight from the labels.
+function _primate_session() {
+  local sessions=(${(f)"$(docker ps -a --filter 'label=primate.session' --format '{{.Names}}' 2>/dev/null)"})
+  (( $#sessions )) || return 1
+  _describe 'primate session' sessions
+}
+compdef _primate_session primate-session-kill
+
+# lists the primate sessions currently in flight, running or stopped.
+#
+# Sessions are found by their primate.session label, not by name: a named session's container is
+# called whatever you named it. `docker ps -a --filter label=...` prints nothing both when there
+# are no sessions and when it fails, so the query's exit status is checked separately — an empty
+# list because the daemon is unreachable is not "no sessions", and reporting it as such is how a
+# broken check passes for green.
+function primate-session-list() {
+  local __out __rc
+  __out="$(docker ps -a --filter 'label=primate.session' \
+    --format '{{.Label "primate.image"}}\t{{.Label "primate.name"}}\t{{.Names}}\t{{.Status}}' 2>&1)"
+  __rc=$?
+  if (( __rc != 0 )); then
+    echo "ERROR: could not query docker for primate sessions (exit ${__rc})" >&2
+    echo "${__out}" | sed 's/^/  /' >&2
+    return 1
+  fi
+  if [[ -z "$__out" ]]; then
+    echo "No primate sessions."
+    return 0
+  fi
+  { print -r -- $'IMAGE\tSESSION\tCONTAINER\tSTATUS'; print -r -- "$__out"; } | column -t -s $'\t'
+}
+
+# stops and removes a primate session container (the <image>-home volume persists).
+#
+#   primate-session-kill <session|container>
+#
+# Resolution goes through the primate.session label, never a bare name match: only containers this
+# function's counterpart created are candidates, so an unrelated container that happens to share the
+# name is untouchable here. That is a property of the filter, not of the order things are tried --
+# the previous name-ordering approach removed the wrong container and could only ever be tuned, not
+# fixed. The <arg>-session fallback exists for sessions created before the labels did.
+function primate-session-kill() {
   if [[ "$#" -lt 1 ]]; then
-    echo "Usage: primate-kill <image|container-name>"
+    echo "Usage: primate-session-kill <session|container>   (see: primate-session-list)"
     return 1
   fi
-  local __NAME="$1"
-  # Documented usage is `primate-kill <image>`, so resolve <image>-session FIRST: trying the bare
-  # name first let an unrelated container literally named e.g. "claude" shadow claude-session and
-  # be killed instead. A custom session name (primate-session <image> <name>) still resolves via
-  # the exact-match fallback, as does an already-suffixed <name>-session.
-  if docker inspect "${__NAME}-session" &>/dev/null; then
-    __NAME="${__NAME}-session"
-  elif ! docker inspect "${__NAME}" &>/dev/null; then
-    echo "no such container: ${1}"
+  local __ARG="$1" __NAME=""
+  local __labelled=(${(f)"$(docker ps -a --filter 'label=primate.session' --format '{{.Names}}' 2>/dev/null)"})
+
+  local __c
+  for __c in "${__labelled[@]}"; do
+    [[ "$__c" == "$__ARG" || "$__c" == "${__ARG}-session" ]] && { __NAME="$__c"; break }
+  done
+
+  # Pre-label sessions: suffix only. Never a bare exact match -- that is precisely the hole the
+  # label filter closes, and reopening it in the fallback would defeat the point.
+  if [[ -z "$__NAME" ]] && docker inspect "${__ARG}-session" &>/dev/null; then
+    __NAME="${__ARG}-session"
+  fi
+
+  if [[ -z "$__NAME" ]]; then
+    echo "no primate session: ${__ARG}" >&2
+    echo "  (primate-session-list shows what is in flight; an unlabelled container of that name is not a session)" >&2
     return 1
   fi
+
   echo "removing ${__NAME} (home volume persists)"
   docker rm -f "${__NAME}" >/dev/null
 }
