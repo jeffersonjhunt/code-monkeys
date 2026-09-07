@@ -117,7 +117,13 @@ The `primate` shell function (defined in `zfuncs`) launches containers:
 ```bash
 primate claude              # start claude image with workspace mount
 primate embedded --no-workspace  # start without mounting current directory
+primate minion --allow-home      # allow the workspace mount to be $HOME (refused otherwise)
 ```
+
+The workspace mount is `$(pwd)`, so launching from `~` would put `.ssh`, `.aws`, `.docker` and
+every other dotfile at `/home/codemonkey/workspace`, read-write. `primate` and `primate-session`
+refuse that and say so; `--allow-home` is the override, `--no-workspace` the usual answer.
+Re-attaching to an existing session makes no new mount and is never refused.
 
 What `primate` does:
 - Creates a persistent Docker volume `<image>-home` for the home directory
@@ -264,6 +270,8 @@ can already decrypt, then commit + push hemlighet.
 ├── setup                  # host machine setup script (symlinks dotfiles into $HOME)
 ├── vault                  # secrets manager (SOPS + age via the nyckel primate; store = ~/.local/share/hemlighet)
 ├── bin/                   # host shim scripts symlinked into ~/.local/bin/
+│   ├── primate-pull       # THE ECR pull — ensures <image>:latest is local; used by every shim,
+│   │                      #   by vault, and by primate() in zfuncs
 │   ├── aws                # local-first AWS CLI wrapper (falls back to minion container)
 │   ├── spark-bench        # runs an eval harness in the spark-bench primate (see 007/skills/spark-bench/)
 │   └── sops, age, age-keygen  # shims running the tools in the nyckel primate

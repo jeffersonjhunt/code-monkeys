@@ -47,24 +47,39 @@ function setenv() {
 
 # Ensure <image>:latest exists locally; if not, pull it from the fleet ECR and retag to the bare
 # local name the primate functions expect. Lets `primate <name>` work on a host that has never
-# built the image. Creds come from the host ~/.aws (containerized aws-cli — no host install).
+# built the image.
+#
+# The pull itself lives in bin/primate-pull, which every shim (bin/aws, bin/sops, bin/age,
+# bin/age-keygen) and `vault` also call. This used to be its own copy of that logic — the weakest
+# of the five: it silenced both the token fetch and the login, so a credentials problem reported
+# itself as "could not be pulled from ECR". Nothing here now but finding the script.
 function _primate_ensure_image() {
   local __img=$1
-  docker image inspect "${__img}:latest" >/dev/null 2>&1 && return 0
-  local __ecr="${CODEMONKEYS_ECR:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
-  local __ref="${__ecr}/codemonkeys/${__img}:latest"
-  echo "  ${__img}:latest not present locally — pulling ${__ref}"
-  docker run --rm -v "$HOME/.aws:/root/.aws:ro" \
-    -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
-    amazon/aws-cli \
-    ecr get-login-password --region "${AWS_REGION:-us-east-1}" 2>/dev/null \
-    | docker login --username AWS --password-stdin "$__ecr" >/dev/null 2>&1
-  if docker pull "$__ref"; then
-    docker tag "$__ref" "${__img}:latest"
-  else
-    echo "  ERROR: ${__img} is not local and could not be pulled from ECR (${__ref})" >&2
+  local __pp="${${(%):-%x}:A:h}/bin/primate-pull"
+  # Inside a primate ~/.zfuncs is a standalone copy with no sibling bin/; upgrade-home.sh puts
+  # primate-pull on PATH there instead.
+  [[ -x "$__pp" ]] || __pp=$(command -v primate-pull)
+  if [[ -z "$__pp" ]]; then
+    echo "  ERROR: primate-pull not found; cannot ensure ${__img} is local." >&2
+    echo "         Run ./setup on this host, or build it: cd primates && make ${__img}.build" >&2
     return 1
   fi
+  "$__pp" "$__img"
+}
+
+# Refuse to hand a container the whole home directory. The workspace mount is $(pwd), so running
+# `primate minion` from ~ puts .ssh, .aws, .docker and every other dotfile at /home/codemonkey/
+# workspace, read-write. Almost always a mistake, and a quiet one; --allow-home is there for when
+# it is not. Called by primate() and primate-session() so the wording exists once.
+function _primate_workspace_guard() {
+  local __img=$1 __fn=$2
+  [[ "${PWD:A}" == "${HOME:A}" ]] || return 0
+  echo "${__fn}: refusing to mount \$HOME (${HOME}) as the workspace." >&2
+  echo "  The whole home dir would land at /home/codemonkey/workspace, read-write." >&2
+  echo "  Run from a project dir, or:" >&2
+  echo "    ${__fn} ${__img} --no-workspace   # no workspace mount at all" >&2
+  echo "    ${__fn} ${__img} --allow-home     # mount \$HOME anyway" >&2
+  return 1
 }
 
 # The primate roster, read off the dockerfiles that define it: codemonkey (whose dockerfile lives
@@ -103,10 +118,13 @@ function _primate_docker_gid() {
 function primate() {
 
   local __NO_WORKSPACE=false
+  local __ALLOW_HOME=false
   local __args=()
   for arg in "$@"; do
     if [[ "$arg" == "--no-workspace" ]]; then
       __NO_WORKSPACE=true
+    elif [[ "$arg" == "--allow-home" ]]; then
+      __ALLOW_HOME=true
     else
       __args+=("$arg")
     fi
@@ -114,12 +132,17 @@ function primate() {
   set -- "${__args[@]}"
 
   if [[ "$#" -lt 1 ]]; then
-    echo "Usage: primate <image> [--no-workspace] [docker args...]"
+    echo "Usage: primate <image> [--no-workspace] [--allow-home] [docker args...]"
     return 1
   fi
 
   local __IMAGE=$1
   shift
+
+  # Before the pull: refusing after a 3 GB download helps nobody.
+  if [[ "$__NO_WORKSPACE" == false && "$__ALLOW_HOME" == false ]]; then
+    _primate_workspace_guard "$__IMAGE" primate || return 1
+  fi
 
   _primate_ensure_image "$__IMAGE" || return 1
 
@@ -284,10 +307,13 @@ function primate-upgrade() {
 function primate-session() {
 
   local __NO_WORKSPACE=false
+  local __ALLOW_HOME=false
   local __args=()
   for arg in "$@"; do
     if [[ "$arg" == "--no-workspace" ]]; then
       __NO_WORKSPACE=true
+    elif [[ "$arg" == "--allow-home" ]]; then
+      __ALLOW_HOME=true
     else
       __args+=("$arg")
     fi
@@ -295,7 +321,7 @@ function primate-session() {
   set -- "${__args[@]}"
 
   if [[ "$#" -lt 1 ]]; then
-    echo "Usage: primate-session <image> [session-name] [--no-workspace] [docker args...]"
+    echo "Usage: primate-session <image> [session-name] [--no-workspace] [--allow-home] [docker args...]"
     return 1
   fi
 
@@ -331,6 +357,12 @@ function primate-session() {
   fi
 
   # otherwise create it detached with the same mounts primate() uses.
+  # The guard sits here, not up top: re-attaching to a session started elsewhere makes no new
+  # mount, and refusing that from ~ would be a guard against nothing.
+  if [[ "$__NO_WORKSPACE" == false && "$__ALLOW_HOME" == false ]]; then
+    _primate_workspace_guard "$__IMAGE" primate-session || return 1
+  fi
+
   # HOST_* carry the host-side path of each shared dir into the container: bind mounts made
   # from inside a primate resolve on the daemon host, so `docker run -v` / compose volumes
   # need these paths, not the container's (see `hostpath` and CLAUDE.md Docker-out-of-Docker).
