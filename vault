@@ -71,7 +71,6 @@ HL="${VAULT_HEMLIGHET:-$(_default_hl)}"
 HL_SUB="code-monkeys/personal"
 AGE_DIR="$HOME/.config/sops/age"
 IMAGE="nyckel"
-REG="521147433280.dkr.ecr.us-east-1.amazonaws.com"
 
 # Display order matches the old vault.
 ITEMS="ssh env aws face gitconfig"
@@ -112,64 +111,20 @@ _docker() {
   fi
 }
 
-# Profiles present in ~/.aws (config writes "[profile x]", credentials "[x]").
-_aws_profiles() {
-  # config carries "[profile x]" and "[default]"; skip its "[sso-session x]" and
-  # "[services x]" sections. credentials carries bare "[x]".
-  { sed -nE 's/^\[profile ([^]]+)\][[:space:]]*$/\1/p; s/^\[(default)\][[:space:]]*$/\1/p' \
-      "$HOME/.aws/config"
-    sed -nE 's/^\[([^][:space:]]+)\][[:space:]]*$/\1/p' "$HOME/.aws/credentials"
-  } 2>/dev/null | sort -u
-}
-
-# The aws-cli container carries no AWS context of its own. With no AWS_PROFILE
-# forwarded it resolves 'default', which does not exist on a machine whose only
-# profile is named — that used to surface as "empty ECR token" and hid the cause.
-_aws_profile_default() {
-  local only
-  if [[ -z "${AWS_PROFILE:-}" ]] && ! _aws_profiles | grep -qx default; then
-    only="$(_aws_profiles)"
-    if [[ -n "$only" && "$(printf '%s\n' "$only" | wc -l)" -eq 1 ]]; then
-      export AWS_PROFILE="$only"
-      echo "vault: no 'default' AWS profile; using the only one present: ${AWS_PROFILE}" >&2
-    fi
-  fi
-  return 0
-}
-
+# One place ensures an image is local, shared with the bin/ shims and primate():
+# bin/primate-pull, next to this script. It used to be ~60 lines of profile
+# resolution, token fetch, login and pull copied in here — the fifth copy of the
+# same block, and the copies had drifted.
 _ensure_image() {
-  if _docker image inspect "${IMAGE}:latest" >/dev/null 2>&1; then
-    return 0
+  local pp="${SCRIPT_DIR}/bin/primate-pull"
+  if [[ ! -x "$pp" ]]; then
+    pp="$(command -v primate-pull || true)"
   fi
-  _aws_profile_default
-  echo "vault: pulling ${IMAGE} from ECR..." >&2
-
-  local tok err
-  local aws_mount=()
-  if [[ -d "$HOME/.aws" ]]; then
-    aws_mount=(--volume "$(cd -P "$HOME/.aws" && pwd):/root/.aws:ro")
-  fi
-
-  err="$(mktemp)"
-  if ! tok="$(_docker run --rm \
-        -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
-        -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
-        ${aws_mount[@]+"${aws_mount[@]}"} \
-        amazon/aws-cli ecr get-login-password --region us-east-1 2>"$err")" \
-     || [[ -z "$tok" ]]; then
-    echo "vault: ECR authentication failed (AWS_PROFILE=${AWS_PROFILE:-<unset>})." >&2
-    sed 's/^/  /' "$err" >&2
-    echo "  profiles in ~/.aws: $(_aws_profiles | tr '\n' ' ')" >&2
-    echo "  fix: export AWS_PROFILE=<name>, or build locally: cd primates && make nyckel.build" >&2
-    rm -f "$err"
+  if [[ -z "$pp" ]]; then
+    echo "vault: primate-pull not found; cannot ensure ${IMAGE} is local." >&2
     exit 1
   fi
-  rm -f "$err"
-
-  printf '%s' "$tok" | _docker login --username AWS --password-stdin "$REG" >/dev/null
-  _docker pull -q "${REG}/codemonkeys/${IMAGE}:latest" >/dev/null
-  _docker tag "${REG}/codemonkeys/${IMAGE}:latest" "${IMAGE}:latest"
-  _docker logout "$REG" >/dev/null 2>&1 || true
+  "$pp" "$IMAGE" || exit 1
 }
 
 # Run a command in nyckel with the hemlighet clone at /hl (rw), the repo at

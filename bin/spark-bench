@@ -116,9 +116,25 @@ else
   RUN_FLAGS="--rm -i"
 fi
 
+# The ensure-the-image step has to run on ${BENCH_HOST}, not here: this shim drives docker over
+# ssh, and spark-bench is amd64-only. Pulling locally would put the wrong image on the wrong
+# machine. With it absent, `docker run … spark-bench:latest` falls through to Docker Hub for a
+# bare local tag and reports "pull access denied … may require 'docker login'", which reads as a
+# registry-auth problem rather than a missing image. Only runs when the image really is missing,
+# so a host that already has it is untouched.
 REMOTE_CMD=$(cat <<REMOTE
 set -euo pipefail
 mkdir -p "${RESULTS}" "${CACHE}"
+if ! sudo docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+  if command -v primate-pull >/dev/null 2>&1; then
+    primate-pull "${IMAGE%%:*}"
+  else
+    echo "spark-bench: ${IMAGE} is missing on ${BENCH_HOST}, and primate-pull is not installed" >&2
+    echo "  there to fetch it. Run ./setup on ${BENCH_HOST}, or build it:" >&2
+    echo "  cd code-monkeys/primates && make spark-bench.build" >&2
+    exit 1
+  fi
+fi
 DOCKER_GID=\$(stat -c '%g' /var/run/docker.sock)
 sudo docker run ${RUN_FLAGS} \\
   --network host \\

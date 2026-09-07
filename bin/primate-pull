@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+#
+# primate-pull — ensure <image>:latest exists locally, pulling it from the fleet
+# ECR if it does not.
+#
+#   primate-pull minion            # one image
+#   primate-pull codemonkey minion # several; one ECR login covers them all
+#
+# This is THE place the ECR pull lives. It used to be copied into `vault`,
+# `bin/sops`, `bin/age` and `bin/age-keygen` — and the two shims that needed it
+# most, `bin/aws` and `bin/spark-bench`, never got a copy. On a host whose
+# images had been pruned they ran `docker run … minion`, docker fell through to
+# Docker Hub for a bare local tag, and the failure read as
+#
+#   pull access denied for minion, repository does not exist or may require 'docker login'
+#
+# which sent you off to `make` instead of to your ~/.aws creds. Every call site
+# now goes through here, so a fix lands once.
+#
+# Creds come from ~/.aws via a containerized aws-cli — nothing is installed on
+# the host. The aws-cli image is public on Docker Hub, so bootstrapping needs no
+# login and there is no cycle with `bin/aws`, which itself runs in `minion`.
+#
+# Env:
+#   CODEMONKEYS_ECR   override the registry
+#   AWS_PROFILE       forwarded; falls back to the only profile when there is
+#                     exactly one and no [default]
+#   HOST_AWS_DIR      set by primate(); the host-side path of ~/.aws, which is
+#                     what the daemon needs when we are called inside a primate
+#
+
+set -uo pipefail
+
+REG="${CODEMONKEYS_ECR:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
+NS="codemonkeys"
+REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+AWSCLI="${PRIMATE_PULL_AWSCLI:-amazon/aws-cli}"
+ME="primate-pull"
+
+if [[ "$#" -lt 1 ]]; then
+  echo "Usage: ${ME} <image> [image...]" >&2
+  exit 2
+fi
+
+# ------------------------------------------------------------------ docker ---
+
+# Isolated config dir for the login, when we can prove one reaches the daemon.
+# Empty means "use the caller's real config".
+CFG=""
+DOCKER_CMD=""
+
+_docker() {
+  if [[ -z "$DOCKER_CMD" ]]; then
+    if docker version >/dev/null 2>&1; then
+      DOCKER_CMD="docker"
+    elif sudo -n docker version >/dev/null 2>&1; then
+      DOCKER_CMD="sudo"
+    else
+      echo "${ME}: cannot reach a docker daemon (tried 'docker' and 'sudo -n docker')." >&2
+      echo "  On a host: is Docker running? Inside a primate: is the socket bind-mounted?" >&2
+      exit 1
+    fi
+  fi
+  if [[ "$DOCKER_CMD" == "sudo" ]]; then
+    # sudo resets the environment, so DOCKER_CONFIG has to be carried explicitly.
+    if [[ -n "$CFG" ]]; then
+      sudo -n env "DOCKER_CONFIG=$CFG" docker "$@"
+    else
+      sudo -n docker "$@"
+    fi
+  else
+    if [[ -n "$CFG" ]]; then
+      DOCKER_CONFIG="$CFG" docker "$@"
+    else
+      docker "$@"
+    fi
+  fi
+}
+
+# --------------------------------------------------------------- aws creds ---
+
+# Profiles present in ~/.aws (config writes "[profile x]", credentials "[x]").
+# config's "[sso-session x]" / "[services x]" sections are deliberately skipped.
+_aws_profiles() {
+  { sed -nE 's/^\[profile ([^]]+)\][[:space:]]*$/\1/p; s/^\[(default)\][[:space:]]*$/\1/p' \
+      "$HOME/.aws/config"
+    sed -nE 's/^\[([^][:space:]]+)\][[:space:]]*$/\1/p' "$HOME/.aws/credentials"
+  } 2>/dev/null | sort -u
+}
+
+# With no AWS_PROFILE the CLI resolves 'default', which does not exist on a
+# machine whose only profile is named — that surfaced as "empty ECR token" and
+# hid the real cause.
+_pick_profile() {
+  local only
+  if [[ -n "${AWS_PROFILE:-}" ]] || _aws_profiles | grep -qx default; then
+    return 0
+  fi
+  only="$(_aws_profiles)"
+  if [[ -n "$only" && "$(printf '%s\n' "$only" | wc -l)" -eq 1 ]]; then
+    export AWS_PROFILE="$only"
+    echo "${ME}: no 'default' AWS profile; using the only one present: ${AWS_PROFILE}" >&2
+  fi
+}
+
+# The daemon resolves bind-mount sources on the HOST. Called from inside a
+# primate, "$HOME/.aws" is a container path the host has never heard of and the
+# mount is denied outright — primate() exports HOST_AWS_DIR for exactly this.
+_aws_dir() {
+  local d="${HOST_AWS_DIR:-$HOME/.aws}"
+  if [[ -n "${HOST_AWS_DIR:-}" ]]; then
+    printf '%s' "$HOST_AWS_DIR"
+  elif [[ -d "$d" ]]; then
+    (cd -P "$d" && pwd)
+  fi
+}
+
+# ------------------------------------------------------------------- login ---
+
+# An ECR token is good for 12 hours and has no business in the host's real
+# Docker config or macOS keychain. Logging in under a throwaway config dir also
+# sidesteps the credential helper (`credsStore: desktop`) entirely.
+#
+# An empty config dir falls back to the "default" context — unix:///var/run/docker.sock
+# — which is not where Docker Desktop necessarily listens, so carry the current
+# context across and, if the result still cannot reach the daemon, use the
+# caller's real config instead. Isolation is a nicety; reaching the daemon is not.
+_isolate_config() {
+  local real ctx
+  CFG="$(mktemp -d)" || { CFG=""; return 0; }
+  real="${DOCKER_CONFIG:-$HOME/.docker}"
+  if [[ -d "$real/contexts" ]]; then
+    cp -R "$real/contexts" "$CFG/contexts" 2>/dev/null || true
+  fi
+  if [[ -f "$real/config.json" ]]; then
+    ctx="$(sed -nE 's/.*"currentContext"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' \
+             "$real/config.json" | head -1)"
+    if [[ -n "$ctx" ]]; then
+      printf '{"currentContext":"%s"}\n' "$ctx" > "$CFG/config.json"
+    fi
+  fi
+  if ! _docker version >/dev/null 2>&1; then
+    rm -rf "$CFG"
+    CFG=""
+  fi
+}
+
+_cleanup() {
+  if [[ -n "$CFG" ]]; then
+    rm -rf "$CFG"
+  fi
+}
+trap _cleanup EXIT
+
+_ecr_login() {
+  local tok err mount=() dir
+  _pick_profile
+
+  dir="$(_aws_dir)"
+  if [[ -n "$dir" ]]; then
+    mount=(--volume "${dir}:/root/.aws:ro")
+  fi
+
+  # The aws-cli image is public, but a failure to fetch it must not masquerade
+  # as an auth failure.
+  if ! _docker image inspect "$AWSCLI" >/dev/null 2>&1; then
+    if ! _docker pull -q "$AWSCLI" >/dev/null; then
+      echo "${ME}: could not pull ${AWSCLI} (needed to fetch an ECR token)." >&2
+      return 1
+    fi
+  fi
+
+  err="$(mktemp)"
+  tok="$(_docker run --rm \
+          -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
+          -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+          ${mount[@]+"${mount[@]}"} \
+          "$AWSCLI" ecr get-login-password --region "$REGION" 2>"$err")"
+  if [[ -z "$tok" ]]; then
+    echo "${ME}: ECR authentication failed (AWS_PROFILE=${AWS_PROFILE:-<unset>})." >&2
+    sed 's/^/  /' "$err" >&2
+    echo "  aws dir mounted: ${dir:-<none found>}" >&2
+    echo "  profiles in ~/.aws: $(_aws_profiles | tr '\n' ' ')" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+
+  _isolate_config
+
+  # Held, not silenced, and shown in full when the login fails. A login that
+  # failed quietly is what turned a credentials problem into "the image could
+  # not be pulled" and sent you to `make`. On success the only thing on stderr
+  # is the credential-helper warning, which is exactly what the throwaway
+  # config dir is there to cause.
+  err="$(mktemp)"
+  if ! printf '%s' "$tok" | _docker login --username AWS --password-stdin "$REG" \
+       >/dev/null 2>"$err"; then
+    echo "${ME}: docker login to ${REG} failed." >&2
+    sed 's/^/  /' "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+}
+
+# -------------------------------------------------------------------- main ---
+
+# Nothing to do at all? Then never touch AWS, the network, or the daemon.
+WANTED=()
+for img in "$@"; do
+  if ! _docker image inspect "${img}:latest" >/dev/null 2>&1; then
+    WANTED+=("$img")
+  fi
+done
+if [[ "${#WANTED[@]}" -eq 0 ]]; then
+  exit 0
+fi
+
+echo "${ME}: pulling from ECR: ${WANTED[*]}" >&2
+_ecr_login || {
+  echo "  fix: export AWS_PROFILE=<name>, or build locally: cd primates && make ${WANTED[0]}.build" >&2
+  exit 1
+}
+
+rc=0
+for img in "${WANTED[@]}"; do
+  ref="${REG}/${NS}/${img}:latest"
+  if _docker pull -q "$ref" >/dev/null; then
+    _docker tag "$ref" "${img}:latest"
+  else
+    echo "${ME}: ${img} is not local and could not be pulled (${ref})." >&2
+    echo "  fix: build locally with: cd primates && make ${img}.build" >&2
+    rc=1
+  fi
+done
+exit $rc

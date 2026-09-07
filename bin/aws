@@ -52,7 +52,27 @@ if [[ -z "$_AWS_FORCE_CONTAINER" && -n "$_real_aws" ]]; then
   exec "$_real_aws" "$@"
 fi
 
-# Container fallback.
+# Container fallback. The image has to be here before we can run it: with it
+# pruned, `docker run … minion` fell through to Docker Hub for a bare local tag
+# and failed with "pull access denied for minion … may require 'docker login'",
+# which reads as a registry-auth problem and sends you to `make` instead of to
+# your ~/.aws creds. primate-pull is a sibling of this shim (the repo's bin/, or
+# ~/.local/bin where setup symlinks that whole directory); it fetches its ECR
+# token from the public amazon/aws-cli image, so it does not need this shim and
+# there is no bootstrap cycle.
+_TOOL="aws"
+_IMAGE="minion"
+
+_PP="$(cd -P "$(dirname "$0")" && pwd)/primate-pull"
+if [[ ! -x "$_PP" ]]; then
+  _PP="$(command -v primate-pull || true)"
+fi
+if [[ -z "$_PP" ]]; then
+  echo "${_TOOL} shim: primate-pull not found; cannot ensure ${_IMAGE} is local." >&2
+  exit 1
+fi
+"$_PP" "$_IMAGE"
+
 _aws_mount=()
 if [[ -d "$HOME/.aws" ]]; then
   _aws_mount=(--volume "$(cd -P "$HOME/.aws" && pwd):/home/codemonkey/.aws:ro")
@@ -73,4 +93,4 @@ exec docker run --rm "${_tty[@]}" \
   --volume "${_cwd}:${_cwd}" \
   --workdir "${_cwd}" \
   --user codemonkey:codemonkey \
-  minion aws "$@"
+  "$_IMAGE" aws "$@"

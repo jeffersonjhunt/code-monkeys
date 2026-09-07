@@ -49,6 +49,13 @@ cp "$SRC/tmux.conf"      "$HOME/.tmux.conf"
 cp "$SRC/zshrc.template" "$HOME/.zshrc"
 cp "$SRC/zfuncs"         "$HOME/.zfuncs"
 
+# ~/.zfuncs is a standalone copy in here — there is no sibling bin/ and setup never runs inside a
+# primate, so primate-pull would be unreachable and `primate <img>` inside a primate could not pull
+# anything. Put it on PATH the same way the host does.
+mkdir -p "$HOME/.local/bin"
+cp "$SRC/bin/primate-pull" "$HOME/.local/bin/primate-pull"
+chmod +x "$HOME/.local/bin/primate-pull"
+
 # oh-my-zsh update
 if [ -d "$HOME/.oh-my-zsh" ]; then
   git -C "$HOME/.oh-my-zsh" pull --quiet 2>/dev/null || true
