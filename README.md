@@ -191,7 +191,9 @@ docker compose -f ~/workspace/proj/compose.yaml \
 
 ### Upgrading
 
-After updating dotfiles or the zsh theme, use `primate-upgrade` or the Makefile to update existing home volumes without destroying them:
+After updating dotfiles or the zsh theme, use `primate-upgrade` or the Makefile to update existing home volumes without destroying them.
+**Run these from the host checkout only** — both refuse inside a primate, because the home volume of the image you are
+running is that container's `$HOME`, and upgrading it would rewrite your shell config under a live session:
 
 ```bash
 primate-upgrade claude       # upgrade one container's home volume
