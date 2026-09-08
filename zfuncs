@@ -710,27 +710,59 @@ function primate-session-kill() {
 # collector can be fed fixtures and tested on a machine with no daemon. That is
 # their only purpose — zoo talks to one daemon and is not fleet-aware.
 
-# Every primate, one tab-separated line: id, name, image, status, labels.
+# Every primate, one row: kind, name, image, status, id, legacy — separated by
+# 0x1F (unit separator), which cannot occur in a container name, image or status.
 #
-# A union of two queries rather than one filter: docker ANDs repeated
-# `--filter label=`, and sessions started before U0 carry primate.session but not
-# primate.managed, so no single filter selects both. Deduped on container id.
+# `kind` comes from WHICH query matched, not from string-matching docker's
+# comma-joined label blob. That blob was being tested with
+# `[[ $labels == *primate.session=* ]]`, so a container merely NAMED
+# "weird primate.session= name" classified as a session. The filter already knows
+# the answer exactly; deriving it a second time by substring was inventing a way
+# to be wrong about something already established.
 #
-# Failure and emptiness are different answers. A non-zero docker exits non-zero
-# here with its stderr intact, so the caller can say "the query failed" instead of
-# rendering an empty table that reads as "no primates".
+# Two queries because docker ANDs repeated `--filter label=`, and sessions started
+# before U0 carry primate.session but not primate.managed. Sessions are emitted
+# first so a container matching both is a session; `legacy` is then just the set
+# difference — in the session list, absent from the managed list.
+#
+# Failure and emptiness stay different answers: a non-zero docker exits non-zero
+# here with its stderr intact.
 function _zoo_ps() {
-  if [[ -n "${ZOO_PS_SOURCE:-}" ]]; then
-    cat "$ZOO_PS_SOURCE"
-    return
+  local US=$'\x1f'
+  local __sess __mgd
+  if [[ -n "${ZOO_PS_SESSION_SOURCE:-}" || -n "${ZOO_PS_MANAGED_SOURCE:-}" ]]; then
+    __sess="$(cat "${ZOO_PS_SESSION_SOURCE:-/dev/null}" 2>/dev/null)"
+    __mgd="$(cat "${ZOO_PS_MANAGED_SOURCE:-/dev/null}" 2>/dev/null)"
+  else
+    local __fmt="{{.ID}}${US}{{.Names}}${US}{{.Image}}${US}{{.Status}}"
+    __sess=$(docker ps -a --filter 'label=primate.session' --format "$__fmt" 2>&1) \
+      || { print -r -- "$__sess" >&2; return 1 }
+    __mgd=$(docker ps -a --filter 'label=primate.managed' --format "$__fmt" 2>&1) \
+      || { print -r -- "$__mgd" >&2; return 1 }
   fi
-  local __fmt='{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Labels}}'
-  local __a __b
-  __a=$(docker ps -a --filter 'label=primate.managed' --format "$__fmt" 2>&1) \
-    || { print -r -- "$__a" >&2; return 1 }
-  __b=$(docker ps -a --filter 'label=primate.session' --format "$__fmt" 2>&1) \
-    || { print -r -- "$__b" >&2; return 1 }
-  print -r -- "${__a}"$'\n'"${__b}" | awk -F'\t' 'NF > 1 && !seen[$1]++'
+
+  local -A __ismgd __seen
+  local __l __id __rest
+  for __l in ${(f)__mgd}; do
+    [[ -n "$__l" ]] || continue
+    __ismgd[${__l%%${US}*}]=1
+  done
+  for __l in ${(f)__sess}; do
+    [[ -n "$__l" ]] || continue
+    __id="${__l%%${US}*}"; __rest="${__l#*${US}}"
+    __seen[$__id]=1
+    if (( ${+__ismgd[$__id]} )); then
+      print -r -- "session${US}${__rest}${US}${__id}${US}0"
+    else
+      print -r -- "session${US}${__rest}${US}${__id}${US}1"
+    fi
+  done
+  for __l in ${(f)__mgd}; do
+    [[ -n "$__l" ]] || continue
+    __id="${__l%%${US}*}"
+    (( ${+__seen[$__id]} )) && continue
+    print -r -- "primate${US}${__l#*${US}}${US}${__id}${US}0"
+  done
 }
 
 # id, cpu%, mem usage, mem%, pids — for running containers only.
@@ -739,24 +771,22 @@ function _zoo_stats() {
     cat "$ZOO_STATS_SOURCE"
     return
   fi
-  docker stats --no-stream --format '{{.ID}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}'
+  local US=$'\x1f'
+  docker stats --no-stream \
+    --format "{{.ID}}${US}{{.CPUPerc}}${US}{{.MemUsage}}${US}{{.MemPerc}}${US}{{.PIDs}}"
 }
 
-# Normalises ps output into one tab-separated row per primate:
-#   kind, name, image, status, id, legacy
-# Split out because the render loop and the action keys must agree on what row N
-# is. Two parsers would be two answers to that question, and the one that matters
-# is the one the kill lands on.
+# _zoo_ps already emits the final row shape; this is the one place that validates
+# it, so the renderer and the action keys cannot disagree about what row N is.
+# A short row is dropped rather than half-parsed — a row with missing fields is
+# how an empty container id reached the kill.
 function _zoo_rows() {
   local __line
   for __line in ${(f)1}; do
     [[ -n "$__line" ]] || continue
-    local __f=("${(@s:	:)__line}")
-    (( ${#__f} >= 5 )) || continue
-    local __kind=primate __legacy=0
-    [[ "${__f[5]}" == *primate.session=* ]] && __kind=session
-    [[ "${__f[5]}" == *primate.managed=* ]] || __legacy=1
-    print -r -- "${__kind}	${__f[2]}	${__f[3]}	${__f[4]}	${__f[1]}	${__legacy}"
+    local __f=("${(@ps:\x1f:)__line}")
+    (( ${#__f} == 6 )) || continue
+    print -r -- "$__line"
   done
 }
 
@@ -768,14 +798,15 @@ function _zoo_frame() {
   local -A __cpu __mem __memp __pids
   local __line __id __rest
 
+  # Same separator as the ps rows. docker stats fields cannot contain 0x1F either,
+  # and a short row is skipped rather than half-assigned.
   for __line in ${(f)__st}; do
     [[ -n "$__line" ]] || continue
-    __id="${__line%%$'\t'*}"
-    __rest="${__line#*$'\t'}"
-    __cpu[$__id]="${__rest%%$'\t'*}";  __rest="${__rest#*$'\t'}"
-    __mem[$__id]="${__rest%%$'\t'*}";  __rest="${__rest#*$'\t'}"
-    __memp[$__id]="${__rest%%$'\t'*}"; __rest="${__rest#*$'\t'}"
-    __pids[$__id]="${__rest%%$'\t'*}"
+    local __sf=("${(@ps:\x1f:)__line}")
+    (( ${#__sf} == 5 )) || continue
+    __id="${__sf[1]}"
+    __cpu[$__id]="${__sf[2]}";  __mem[$__id]="${__sf[3]}"
+    __memp[$__id]="${__sf[4]}"; __pids[$__id]="${__sf[5]}"
   done
 
   # Widths from the data, so a long session name does not shear the table.
@@ -784,7 +815,7 @@ function _zoo_frame() {
   local __wn=4 __wi=5 __ws=6
   for __line in ${(f)"$(_zoo_rows "$__ps")"}; do
     [[ -n "$__line" ]] || continue
-    local __f=("${(@s:	:)__line}")
+    local __f=("${(@ps:\x1f:)__line}")
     # if/else, not `a && { b } || c`: (( n++ )) evaluates to the OLD value, so the
     # first session made the ++ return 0, which is false, which ran the || branch
     # too and counted it as a primate as well.
@@ -815,7 +846,7 @@ function _zoo_frame() {
   local __r __n=0
   for __r in "${__rows[@]}"; do
     (( __n++ ))
-    local __g=("${(@s:	:)__r}")
+    local __g=("${(@ps:\x1f:)__r}")
     local __id="${__g[5]}"
     local __c="${__cpu[$__id]:-—}" __m="${__mem[$__id]:-—}" __mp="${__memp[$__id]:-—}" __p="${__pids[$__id]:-—}"
     local __mark="  "
@@ -1000,7 +1031,7 @@ function zoo() {
       case "$__key" in
         q) break ;;
         k) (( __nrows == 0 )) && continue
-           local __g=("${(@s:	:)${__rowarr[$__sel]}}")
+           local __g=("${(@ps:\x1f:)${__rowarr[$__sel]}}")
            tput cup 0 0 2>/dev/null
            print -r -- "zoo — confirm"
            print -r -- ""

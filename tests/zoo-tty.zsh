@@ -50,33 +50,29 @@ _assert_ge "restored the cursor"           "$(_count "$_esc_cnorm")" 1
 # The selected row must be the row the confirm prompt names. When the field split
 # in the loop used a literal backslash-t instead of a tab, every field came out
 # empty, the prompt named nothing, and the empty id made the self-guard refuse the
-# kill — three symptoms of one bug, none visible without a pty. Creates and removes
-# its own container and always cancels, so it never touches anything else.
-if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
-  print -r -- "selection reaches the confirm prompt:"
-  docker rm -f zoo-selftest >/dev/null 2>&1
-  if docker run -d --name zoo-selftest --label primate.managed --label primate.image=minion \
-       minion sleep 120 >/dev/null 2>&1; then
-    ( sleep 2; printf 'k'; sleep 1; printf 'n'; sleep 1; printf 'q'; sleep 1 ) \
-      | timeout 25 script -qec "$RUN" /dev/null > "$OUT" 2>&1
-    # Assert the PROMPT LINE, not the name: the name appears in the table on every
-    # frame, so counting it passes whether or not the split worked. The first
-    # version of this assertion did exactly that and let the bug back through.
-    _assert_ge "confirm prompt appears"          "$(_count 'zoo — confirm')" 1
-    _assert_ge "prompt names kind AND container" "$(_count 'kill primate zoo-selftest')" 1
-    _assert_ge "no internal-error from a bad row" "$(( 1 - $(_count 'internal error') ))" 1
-    if docker ps -a --format '{{.Names}}' | grep -qx zoo-selftest; then
-      print -r -- "  ok   cancelling left it alive"
-    else
-      print -r -- "  FAIL cancel still killed it" >&2; (( fails++ ))
-    fi
-    docker rm -f zoo-selftest >/dev/null 2>&1
-  else
-    print -r -- "  SKIPPED — could not start a throwaway container (is the minion image local?)"
-  fi
-else
-  print -r -- "  SKIPPED — no reachable docker daemon; the selection/confirm path was NOT tested."
-fi
+# kill — three symptoms of one bug, none visible without a pty.
+#
+# Driven from fixtures, not the live daemon. The first version pressed k on row 1
+# of whatever was actually running and relied on the cancel keystroke to spare it;
+# when sessions began sorting first, row 1 became a real session. A test whose
+# safety depends on one keystroke working is not a safe test. With fixtures the
+# only container it can name does not exist.
+print -r -- "selection reaches the confirm prompt:"
+FIXD="$(mktemp -d)"
+US=$'\x1f'
+print -r -- "fix1${US}fixturebox${US}minion${US}Up 4 minutes" > "$FIXD/managed"
+: > "$FIXD/sessions"
+: > "$FIXD/stats"
+FRUN="zsh -c 'source ${ZF:A} >/dev/null 2>&1
+  export ZOO_PS_SESSION_SOURCE=$FIXD/sessions ZOO_PS_MANAGED_SOURCE=$FIXD/managed ZOO_STATS_SOURCE=$FIXD/stats
+  zoo -i 1'"
+( sleep 2; printf 'k'; sleep 1; printf 'n'; sleep 1; printf 'q'; sleep 1 ) \
+  | timeout 25 script -qec "$FRUN" /dev/null > "$OUT" 2>&1
+_assert_ge "the fixture row is listed"        "$(_count 'fixturebox')" 1
+_assert_ge "confirm prompt appears"           "$(_count 'zoo — confirm')" 1
+_assert_ge "prompt names kind AND container"  "$(_count 'kill primate fixturebox')" 1
+_assert_ge "no internal-error from a bad row" "$(( 1 - $(_count 'internal error') ))" 1
+rm -rf "$FIXD"
 
 if (( fails )); then print -r -- "FAILED ($fails)" >&2; exit 1; fi
 print -r -- "PASSED"
