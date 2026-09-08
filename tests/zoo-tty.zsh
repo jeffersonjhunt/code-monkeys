@@ -164,5 +164,47 @@ else
   print -r -- "  SKIPPED — no reachable docker daemon; the a and e keys were NOT tested."
 fi
 
+# The n and N keys, through the real loop, with the launchers stubbed INSIDE the
+# pty run. That exercises loop -> picker -> launcher without starting a container,
+# which is the layer unit tests cannot see and the one F1 lived in. Nothing here
+# needs a daemon, so it runs wherever script(1) does.
+print -r -- "n and N pick an image and hand it to the right launcher:"
+ND="$(mktemp -d)"
+: > "$ND/sessions"; : > "$ND/managed"; : > "$ND/stats"
+NRUN="zsh -c 'source ${ZF:A} >/dev/null 2>&1
+  primate-session() { print -r -- \"STUBSESSION \$*\" }
+  primate() { print -r -- \"STUBPRIMATE \$*\" }
+  export ZOO_PS_SESSION_SOURCE=$ND/sessions ZOO_PS_MANAGED_SOURCE=$ND/managed ZOO_STATS_SOURCE=$ND/stats
+  zoo -i 1'"
+
+# n, enter on row 1 -> codemonkey, the first roster entry
+( sleep 2; printf 'n'; sleep 2; printf '\n'; sleep 2; printf 'q'; sleep 1 ) \
+  | timeout 25 script -qec "$NRUN" /dev/null > "$OUT" 2>&1
+_assert_ge "the picker offers the roster"      "$(_count 'workspace to mount')" 1
+_assert_ge "n starts a SESSION with the pick"  "$(_count 'STUBSESSION codemonkey')" 1
+_assert_ge "n did not start a foreground one"  "$(( 1 - $(_count 'STUBPRIMATE') ))" 1
+
+# down-arrow then enter -> the second entry, so the cursor is real
+( sleep 2; printf 'n'; sleep 2; printf '\033[B'; sleep 1; printf '\n'; sleep 2; printf 'q'; sleep 1 ) \
+  | timeout 25 script -qec "$NRUN" /dev/null > "$OUT" 2>&1
+_assert_ge "the picker cursor moves"           "$(_count 'STUBSESSION aichat')" 1
+
+# N -> the foreground launcher instead
+( sleep 2; printf 'N'; sleep 2; printf '\n'; sleep 2; printf 'q'; sleep 1 ) \
+  | timeout 25 script -qec "$NRUN" /dev/null > "$OUT" 2>&1
+_assert_ge "N starts a FOREGROUND primate"     "$(_count 'STUBPRIMATE codemonkey')" 1
+_assert_ge "N did not start a session"         "$(( 1 - $(_count 'STUBSESSION') ))" 1
+
+# esc cancels and starts nothing
+( sleep 2; printf 'n'; sleep 2; printf '\033'; sleep 2; printf 'q'; sleep 1 ) \
+  | timeout 25 script -qec "$NRUN" /dev/null > "$OUT" 2>&1
+# Paired with positive evidence: "nothing was started" alone also passes if the
+# picker never opened, which is the vacuous shape that has already let two bugs
+# through in this feature.
+_assert_ge "the picker did open"               "$(_count 'workspace to mount')" 1
+_assert_ge "esc cancels it"                    "$(( 1 - $(_count 'STUBSESSION') ))" 1
+_assert_ge "and starts nothing at all"         "$(( 1 - $(_count 'STUBPRIMATE') ))" 1
+rm -rf "$ND"
+
 if (( fails )); then print -r -- "FAILED ($fails)" >&2; exit 1; fi
 print -r -- "PASSED"
