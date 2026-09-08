@@ -260,7 +260,14 @@ function primate() {
     __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock --group-add "$(_primate_docker_gid)")
   fi
 
+  # Labelled so it can be found by asking docker, the way session containers already are. A
+  # foreground primate used to carry no label at all, which left `primate` containers identifiable
+  # only by matching their image against the roster — a guess, and the guess is what once let
+  # primate-session-kill remove the wrong container. primate.managed is on both launchers so one
+  # filter finds every primate; primate.session still tells the two kinds apart.
   docker run --rm -it \
+    --label primate.managed \
+    --label "primate.image=${__IMAGE}" \
     --hostname "${__IMAGE}" \
     "${__ENV_FILE_MOUNT[@]}" \
     "${__GPU_OPTS[@]}" \
@@ -511,6 +518,7 @@ function primate-session() {
   # an unrelated container get killed in its place. A label is a fact; a naming convention is a guess.
   docker run -d \
     --name "${__NAME}" \
+    --label primate.managed \
     --label primate.session \
     --label "primate.image=${__IMAGE}" \
     --label "primate.name=${__NAME}" \
