@@ -1,32 +1,5 @@
 # TODO
 
-## `primate()` / `primate-session()` have no sudo fallback, so they fail on a host whose user is not in the `docker` group
-
-**Problem (observed 2026-09-08, `intel-nuc.tworivers`, during zoo U0 verification):**
-
-- `jhunt` is not in the `docker` group there and `/var/run/docker.sock` is `root:docker 660`, so
-  plain `docker` is `permission denied while trying to connect to the docker API`.
-- `bin/primate-pull`, `vault:_docker` and the in-image `/usr/local/bin/docker` shim all carry the
-  same `docker` -> `sudo -n docker` probe. The two **host-side launchers never got it**, so
-  `primate <img>` and `primate-session <img>` simply do not work on that host.
-- The existing Docker-out-of-Docker entry below fixed this for the *inside-a-container* case
-  (`--group-add` + the image shim). The host case was never the same code path and was missed.
-- Verified by having to stand up a hand-made `docker -> sudo -n docker` shim on `PATH` before the
-  full-stack test of U0 could run at all.
-
-**Why it matters beyond the launchers:** `zoo` (see `project-output/zoo/02-plan.md`) reads
-`docker ps` and `docker stats` directly and hits the same wall on the same hosts. Tracked there as
-**U0.5**, to land before U1.
-
-**Fix:** give the host-side launchers the probe that already exists three times over — lift
-`vault:_docker` into a shared `_primate_docker()` in `zfuncs` and route `primate()`,
-`primate-session()` and the session helpers through it. Resist adding a fourth copy.
-
-- [ ] `_primate_docker()` in `zfuncs`, one probe, cached per shell
-- [ ] `primate()`, `primate-session()`, `-list`, `-kill`, `-resume`, `_primate_first_run_sync` use it
-- [ ] verified on `intel-nuc` (not in `docker` group) **and** on the macOS host (is able to use plain `docker`)
-
-
 ## Docker-out-of-Docker must just work in every primate (agents keep concluding Docker is unavailable)
 
 **Problem (observed 2026-09-05, claude primate on Docker Desktop / arm64):**
