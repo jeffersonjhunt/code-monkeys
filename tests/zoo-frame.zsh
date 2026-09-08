@@ -95,6 +95,28 @@ out3="$(_out "$FIX/empty" "$FIX/empty" "$FIX/empty")"
 _want "says none rather than rendering blank" "$out3" "no primates"
 _want "counts are zero"                       "$out3" "0 primates, 0 sessions"
 
+print -r -- "_zoo_field is the only place a row is taken apart:"
+local_ok=0
+(
+  ZOO_KIND=; ZOO_NAME=; ZOO_ID=
+  _zoo_field "primate${US}box${US}minion${US}Up 1m${US}abc123${US}0" \
+    && print -r -- "  ok   a good row sets fields by name: ${ZOO_KIND}/${ZOO_NAME}/${ZOO_ID}" \
+    || print -r -- "  FAIL a good row was rejected"
+)
+# A row split on the wrong separator collapses to ONE field. That must fail at the
+# split, not yield empty fields that surface later as a self-guard refusal — which
+# is exactly how the U2 bug presented and why it was hunted in the wrong place.
+if _zoo_field "primate\tbox\tminion\tUp 1m\tabc123\t0" 2>/dev/null; then
+  print -r -- "  FAIL a tab-separated row was accepted" >&2; (( fails++ ))
+else
+  print -r -- "  ok   a row split on the wrong separator is rejected"
+fi
+if _zoo_field "onlyonefield" 2>/dev/null; then
+  print -r -- "  FAIL a 1-field row was accepted" >&2; (( fails++ ))
+else
+  print -r -- "  ok   a 1-field row is rejected"
+fi
+
 print -r -- "short rows are dropped, not half-parsed:"
 print -r -- "zzz9${US}truncated" > "$FIX/short"
 _wantnot "a 2-field row does not become a container" \

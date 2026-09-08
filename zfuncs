@@ -776,16 +776,35 @@ function _zoo_stats() {
     --format "{{.ID}}${US}{{.CPUPerc}}${US}{{.MemUsage}}${US}{{.MemPerc}}${US}{{.PIDs}}"
 }
 
+# Takes one row apart, once, into named fields. Every use site reads $ZOO_NAME and
+# $ZOO_ID rather than indexing ${__g[2]} and ${__g[5]} after its own split.
+#
+# This is the shape jq would give for free by addressing fields by key. Without it
+# there were five separate splits and only two checked their field count — so a
+# wrong separator produced empty fields that surfaced three steps later as a
+# self-guard refusal, which is exactly how the U2 bug presented and why it was
+# looked for in the wrong place. A bad row now fails HERE, non-zero, at the split.
+#
+# Callers declare the ZOO_* names local, so nothing leaks into the shell:
+#   local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
+#   _zoo_field "$row" || { ...it is not a row... }
+function _zoo_field() {
+  local __f=("${(@ps:\x1f:)1}")
+  (( ${#__f} == 6 )) || return 1
+  ZOO_KIND="${__f[1]}"; ZOO_NAME="${__f[2]}";   ZOO_IMAGE="${__f[3]}"
+  ZOO_STATUS="${__f[4]}"; ZOO_ID="${__f[5]}"; ZOO_LEGACY="${__f[6]}"
+}
+
 # _zoo_ps already emits the final row shape; this is the one place that validates
 # it, so the renderer and the action keys cannot disagree about what row N is.
 # A short row is dropped rather than half-parsed — a row with missing fields is
 # how an empty container id reached the kill.
 function _zoo_rows() {
   local __line
+  local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
   for __line in ${(f)1}; do
     [[ -n "$__line" ]] || continue
-    local __f=("${(@ps:\x1f:)__line}")
-    (( ${#__f} == 6 )) || continue
+    _zoo_field "$__line" || continue
     print -r -- "$__line"
   done
 }
@@ -811,19 +830,20 @@ function _zoo_frame() {
 
   # Widths from the data, so a long session name does not shear the table.
   local -a __rows
+  local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
   local __np=0 __ns=0 __legacy=0
   local __wn=4 __wi=5 __ws=6
   for __line in ${(f)"$(_zoo_rows "$__ps")"}; do
     [[ -n "$__line" ]] || continue
-    local __f=("${(@ps:\x1f:)__line}")
+    _zoo_field "$__line" || continue
     # if/else, not `a && { b } || c`: (( n++ )) evaluates to the OLD value, so the
     # first session made the ++ return 0, which is false, which ran the || branch
     # too and counted it as a primate as well.
-    if [[ "${__f[1]}" == session ]]; then (( __ns++ )); else (( __np++ )); fi
-    (( ${__f[6]} )) && __legacy=1
-    (( ${#__f[2]} > __wn )) && __wn=${#__f[2]}
-    (( ${#__f[3]} > __wi )) && __wi=${#__f[3]}
-    (( ${#__f[4]} > __ws )) && __ws=${#__f[4]}
+    if [[ "$ZOO_KIND" == session ]]; then (( __ns++ )); else (( __np++ )); fi
+    (( ZOO_LEGACY )) && __legacy=1
+    (( ${#ZOO_NAME}   > __wn )) && __wn=${#ZOO_NAME}
+    (( ${#ZOO_IMAGE}  > __wi )) && __wi=${#ZOO_IMAGE}
+    (( ${#ZOO_STATUS} > __ws )) && __ws=${#ZOO_STATUS}
     __rows+=("$__line")
   done
 
@@ -846,13 +866,14 @@ function _zoo_frame() {
   local __r __n=0
   for __r in "${__rows[@]}"; do
     (( __n++ ))
-    local __g=("${(@ps:\x1f:)__r}")
-    local __id="${__g[5]}"
-    local __c="${__cpu[$__id]:-—}" __m="${__mem[$__id]:-—}" __mp="${__memp[$__id]:-—}" __p="${__pids[$__id]:-—}"
+    _zoo_field "$__r" || continue
+    local __c="${__cpu[$ZOO_ID]:-—}" __m="${__mem[$ZOO_ID]:-—}"
+    local __mp="${__memp[$ZOO_ID]:-—}" __p="${__pids[$ZOO_ID]:-—}"
     local __mark="  "
     (( __n == __sel )) && __mark="> "
     printf "%s%-7s  %-*s  %-*s  %-*s  %6s  %-17s  %6s  %5s\n" \
-      "$__mark" "${__g[1]}" $__wn "${__g[2]}" $__wi "${__g[3]}" $__ws "${__g[4]}" "$__c" "$__m" "$__mp" "$__p"
+      "$__mark" "$ZOO_KIND" $__wn "$ZOO_NAME" $__wi "$ZOO_IMAGE" $__ws "$ZOO_STATUS" \
+      "$__c" "$__m" "$__mp" "$__p"
   done
 
   print -r -- ""
@@ -1031,13 +1052,20 @@ function zoo() {
       case "$__key" in
         q) break ;;
         k) (( __nrows == 0 )) && continue
-           local __g=("${(@ps:\x1f:)${__rowarr[$__sel]}}")
+           local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
+           if ! _zoo_field "${__rowarr[$__sel]}"; then
+             tput cup 0 0 2>/dev/null
+             print -r -- "zoo: internal error — row ${__sel} is not a row; refusing to act on it."
+             print -r -- ""; print -r -- " any key to continue"
+             tput ed 2>/dev/null; read -k 1 2>/dev/null
+             continue
+           fi
            tput cup 0 0 2>/dev/null
            print -r -- "zoo — confirm"
            print -r -- ""
-           print -r -- "  kill ${__g[1]} ${__g[2]}   (${__g[3]}, ${__g[4]})"
-           if [[ "${__g[1]}" == session ]]; then
-             print -r -- "  the ${__g[3]}-home volume persists; the session can be started again."
+           print -r -- "  kill ${ZOO_KIND} ${ZOO_NAME}   (${ZOO_IMAGE}, ${ZOO_STATUS})"
+           if [[ "$ZOO_KIND" == session ]]; then
+             print -r -- "  the ${ZOO_IMAGE}-home volume persists; the session can be started again."
            else
              print -r -- "  a foreground primate is --rm, so removing it is the kill."
            fi
