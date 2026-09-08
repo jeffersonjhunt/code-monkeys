@@ -122,6 +122,33 @@ print -r -- "zzz9${US}truncated" > "$FIX/short"
 _wantnot "a 2-field row does not become a container" \
   "$(_zoo_rows "$(cat "$FIX/short")")" "truncated"
 
+print -r -- "the background sampler is silent and leaves nothing behind:"
+# zoo's teardown removes the sample directory while the detached sampler may still
+# be running. That used to print
+#   mv: rename /var/.../tmp.XXX.new to /var/.../tmp.XXX: No such file or directory
+# on the user's terminal AFTER zoo had exited, and — when the sample landed just
+# after the files were deleted — leave an orphan in /tmp. Found by running zoo, not
+# by any test here, which is why it is a test here now.
+_zoo_stats() { print -r -- "aaa1${US}0.10%${US}12MiB / 31.29GiB${US}0.04%${US}3" }
+
+sd="$(mktemp -d)"
+noise="$( _zoo_sample "$sd/stats" 2>&1 )"; rc=$?
+if [[ -s "$sd/stats" ]]; then print -r -- "  ok   writes a sample when the dir exists"
+else print -r -- "  FAIL wrote no sample" >&2; (( fails++ )); fi
+[[ -z "$noise" ]] && print -r -- "  ok   silent on success" \
+  || { print -r -- "  FAIL said: $noise" >&2; (( fails++ )); }
+[[ ! -e "$sd/stats.new" ]] && print -r -- "  ok   no .new left over" \
+  || { print -r -- "  FAIL left a .new behind" >&2; (( fails++ )); }
+rm -rf "$sd"
+
+# The race, deterministically: the directory is gone before the sampler runs.
+sd2="$(mktemp -d)"; gone="$sd2/stats"; rm -rf "$sd2"
+noise2="$( _zoo_sample "$gone" 2>&1 )"
+[[ -z "$noise2" ]] && print -r -- "  ok   silent when its directory is gone" \
+  || { print -r -- "  FAIL said: $noise2" >&2; (( fails++ )); }
+[[ ! -e "$sd2" ]] && print -r -- "  ok   recreated nothing" \
+  || { print -r -- "  FAIL recreated $sd2" >&2; (( fails++ )); rm -rf "$sd2"; }
+
 print -r -- "failed query is not an empty one:"
 out4="$( docker() { return 1 }
          ZOO_PS_SESSION_SOURCE="" ZOO_PS_MANAGED_SOURCE="" ZOO_STATS_SOURCE="$FIX/empty" \

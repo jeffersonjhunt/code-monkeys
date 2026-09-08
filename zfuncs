@@ -892,8 +892,17 @@ function _zoo_frame() {
 # file avoids a stat(1) that spells its flags differently on Linux and macOS.
 function _zoo_sample() {
   local __out="$1"
-  { print -r -- "$(date +%s)"; _zoo_stats 2>/dev/null } > "${__out}.new" 2>/dev/null \
-    && mv -f "${__out}.new" "$__out"
+  # Every part of this is best-effort and detached, and zoo may already have exited
+  # and deleted the directory underneath it — so nothing this job says belongs on
+  # the user's terminal. It used to leave
+  #   mv: rename /var/.../tmp.XXX.new to /var/.../tmp.XXX: No such file or directory
+  # on the screen AFTER zoo had quit: alarming, unactionable, and about a temp file
+  # nobody asked for. Silencing the whole block, not just the inner command, is what
+  # matters — the failing redirect is as loud as the failing mv.
+  {
+    { print -r -- "$(date +%s)"; _zoo_stats } > "${__out}.new" \
+      && mv -f "${__out}.new" "$__out"
+  } 2>/dev/null
 }
 
 # Is $name still the container zoo selected? The row an action key acts on is as
@@ -1112,18 +1121,23 @@ function zoo() {
     return 1
   fi
 
-  local __sf="$(mktemp)" __spid=0 __rc=0 __sel=1
+  # A directory, not two files. The teardown removes it whole while the sampler may
+  # still be running; a write into a directory that no longer exists creates nothing,
+  # whereas a sample completing just after two files were deleted left an orphan in
+  # /tmp on every such race.
+  local __sd="$(mktemp -d)" __spid=0 __rc=0 __sel=1
+  local __sf="${__sd}/stats"
   # Not a terminal, or asked for one frame: print it and leave. Keeps zoo usable
   # in a pipe and testable without a pty.
   if [[ "$__once" == true || ! -t 1 ]]; then
     local __ps
     if ! __ps=$(_zoo_ps); then
       print -r -- "zoo: could not query docker for primates" >&2
-      rm -f "$__sf" "${__sf}.new"
+      rm -rf "$__sd"
       return 1
     fi
     _zoo_frame "$__ps" "$(_zoo_stats 2>/dev/null)" 0 "$__tick"
-    rm -f "$__sf" "${__sf}.new"
+    rm -rf "$__sd"
     return 0
   fi
 
@@ -1262,11 +1276,11 @@ function zoo() {
   } always {
     _zoo_teardown
     trap - INT TERM
-    # The sampler is not killed. It is disowned and exits on its own in about two
-    # seconds, so by the time zoo leaves its pid has very likely been reaped and
-    # may have been reused — signalling it could hit an unrelated process. It
-    # writes only to the temp files removed on the next line.
-    rm -f "$__sf" "${__sf}.new"
+    # The sampler is still not killed — its pid may already be reaped and reused, and
+    # signalling that would hit an unrelated process. Removing the directory out from
+    # under it is safe now that it is silent: a write into a directory that is gone
+    # creates nothing and says nothing.
+    rm -rf "$__sd"
   }
   return $__rc
 }
