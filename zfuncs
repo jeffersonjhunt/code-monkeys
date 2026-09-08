@@ -67,6 +67,66 @@ function _primate_ensure_image() {
   "$__pp" "$__img"
 }
 
+# A first run has no <image>-home volume yet, so docker creates one and seeds it from the image —
+# and the images ship PLACEHOLDER configs. opencode's baked opencode.json names LITELLM_HOST and a
+# model alias the router stopped serving, because the real file is gitignored and lives encrypted in
+# hemlighet; the claude primate's settings.json and commands are in the same position. Nothing on
+# the `primate` path ever replaced them, so a clean install could not produce a working opencode:
+# you had to already know to run primate-upgrade, and blowing the volumes away to start fresh made
+# it worse rather than better. First run now syncs.
+#
+# Never blocks the launch. Every failure below warns and returns 0 — a stale config is worth a
+# warning, not a refusal to start the container you asked for.
+function _primate_first_run_sync() {
+  local __img=$1
+  local __vol="${__img}-home"
+  # The volume existing IS the "not a first run" test, which also makes this a no-op on the
+  # re-attach paths without their needing to know about it.
+  docker volume inspect "$__vol" &>/dev/null && return 0
+
+  local __repo="${${(%):-%x}:A:h}"
+  # Inside a primate ~/.zfuncs is a standalone copy with no sibling primates/; and even where a repo
+  # checkout is visible, --volume "$__repo:..." would be resolved by the DAEMON HOST against a
+  # container path and arrive empty. primate-upgrade refuses inside a primate for the same reason.
+  if [[ -f /.dockerenv || ! -f "${__repo}/primates/upgrade-home.sh" ]]; then
+    echo "  first run of ${__img}: no host repo checkout here, so the image's default configs stand." >&2
+    echo "  Sync them from the host with: primate-upgrade ${__img}" >&2
+    return 0
+  fi
+
+  echo "first run of ${__img}: seeding ${__vol} from the image, then syncing repo configs into it"
+
+  # Seed first. Docker copies image content into a volume only while that volume is EMPTY at mount
+  # time, so writing dotfiles in ahead of this would cost us oh-my-zsh, the conda init and
+  # everything else the image bakes into $HOME. `docker create` triggers the copy without starting
+  # anything, so entrypoints and CMDs do not come into it.
+  local __cid
+  if ! __cid=$(docker create --volume "${__vol}:/home/codemonkey" "${__img}:latest" true 2>/dev/null); then
+    echo "  WARNING: could not seed ${__vol} from ${__img}; starting with image defaults." >&2
+    return 0
+  fi
+  docker rm -f "$__cid" >/dev/null 2>&1
+
+  if ! docker image inspect codemonkey:latest >/dev/null 2>&1; then
+    if ! _primate_ensure_image codemonkey; then
+      echo "  WARNING: codemonkey:latest unavailable, so configs were not synced." >&2
+      echo "  Retry later with: primate-upgrade ${__img}" >&2
+      return 0
+    fi
+  fi
+
+  # The same call primate-upgrade makes, against the same one copy of the sync logic.
+  if ! docker run --rm \
+    --env "PRIMATE=${__img}" \
+    --volume "${__repo}:/opt/user-jhunt:ro" \
+    --volume "${__vol}:/home/codemonkey" \
+    codemonkey:latest bash /opt/user-jhunt/primates/upgrade-home.sh; then
+    echo "  WARNING: config sync failed; ${__vol} holds the image defaults." >&2
+    echo "  Retry with: primate-upgrade ${__img}" >&2
+  fi
+  return 0
+}
+
 # Refuse to hand a container the whole home directory. The workspace mount is $(pwd), so running
 # `primate minion` from ~ puts .ssh, .aws, .docker and every other dotfile at /home/codemonkey/
 # workspace, read-write. Almost always a mistake, and a quiet one; --allow-home is there for when
@@ -145,6 +205,7 @@ function primate() {
   fi
 
   _primate_ensure_image "$__IMAGE" || return 1
+  _primate_first_run_sync "$__IMAGE"
 
   # HOST_* carry the host-side path of each shared dir into the container: bind mounts made
   # from inside a primate resolve on the daemon host, so `docker run -v` / compose volumes
@@ -362,6 +423,8 @@ function primate-session() {
   if [[ "$__NO_WORKSPACE" == false && "$__ALLOW_HOME" == false ]]; then
     _primate_workspace_guard "$__IMAGE" primate-session || return 1
   fi
+
+  _primate_first_run_sync "$__IMAGE"
 
   # HOST_* carry the host-side path of each shared dir into the container: bind mounts made
   # from inside a primate resolve on the daemon host, so `docker run -v` / compose volumes

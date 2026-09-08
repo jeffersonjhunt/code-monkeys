@@ -126,7 +126,11 @@ refuse that and say so; `--allow-home` is the override, `--no-workspace` the usu
 Re-attaching to an existing session makes no new mount and is never refused.
 
 What `primate` does:
-- Creates a persistent Docker volume `<image>-home` for the home directory
+- Creates a persistent Docker volume `<image>-home` for the home directory — and on the **first
+  run of an image** seeds it from the image, then syncs the repo's configs into it with
+  `primates/upgrade-home.sh`, so gitignored files the image can only ship as placeholders
+  (`opencode.json`, the claude primate's `settings.json`/`commands`) are correct before the shell
+  starts. Warns and starts anyway if there is no host repo checkout to sync from
 - Mounts `~/.ssh` and `~/.aws` into the container if present
 - Mounts `/var/run/docker.sock` into the container if present, with `--group-add <socket gid>` (Docker-out-of-Docker)
 - Mounts the current directory as `/home/codemonkey/workspace`
