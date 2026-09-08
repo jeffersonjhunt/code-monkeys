@@ -6,13 +6,20 @@
 # only works if the labels are actually applied, so this asserts the `docker run` each launcher
 # builds — without starting anything.
 #
-# `docker` is shadowed by a function that captures `run` and passes every other subcommand through
-# to the real client, so image/volume/inspect lookups behave normally and only the launch is faked.
-# That means this runs anywhere the repo is checked out: no TTY, no daemon-side mounts, no cleanup.
+# Hermetic: no daemon, no images, no volumes, no TTY, no cleanup. `docker` is shadowed so `run` is
+# captured and every other subcommand fails quietly, and the two helpers that reach outside the
+# process — _primate_ensure_image (pulls from ECR) and _primate_first_run_sync (seeds a volume) — are
+# stubbed. Only argument construction is under test, which is the whole of what labelling is.
+#
+# The first version of this pinned IMAGE=minion and let the real client through. That passes on a
+# machine where minion happens to be local and, on one where it is not, primate() returns at the
+# pull and never builds a docker run at all. Caught on intel-nuc by the "nothing was asserted"
+# guard below, which is the only reason it did not read as a clean pass.
 
 set -u
 ZF="${0:A:h}/../zfuncs"
-IMAGE=minion
+# Deliberately not a real image: nothing here may depend on what is local to this machine.
+IMAGE=zoo-test-not-a-real-image
 fails=0
 
 _capture=""
@@ -21,10 +28,15 @@ docker() {
     _capture="$*"
     return 0
   fi
-  command docker "$@"
+  return 1
 }
 
 source "$ZF" >/dev/null 2>&1
+
+# Neither reaches a registry or a volume under test; both would otherwise abort primate() on a
+# machine that does not already have the image.
+_primate_ensure_image()   { return 0 }
+_primate_first_run_sync() { return 0 }
 
 _check() {  # _check <description> <needle>
   if [[ "$_capture" == *"$2"* ]]; then
