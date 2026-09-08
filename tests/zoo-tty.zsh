@@ -11,6 +11,14 @@ set -u
 ZF="${0:A:h}/../zfuncs"
 fails=0
 
+# Forced, not inherited. tput emits NOTHING without a terminfo entry, so with TERM
+# unset zoo never enters the alternate screen and every escape-sequence assertion
+# below fails — which is what happened on intel-nuc, where a non-interactive ssh
+# session has no TERM. It passed here only because this shell happens to have one.
+# A test whose result depends on ambient environment tests a different thing on
+# every machine. script(1) propagates TERM, so setting it here is enough.
+export TERM=xterm-256color
+
 if ! command -v script >/dev/null 2>&1; then
   print -r -- "SKIPPED — script(1) not installed, so no pty can be allocated here."
   print -r -- "          The interactive loop and terminal restore were NOT tested."
@@ -171,7 +179,14 @@ fi
 print -r -- "n and N pick an image and hand it to the right launcher:"
 ND="$(mktemp -d)"
 : > "$ND/sessions"; : > "$ND/managed"; : > "$ND/stats"
+# The roster is stubbed for two reasons, both found by running this on intel-nuc.
+# _primate_roster reads primates/*.dockerfile NEXT TO zfuncs, so anywhere zfuncs is
+# staged alone the picker correctly says "no roster here" and every assertion below
+# fails for a reason that is not a bug. And asserting on the real roster couples
+# these tests to its contents — "aichat is the second entry" breaks the day someone
+# adds a dockerfile that sorts earlier. Two fixed names, deterministic everywhere.
 NRUN="zsh -c 'source ${ZF:A} >/dev/null 2>&1
+  _primate_roster() { print -r -- zoo-img-one; print -r -- zoo-img-two }
   primate-session() { print -r -- \"STUBSESSION \$*\" }
   primate() { print -r -- \"STUBPRIMATE \$*\" }
   export ZOO_PS_SESSION_SOURCE=$ND/sessions ZOO_PS_MANAGED_SOURCE=$ND/managed ZOO_STATS_SOURCE=$ND/stats
@@ -181,18 +196,18 @@ NRUN="zsh -c 'source ${ZF:A} >/dev/null 2>&1
 ( sleep 2; printf 'n'; sleep 2; printf '\n'; sleep 2; printf 'q'; sleep 1 ) \
   | timeout 25 script -qec "$NRUN" /dev/null > "$OUT" 2>&1
 _assert_ge "the picker offers the roster"      "$(_count 'workspace to mount')" 1
-_assert_ge "n starts a SESSION with the pick"  "$(_count 'STUBSESSION codemonkey')" 1
+_assert_ge "n starts a SESSION with the pick"  "$(_count 'STUBSESSION zoo-img-one')" 1
 _assert_ge "n did not start a foreground one"  "$(( 1 - $(_count 'STUBPRIMATE') ))" 1
 
 # down-arrow then enter -> the second entry, so the cursor is real
 ( sleep 2; printf 'n'; sleep 2; printf '\033[B'; sleep 1; printf '\n'; sleep 2; printf 'q'; sleep 1 ) \
   | timeout 25 script -qec "$NRUN" /dev/null > "$OUT" 2>&1
-_assert_ge "the picker cursor moves"           "$(_count 'STUBSESSION aichat')" 1
+_assert_ge "the picker cursor moves"           "$(_count 'STUBSESSION zoo-img-two')" 1
 
 # N -> the foreground launcher instead
 ( sleep 2; printf 'N'; sleep 2; printf '\n'; sleep 2; printf 'q'; sleep 1 ) \
   | timeout 25 script -qec "$NRUN" /dev/null > "$OUT" 2>&1
-_assert_ge "N starts a FOREGROUND primate"     "$(_count 'STUBPRIMATE codemonkey')" 1
+_assert_ge "N starts a FOREGROUND primate"     "$(_count 'STUBPRIMATE zoo-img-one')" 1
 _assert_ge "N did not start a session"         "$(( 1 - $(_count 'STUBSESSION') ))" 1
 
 # esc cancels and starts nothing
@@ -205,6 +220,18 @@ _assert_ge "the picker did open"               "$(_count 'workspace to mount')" 
 _assert_ge "esc cancels it"                    "$(( 1 - $(_count 'STUBSESSION') ))" 1
 _assert_ge "and starts nothing at all"         "$(( 1 - $(_count 'STUBPRIMATE') ))" 1
 rm -rf "$ND"
+
+# The degraded path, which the intel-nuc run exposed by accident: with no TERM,
+# every tput is a silent no-op and zoo runs without the alternate screen or a
+# hidden cursor. That is a real configuration — any non-interactive or minimal
+# environment — and it must still render and still quit rather than wedge.
+print -r -- "no TERM: degrades instead of breaking:"
+( sleep 2; printf 'q' ) | timeout 20 env -u TERM script -qec "$RUN" /dev/null > "$OUT" 2>&1
+rc=$?
+_assert_ge "still renders a frame"      "$(_count 'zoo ')" 1
+_assert_ge "emits no alternate screen"  "$(( 1 - $(_count "$_esc_smcup") ))" 1
+if (( rc == 0 )); then print -r -- "  ok   still quits cleanly on q"
+else print -r -- "  FAIL exited $rc with no TERM" >&2; (( fails++ )); fi
 
 if (( fails )); then print -r -- "FAILED ($fails)" >&2; exit 1; fi
 print -r -- "PASSED"
