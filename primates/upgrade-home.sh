@@ -49,13 +49,6 @@ cp "$SRC/tmux.conf"      "$HOME/.tmux.conf"
 cp "$SRC/zshrc.template" "$HOME/.zshrc"
 cp "$SRC/zfuncs"         "$HOME/.zfuncs"
 
-# ~/.zfuncs is a standalone copy in here — there is no sibling bin/ and setup never runs inside a
-# primate, so primate-pull would be unreachable and `primate <img>` inside a primate could not pull
-# anything. Put it on PATH the same way the host does.
-mkdir -p "$HOME/.local/bin"
-cp "$SRC/bin/primate-pull" "$HOME/.local/bin/primate-pull"
-chmod +x "$HOME/.local/bin/primate-pull"
-
 # oh-my-zsh update
 if [ -d "$HOME/.oh-my-zsh" ]; then
   git -C "$HOME/.oh-my-zsh" pull --quiet 2>/dev/null || true
@@ -86,6 +79,22 @@ fi
 if [ "${PRIMATE:-}" = "opencode" ] && [ -f "$SRC/primates/opencode.json" ]; then
   mkdir -p "$HOME/.config/opencode"
   cp "$SRC/primates/opencode.json" "$HOME/.config/opencode/opencode.json"
+fi
+
+# ~/.zfuncs is a standalone copy in here — there is no sibling bin/ and setup never runs inside a
+# primate, so primate-pull would be unreachable and `primate <img>` inside a primate could not pull
+# anything. Put it on PATH the same way the host does.
+#
+# Last, and guarded, deliberately. Everything above it is what the volume is actually here for:
+# under `set -e` a new cp placed mid-script silently skips every block after it, and "the config
+# never got synced" is precisely the failure this script exists to prevent. A checkout without
+# bin/primate-pull should cost you the pull helper, not your opencode.json.
+if [ -f "$SRC/bin/primate-pull" ]; then
+  mkdir -p "$HOME/.local/bin"
+  cp "$SRC/bin/primate-pull" "$HOME/.local/bin/primate-pull"
+  chmod +x "$HOME/.local/bin/primate-pull"
+else
+  echo "WARNING: $SRC/bin/primate-pull missing — skipping it; the rest of the sync is done." >&2
 fi
 
 # ownership is fixed by the EXIT trap above, on success and on failure alike.
