@@ -18,6 +18,7 @@ flist+=(primate)
 flist+=(primate-session)
 flist+=(primate-session-list)
 flist+=(primate-session-kill)
+flist+=(primate-session-resume)
 
 function() {
   for fname in ${flist}; do
@@ -279,13 +280,45 @@ function _primate() {
   # from ECR on demand, and the ECR repo names under codemonkeys/* match the dockerfile names.
   # Computed inside the function, so sourcing zfuncs costs nothing.
   local known_primates=(${(f)"$(_primate_roster)"})
+  # Kept beside the functions' own flag parsing: a flag the completer does not know about is a
+  # flag you cannot discover, which is what --allow-home was between being added and this.
+  local __opts=(
+    '--no-workspace[do not mount the current directory as the workspace]'
+    '--allow-home[permit $HOME as the workspace mount (refused by default)]'
+  )
 
-  case "$CURRENT" in
-    2) _describe 'primate image' known_primates ;;
-    *) _values 'options' '--no-workspace[Do not mount the current directory as workspace]' ;;
-  esac
+  if (( CURRENT == 2 )); then
+    _describe 'primate image' known_primates
+    return
+  fi
+
+  # primate-session's third word is an optional session name, and naming one that already exists
+  # re-attaches to it — so offer the live ones here. `primate` has no such argument.
+  if (( CURRENT == 3 )) && [[ "${words[1]}" == "primate-session" ]]; then
+    local __live=(${(f)"$(_primate_session_names)"})
+    (( $#__live )) && _describe 'existing session (re-attaches)' __live
+  fi
+
+  _values 'options' "${__opts[@]}"
 }
 compdef _primate primate
+
+# The primates that actually have a home volume to upgrade, plus the sweep. Derived from the
+# volumes that exist intersected with the dockerfile roster — the same pair primate-upgrade --all
+# intersects, and for the same reason: a stray <something>-home volume is not a primate.
+function _primate_upgrade() {
+  local __roster=(${(f)"$(_primate_roster)"}) __vol __name
+  local __have=()
+  for __vol in ${(f)"$(docker volume ls --format '{{.Name}}' 2>/dev/null)"}; do
+    [[ "$__vol" == *-home ]] || continue
+    __name="${__vol%-home}"
+    (( ${__roster[(I)$__name]} )) && __have+=("$__name")
+  done
+  (( $#__have )) && _describe 'primate with a home volume' __have
+  local __opts=('--all:every primate home volume that exists')
+  _describe 'option' __opts
+}
+compdef _primate_upgrade primate-upgrade
 
 function primate-upgrade() {
   if [[ "$#" -lt 1 ]]; then
@@ -500,12 +533,104 @@ function primate-session() {
 compdef _primate primate-session
 
 # Completes live session names for primate-session-kill, straight from the labels.
+# The live session containers, by name, straight from the label. One query, four callers: the
+# completer, the resolver, primate-session-resume's no-argument case, and primate-upgrade's
+# sibling logic stays separate because it is about volumes, not containers.
+function _primate_session_names() {
+  docker ps -a --filter 'label=primate.session' --format '{{.Names}}' 2>/dev/null
+}
+
+# Resolve a session argument to a container name through the primate.session label, never a bare
+# name match: only containers primate-session created are candidates, so an unrelated container
+# that happens to share the name is untouchable. Shared by -kill and -resume so the two can never
+# disagree about which container a name means — one resolving differently from the other is how
+# you kill the session you meant to re-attach to.
+function _primate_session_resolve() {
+  local __arg="$1" __c
+  local __labelled=(${(f)"$(_primate_session_names)"})
+  for __c in "${__labelled[@]}"; do
+    [[ "$__c" == "$__arg" || "$__c" == "${__arg}-session" ]] && { print -r -- "$__c"; return 0 }
+  done
+  # Pre-label sessions: suffix only. Never a bare exact match -- that is precisely the hole the
+  # label filter closes, and reopening it in the fallback would defeat the point.
+  if docker inspect "${__arg}-session" &>/dev/null; then
+    print -r -- "${__arg}-session"
+    return 0
+  fi
+  return 1
+}
+
+# This container's own id, empty on a host. cgroup is empty under cgroup v2 inside Docker
+# Desktop's VM, so mountinfo is the source that actually answers: it carries the 64-hex id in the
+# overlay paths. Used to keep primate-session-resume from attaching a session to itself.
+function _primate_self_container_id() {
+  [[ -f /.dockerenv ]] || return 0
+  grep -oE '[0-9a-f]{64}' /proc/self/mountinfo 2>/dev/null | head -1
+}
+
+# Completes live session names for primate-session-kill and primate-session-resume.
 function _primate_session() {
-  local sessions=(${(f)"$(docker ps -a --filter 'label=primate.session' --format '{{.Names}}' 2>/dev/null)"})
+  local sessions=(${(f)"$(_primate_session_names)"})
   (( $#sessions )) || return 1
   _describe 'primate session' sessions
 }
 compdef _primate_session primate-session-kill
+compdef _primate_session primate-session-resume
+
+# re-attaches to a session by name alone, without having to remember which image it came from.
+#
+#   primate-session-resume [session]
+#
+# `primate-session <image> [name]` already re-attaches, but only if you can name the image; the
+# session list is keyed on the session. With one session in flight the argument is redundant, so
+# it is optional. A stopped container is started first — the home volume and the tmux server's
+# state are both still there, which is the whole point of a session.
+function primate-session-resume() {
+  local __TMUX_SESSION=main
+  local __TERM="${TERM:-xterm-256color}"
+  local __NAME
+  local __self="$(_primate_self_container_id)"
+
+  if [[ "$#" -lt 1 ]]; then
+    # Run from inside a session, the session you are in is not a candidate: it is the one thing
+    # you cannot want to resume, and with it counted a lone other session stops being unambiguous.
+    local __all=() __c
+    for __c in ${(f)"$(_primate_session_names)"}; do
+      [[ -n "$__self" && "$(docker inspect --format='{{.Id}}' "$__c" 2>/dev/null)" == "$__self" ]] && continue
+      __all+=("$__c")
+    done
+    if (( $#__all == 1 )); then
+      __NAME="${__all[1]}"
+    elif (( $#__all == 0 )); then
+      echo "No primate sessions to resume. Start one with: primate-session <image> [name]" >&2
+      return 1
+    else
+      echo "primate-session-resume: more than one session is in flight — name one." >&2
+      primate-session-list >&2
+      return 1
+    fi
+  elif ! __NAME="$(_primate_session_resolve "$1")"; then
+    echo "no primate session: $1" >&2
+    echo "  (primate-session-list shows what is in flight; an unlabelled container of that name is not a session)" >&2
+    return 1
+  fi
+
+  # Named explicitly, the same container still has to be refused — docker exec into your own
+  # container nests this tmux inside itself, which looks like a hang rather than a mistake.
+  if [[ -n "$__self" && "$(docker inspect --format='{{.Id}}' "$__NAME" 2>/dev/null)" == "$__self" ]]; then
+    echo "primate-session-resume: ${__NAME} is the session you are already in." >&2
+    echo "  Detach with ctrl-b d, or name a different one (primate-session-list)." >&2
+    return 1
+  fi
+
+  if [[ "$(docker inspect --format='{{.State.Running}}' "$__NAME" 2>/dev/null)" != "true" ]]; then
+    echo "starting stopped container ${__NAME}"
+    docker start "$__NAME" >/dev/null || return 1
+  fi
+
+  echo "re-attaching to ${__NAME} (tmux: ${__TMUX_SESSION}) — detach with ctrl-b d"
+  docker exec -it -e TERM="${__TERM}" "${__NAME}" tmux new-session -A -s "${__TMUX_SESSION}"
+}
 
 # lists the primate sessions currently in flight, running or stopped.
 #
@@ -546,20 +671,7 @@ function primate-session-kill() {
     return 1
   fi
   local __ARG="$1" __NAME=""
-  local __labelled=(${(f)"$(docker ps -a --filter 'label=primate.session' --format '{{.Names}}' 2>/dev/null)"})
-
-  local __c
-  for __c in "${__labelled[@]}"; do
-    [[ "$__c" == "$__ARG" || "$__c" == "${__ARG}-session" ]] && { __NAME="$__c"; break }
-  done
-
-  # Pre-label sessions: suffix only. Never a bare exact match -- that is precisely the hole the
-  # label filter closes, and reopening it in the fallback would defeat the point.
-  if [[ -z "$__NAME" ]] && docker inspect "${__ARG}-session" &>/dev/null; then
-    __NAME="${__ARG}-session"
-  fi
-
-  if [[ -z "$__NAME" ]]; then
+  if ! __NAME="$(_primate_session_resolve "$__ARG")"; then
     echo "no primate session: ${__ARG}" >&2
     echo "  (primate-session-list shows what is in flight; an unlabelled container of that name is not a session)" >&2
     return 1

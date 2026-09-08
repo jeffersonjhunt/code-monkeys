@@ -48,7 +48,7 @@ The shell config is layered:
 1. **`zshrc.template`** — installed as `~/.zshrc` inside containers; sources `~/.zbase`, fixes ownership of mounted directories, activates the image's conda environment if present
 2. **`zbase`** — main config: oh-my-zsh setup, plugins, PATH, editor, history settings
 3. **`zaliases`** — aliases (`dps`, `dpi`, `probe`, `nvtop` (GPU monitor via the cuda-base primate), `ocd`, `git.all`, etc.)
-4. **`zfuncs`** — functions: `primate()`, `primate-session()`, `primate-session-list()`, `primate-session-kill()`, `primate-upgrade()`, `which-os()`, `code-here()`, `tree()`, `clamscan()`, `tad()`, `watch()`
+4. **`zfuncs`** — functions: `primate()`, `primate-session()`, `primate-session-list()`, `primate-session-resume()`, `primate-session-kill()`, `primate-upgrade()`, `which-os()`, `code-here()`, `tree()`, `clamscan()`, `tad()`, `watch()`
 
 ## Primates
 
@@ -154,6 +154,8 @@ primate-session claude build          #    can have several sessions in flight a
 # ctrl-b d detaches; re-run the same command from anywhere to re-attach
 
 primate-session-list                  # what is in flight, running or stopped
+primate-session-resume scratch        # re-attach by session name — no need to recall the image
+primate-session-resume                # ...and with one session in flight, not even the name
 primate-session-kill scratch          # tear one down (the home volume persists)
 ```
 
