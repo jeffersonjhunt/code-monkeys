@@ -114,5 +114,55 @@ else
   print -r -- "  SKIPPED — no reachable docker daemon; a confirmed kill was NOT tested."
 fi
 
+# The a and e keys, through the real loop. Unit tests cannot see this layer: F1
+# was a kill branch calling a variable that had been removed, and every unit test
+# of _zoo_kill passed while the key did nothing. So each action key gets one pass
+# through the loop, driving the actual keystroke.
+if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
+  print -r -- "the e key opens a real shell in the container:"
+  docker rm -f zoo-exectest >/dev/null 2>&1
+  if docker run -d --name zoo-exectest --label primate.managed --label primate.image=minion \
+       minion sleep 180 >/dev/null 2>&1; then
+    EID="$(docker ps --filter name=zoo-exectest --format '{{.ID}}')"
+    ED="$(mktemp -d)"
+    printf '%s\x1fzoo-exectest\x1fminion\x1fUp 1 minute\n' "$EID" > "$ED/managed"
+    : > "$ED/sessions"; : > "$ED/stats"
+    ERUN="zsh -c 'source ${ZF:A} >/dev/null 2>&1
+      export ZOO_PS_SESSION_SOURCE=$ED/sessions ZOO_PS_MANAGED_SOURCE=$ED/managed ZOO_STATS_SOURCE=$ED/stats
+      zoo -i 1'"
+    ( sleep 2; printf 'e'; sleep 4; printf 'print -r -- ZOO${:-}EXEC_OK\n'; sleep 2
+      printf 'exit\n'; sleep 2; printf 'q'; sleep 1 ) \
+      | timeout 40 script -qec "$ERUN" /dev/null > "$OUT" 2>&1
+    # The marker must be something the terminal's ECHO of the typed line cannot
+    # produce. With `echo ZOOEXEC_MARKER` the echoed keystrokes alone satisfied
+    # this, so it passed even with the e wiring broken. The line TYPED contains
+    # ZOO${:-}EXEC_OK; only the shell's OUTPUT is the bare ZOOEXEC_OK.
+    _assert_ge "a shell really ran inside the container" "$(_count 'ZOOEXEC_OK')" 1
+    _assert_ge "no internal error"                       "$(( 1 - $(_count 'internal error') ))" 1
+    _assert_ge "no refusal"                              "$(( 1 - $(_count 'refusing') ))" 1
+    docker rm -f zoo-exectest >/dev/null 2>&1
+    rm -rf "$ED"
+  else
+    print -r -- "  SKIPPED — could not start a throwaway container (is the minion image local?)"
+  fi
+
+  # The a key's refusal path, which needs no tmux and destroys nothing: a
+  # foreground primate has no session to re-attach to and must say so.
+  print -r -- "the a key refuses a foreground primate, through the loop:"
+  AD="$(mktemp -d)"
+  printf 'fix1\x1ffixturebox\x1fminion\x1fUp 4 minutes\n' > "$AD/managed"
+  : > "$AD/sessions"; : > "$AD/stats"
+  ARUN="zsh -c 'source ${ZF:A} >/dev/null 2>&1
+    export ZOO_PS_SESSION_SOURCE=$AD/sessions ZOO_PS_MANAGED_SOURCE=$AD/managed ZOO_STATS_SOURCE=$AD/stats
+    zoo -i 1'"
+  ( sleep 2; printf 'a'; sleep 2; printf ' '; sleep 1; printf 'q'; sleep 1 ) \
+    | timeout 25 script -qec "$ARUN" /dev/null > "$OUT" 2>&1
+  _assert_ge "explains there is no tmux"  "$(_count 'no tmux to re-attach to')" 1
+  _assert_ge "points at e instead"        "$(_count 'opens a NEW shell')" 1
+  rm -rf "$AD"
+else
+  print -r -- "  SKIPPED — no reachable docker daemon; the a and e keys were NOT tested."
+fi
+
 if (( fails )); then print -r -- "FAILED ($fails)" >&2; exit 1; fi
 print -r -- "PASSED"

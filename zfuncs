@@ -881,7 +881,7 @@ function _zoo_frame() {
   print -r -- ""
   (( __legacy )) && print -r -- "note: a container above predates primate.managed; it is matched by primate.session until it is recycled."
   if (( ${#__rows} )); then
-    print -r -- " ↑↓ select   k kill   q quit   r refresh   ? help"
+    print -r -- " ↑↓ select   a resume   e shell   k kill   q quit   r refresh   ? help"
   else
     print -r -- " q quit   r refresh   ? help"
   fi
@@ -896,6 +896,52 @@ function _zoo_sample() {
     && mv -f "${__out}.new" "$__out"
 }
 
+# Is $name still the container zoo selected? The row an action key acts on is as
+# old as the prompt has been sitting there, which is unbounded — it blocks on a
+# keypress. Kill and resume both address a session by NAME downstream, and session
+# names are reusable, so the id has to be re-checked at the moment of action.
+#
+# Bounds the race rather than removing it: the downstream call resolves the name
+# again itself. The window being closed is human thinking time.
+function _zoo_same_container() {
+  local __name="$1" __id="$2" __now
+  __now="$(docker inspect --format '{{.Id}}' "$__name" 2>/dev/null)"
+  if [[ -z "$__now" ]]; then
+    print -r -- "refusing: ${__name} no longer exists."
+    return 1
+  fi
+  if [[ "$__now" != "${__id}"* ]]; then
+    print -r -- "refusing: ${__name} is a different container than the one selected."
+    return 1
+  fi
+}
+
+# The preflight every action key shares: a real row, not this container, and — for
+# a session — still the container that was selected. Extracted before the second
+# and third caller arrived rather than after, which is the lesson from the review:
+# the kill path and the confirm prompt disagreeing about a row is what shipped a
+# kill that killed nothing.
+function _zoo_target_ok() {
+  local __kind="$1" __name="$2" __id="$3"
+  # An empty id makes the prefix test below match ANY self id — every string starts
+  # with the empty string — so zoo would refuse every action and blame the
+  # self-guard. An empty id here means the caller failed to parse a row.
+  if [[ -z "$__id" || -z "$__name" ]]; then
+    print -r -- "zoo: internal error — action called with no container (name='${__name}' id='${__id}')"
+    return 2
+  fi
+  # docker ps gives a short id and _primate_self_container_id a full one, so this
+  # is a prefix, not an equality; an equality would never match and the guard would
+  # look present while doing nothing.
+  local __self="$(_primate_self_container_id)"
+  if [[ -n "$__self" && "$__self" == "${__id}"* ]]; then
+    print -r -- "refusing: ${__name} is the container zoo is running in."
+    return 1
+  fi
+  [[ "$__kind" == session ]] || return 0
+  _zoo_same_container "$__name" "$__id"
+}
+
 # Kills one row. Sessions go through primate-session-kill so the label resolver
 # stays the single answer to "which container is that name"; a foreground primate
 # is --rm, so removing it IS the kill.
@@ -906,43 +952,45 @@ function _zoo_sample() {
 # would look present while doing nothing.
 function _zoo_kill() {
   local __kind="$1" __name="$2" __id="$3"
-  # An empty id would make the prefix test below match ANY self id — every string
-  # starts with the empty string — so zoo would refuse every kill and blame the
-  # self-guard. Refuse the call itself instead, loudly: an empty id here means the
-  # caller failed to parse a row, which is a bug, not a container to act on.
-  if [[ -z "$__id" || -z "$__name" ]]; then
-    print -r -- "zoo: internal error — kill called with no container (name='${__name}' id='${__id}')"
-    return 2
-  fi
-  local __self="$(_primate_self_container_id)"
-  if [[ -n "$__self" && "$__self" == "${__id}"* ]]; then
-    print -r -- "refusing: ${__name} is the container zoo is running in."
-    return 1
-  fi
+  _zoo_target_ok "$__kind" "$__name" "$__id" || return $?
   if [[ "$__kind" == session ]]; then
-    # The row this came from is as old as the confirm prompt has been open, which
-    # is unbounded — it blocks on a keypress. primate-session-kill resolves by
-    # NAME, and session names are reusable, so a session killed and recreated
-    # under the same name while the prompt sat open would be the one removed.
-    # Check that the id zoo actually selected still belongs to that name.
-    #
-    # This bounds the race to milliseconds rather than removing it: primate-session-kill
-    # resolves the name again itself. Bounding it is the point — the window being
-    # closed is human thinking time.
-    local __now="$(docker inspect --format '{{.Id}}' "$__name" 2>/dev/null)"
-    if [[ -z "$__now" ]]; then
-      print -r -- "refusing: ${__name} no longer exists."
-      return 1
-    fi
-    if [[ "$__now" != "${__id}"* ]]; then
-      print -r -- "refusing: ${__name} is a different container than the one selected."
-      return 1
-    fi
     primate-session-kill "$__name"
   else
     print -r -- "removing ${__name} (foreground primate; --rm, so this is the kill)"
     docker rm -f "$__id" >/dev/null || return 1
   fi
+}
+
+# Re-attaches to a session's tmux, through primate-session-resume so the label
+# resolver stays the single answer to which container a name means.
+#
+# Sessions only. A foreground primate has no tmux server to re-attach to — its
+# shell is bound to the terminal that started it, which is not this one. Saying so
+# is better than offering `e` silently instead: they are different things and the
+# difference is the point of having two keys.
+function _zoo_attach() {
+  local __kind="$1" __name="$2" __id="$3"
+  if [[ "$__kind" != session ]]; then
+    print -r -- "refusing: ${__name} is a foreground primate — it has no tmux to re-attach to."
+    print -r -- "  its shell belongs to the terminal that started it. 'e' opens a NEW shell in it."
+    return 1
+  fi
+  _zoo_target_ok "$__kind" "$__name" "$__id" || return $?
+  primate-session-resume "$__name"
+}
+
+# Opens a NEW shell in the container. Deliberately not called "attach": it is not
+# the original terminal, and describing it as attaching would be a lie a user only
+# discovers after wondering why their scrollback is gone.
+function _zoo_exec() {
+  local __kind="$1" __name="$2" __id="$3" __status="$4"
+  _zoo_target_ok "$__kind" "$__name" "$__id" || return $?
+  if [[ "$__status" != Up* ]]; then
+    print -r -- "refusing: ${__name} is not running (${__status}) — there is nothing to exec into."
+    [[ "$__kind" == session ]] && print -r -- "  'a' starts a stopped session and re-attaches it."
+    return 1
+  fi
+  docker exec -it "$__id" zsh
 }
 
 function _zoo_teardown() {
@@ -955,7 +1003,8 @@ function _zoo_help() {
   print -r -- ""
   print -r -- "  usage: zoo [-i|--interval <seconds>] [--once] [-h|--help]"
   print -r -- ""
-  print -r -- "  ↑ ↓  select a row    k  kill the selected row (asks first)"
+  print -r -- "  ↑ ↓  select a row    a  re-attach to a session (tmux)"
+  print -r -- "  k    kill (asks)     e  open a NEW shell in the container"
   print -r -- "  q    quit            r  refresh now         ?  this help"
   print -r -- ""
   print -r -- "  j/k are not bound to navigation: k is kill, and overloading it is"
@@ -974,8 +1023,13 @@ function _zoo_help() {
   print -r -- "  current."
   print -r -- ""
   print -r -- "  Killing a session leaves its <image>-home volume alone. zoo refuses to"
-  print -r -- "  kill the container it is itself running in. Attaching and launching are"
-  print -r -- "  not wired up yet."
+  print -r -- "  act on the container it is itself running in."
+  print -r -- ""
+  print -r -- "  'a' works on sessions only: a foreground primate has no tmux server to"
+  print -r -- "  re-attach to, since its shell belongs to the terminal that started it."
+  print -r -- "  'e' opens a NEW shell in any running container — it is not the original"
+  print -r -- "  terminal, which is why it is not called attach. Launching is not wired"
+  print -r -- "  up yet."
 }
 
 function zoo() {
@@ -1107,6 +1161,25 @@ function zoo() {
              print -r -- " any key to continue"
              tput ed 2>/dev/null; read -k 1 2>/dev/null
            fi ;;
+        a|e) (( __nrows == 0 )) && continue
+           local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
+           if ! _zoo_field "${__rowarr[$__sel]}"; then
+             tput cup 0 0 2>/dev/null
+             print -r -- "zoo: internal error — row ${__sel} is not a row; refusing to act on it."
+             print -r -- ""; print -r -- " any key to continue"
+             tput ed 2>/dev/null; read -k 1 2>/dev/null
+             continue
+           fi
+           # Leave the alternate screen BEFORE acting. A successful handoff needs the
+           # real terminal — tmux and an interactive shell both want it — and a refusal
+           # then prints where the user can scroll back to it. One path for both.
+           _zoo_teardown
+           if [[ "$__key" == a ]]; then
+             _zoo_attach "$ZOO_KIND" "$ZOO_NAME" "$ZOO_ID"
+           else
+             _zoo_exec "$ZOO_KIND" "$ZOO_NAME" "$ZOO_ID" "$ZOO_STATUS"
+           fi || { print -r -- ""; print -r -- "  any key to return to zoo"; read -k 1 2>/dev/null }
+           tput smcup 2>/dev/null; tput civis 2>/dev/null ;;
         '?') tput cup 0 0 2>/dev/null; _zoo_help; print -r -- ""
              print -r -- " any key to return"; tput ed 2>/dev/null
              read -k 1 2>/dev/null ;;

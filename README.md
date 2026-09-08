@@ -154,7 +154,7 @@ primate-session claude build          #    can have several sessions in flight a
 # ctrl-b d detaches; re-run the same command from anywhere to re-attach
 
 zoo                                   # top(1) for primates: live table of all of them
-                                      #   ↑↓ select, k kill (asks first), q quit, ? help
+                                      #   ↑↓ select, a resume, e shell, k kill, q quit, ? help
 zoo -i 1                              # ...refreshing every second
 zoo --once                            # one frame, then exit (also what a pipe gets)
 primate-session-list                  # what is in flight, running or stopped
