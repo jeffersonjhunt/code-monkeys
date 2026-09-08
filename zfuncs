@@ -19,6 +19,7 @@ flist+=(primate-session)
 flist+=(primate-session-list)
 flist+=(primate-session-kill)
 flist+=(primate-session-resume)
+flist+=(zoo)
 
 function() {
   for fname in ${flist}; do
@@ -688,6 +689,254 @@ function primate-session-kill() {
   echo "removing ${__NAME} (home volume persists)"
   docker rm -f "${__NAME}" >/dev/null
 }
+
+
+# ── zoo ──────────────────────────────────────────────────────────────────────
+#
+# top(1) for primates. U1 is read-only: it lists every primate and session this
+# daemon has, with live CPU and memory, and does nothing else. Keys that act on a
+# container arrive with the units that implement them — an advertised key that
+# does nothing is worse than an absent one.
+#
+# Two-tier refresh, because the two queries differ by 68x (measured on the live
+# daemon, not assumed):
+#   docker ps     ~0.03s  scales with container count; drives every tick
+#   docker stats  ~2.05s  a fixed sampling window, independent of count
+# So stats are sampled in a background job and the table renders from the last
+# completed sample. A loop that refetched both together would freeze for two
+# seconds per tick and swallow keystrokes.
+#
+# ZOO_PS_SOURCE / ZOO_STATS_SOURCE replace either query with a file so the
+# collector can be fed fixtures and tested on a machine with no daemon. That is
+# their only purpose — zoo talks to one daemon and is not fleet-aware.
+
+# Every primate, one tab-separated line: id, name, image, status, labels.
+#
+# A union of two queries rather than one filter: docker ANDs repeated
+# `--filter label=`, and sessions started before U0 carry primate.session but not
+# primate.managed, so no single filter selects both. Deduped on container id.
+#
+# Failure and emptiness are different answers. A non-zero docker exits non-zero
+# here with its stderr intact, so the caller can say "the query failed" instead of
+# rendering an empty table that reads as "no primates".
+function _zoo_ps() {
+  if [[ -n "${ZOO_PS_SOURCE:-}" ]]; then
+    cat "$ZOO_PS_SOURCE"
+    return
+  fi
+  local __fmt='{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Labels}}'
+  local __a __b
+  __a=$(docker ps -a --filter 'label=primate.managed' --format "$__fmt" 2>&1) \
+    || { print -r -- "$__a" >&2; return 1 }
+  __b=$(docker ps -a --filter 'label=primate.session' --format "$__fmt" 2>&1) \
+    || { print -r -- "$__b" >&2; return 1 }
+  print -r -- "${__a}"$'\n'"${__b}" | awk -F'\t' 'NF > 1 && !seen[$1]++'
+}
+
+# id, cpu%, mem usage, mem%, pids — for running containers only.
+function _zoo_stats() {
+  if [[ -n "${ZOO_STATS_SOURCE:-}" ]]; then
+    cat "$ZOO_STATS_SOURCE"
+    return
+  fi
+  docker stats --no-stream --format '{{.ID}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}'
+}
+
+# Renders one frame to stdout. Split from the loop so it can be diffed against a
+# fixture without a terminal.
+#   $1 ps rows   $2 stats rows   $3 stats age in seconds (-1 = none yet)   $4 tick
+function _zoo_frame() {
+  local __ps="$1" __st="$2" __age="$3" __tick="$4"
+  local -A __cpu __mem __memp __pids
+  local __line __id __rest
+
+  for __line in ${(f)__st}; do
+    [[ -n "$__line" ]] || continue
+    __id="${__line%%$'\t'*}"
+    __rest="${__line#*$'\t'}"
+    __cpu[$__id]="${__rest%%$'\t'*}";  __rest="${__rest#*$'\t'}"
+    __mem[$__id]="${__rest%%$'\t'*}";  __rest="${__rest#*$'\t'}"
+    __memp[$__id]="${__rest%%$'\t'*}"; __rest="${__rest#*$'\t'}"
+    __pids[$__id]="${__rest%%$'\t'*}"
+  done
+
+  # Widths from the data, so a long session name does not shear the table.
+  local -a __rows
+  local __np=0 __ns=0 __legacy=0
+  local __wn=4 __wi=5 __ws=6
+  for __line in ${(f)__ps}; do
+    [[ -n "$__line" ]] || continue
+    local __f=("${(@s:	:)__line}")
+    local __name="${__f[2]}" __image="${__f[3]}" __status="${__f[4]}" __labels="${__f[5]}"
+    # if/else, not `a && { b } || c`: (( n++ )) evaluates to the OLD value, so the
+    # first session made the ++ return 0, which is false, which ran the || branch
+    # too and counted it as a primate as well.
+    local __kind=primate
+    if [[ "$__labels" == *primate.session=* ]]; then
+      __kind=session; (( __ns++ ))
+    else
+      (( __np++ ))
+    fi
+    [[ "$__labels" == *primate.managed=* ]] || __legacy=1
+    (( ${#__name}   > __wn )) && __wn=${#__name}
+    (( ${#__image}  > __wi )) && __wi=${#__image}
+    (( ${#__status} > __ws )) && __ws=${#__status}
+    __rows+=("${__kind}	${__name}	${__image}	${__status}	${__f[1]}")
+  done
+
+  local __stale="" __agetxt="none yet"
+  if (( __age >= 0 )); then
+    __agetxt="${__age}s ago"
+    (( __age > __tick * 3 )) && __stale=" (stale)"
+  fi
+
+  print -r -- "zoo — ${__np} primate$( (( __np == 1 )) || print -n s ), ${__ns} session$( (( __ns == 1 )) || print -n s ) · $(date +%H:%M:%S) · tick ${__tick}s · stats ${__agetxt}${__stale}"
+  print -r -- ""
+  printf "%-7s  %-*s  %-*s  %-*s  %6s  %-17s  %6s  %5s\n" \
+    KIND $__wn NAME $__wi IMAGE $__ws STATUS "CPU%" MEM "MEM%" PIDS
+
+  if (( ${#__rows} == 0 )); then
+    print -r -- ""
+    print -r -- "  no primates — start one with: primate <image>   or   primate-session <image> [name]"
+  fi
+
+  local __r
+  for __r in "${__rows[@]}"; do
+    local __g=("${(@s:	:)__r}")
+    local __id="${__g[5]}"
+    local __c="${__cpu[$__id]:-—}" __m="${__mem[$__id]:-—}" __mp="${__memp[$__id]:-—}" __p="${__pids[$__id]:-—}"
+    printf "%-7s  %-*s  %-*s  %-*s  %6s  %-17s  %6s  %5s\n" \
+      "${__g[1]}" $__wn "${__g[2]}" $__wi "${__g[3]}" $__ws "${__g[4]}" "$__c" "$__m" "$__mp" "$__p"
+  done
+
+  print -r -- ""
+  (( __legacy )) && print -r -- "note: a container above predates primate.managed; it is matched by primate.session until it is recycled."
+  print -r -- " q quit   r refresh   ? help"
+}
+
+# The stats sample, written atomically by a background job: line 1 is the epoch
+# second it completed, the rest is the sample. Carrying the timestamp inside the
+# file avoids a stat(1) that spells its flags differently on Linux and macOS.
+function _zoo_sample() {
+  local __out="$1"
+  { print -r -- "$(date +%s)"; _zoo_stats 2>/dev/null } > "${__out}.new" 2>/dev/null \
+    && mv -f "${__out}.new" "$__out"
+}
+
+function _zoo_teardown() {
+  tput cnorm 2>/dev/null
+  tput rmcup 2>/dev/null
+}
+
+function _zoo_help() {
+  print -r -- "zoo — top(1) for primates"
+  print -r -- ""
+  print -r -- "  usage: zoo [-i|--interval <seconds>] [--once]"
+  print -r -- ""
+  print -r -- "  q  quit          r  refresh now        ?  this help"
+  print -r -- ""
+  print -r -- "  KIND is 'session' for a detached primate-session container and"
+  print -r -- "  'primate' for a foreground primate. Stopped sessions are listed"
+  print -r -- "  too — they still hold a home volume and are still resumable."
+  print -r -- ""
+  print -r -- "  MEM's total is the docker daemon's memory limit, which on macOS is"
+  print -r -- "  the Docker Desktop VM's, not the host's."
+  print -r -- ""
+  print -r -- "  Stats come from 'docker stats', a ~2s sampling window, so they are"
+  print -r -- "  collected in the background and may lag the table by a tick. A"
+  print -r -- "  sample older than three ticks is marked stale rather than shown as"
+  print -r -- "  current."
+  print -r -- ""
+  print -r -- "  Read-only. Killing, attaching and launching are not wired up yet."
+}
+
+function zoo() {
+  local __tick=3 __once=false
+  while (( $# )); do
+    case "$1" in
+      -i|--interval) __tick="${2:-}"; shift 2 || return 1 ;;
+      --once)        __once=true; shift ;;
+      -h|--help)     _zoo_help; return 0 ;;
+      *) print -r -- "zoo: unknown option: $1" >&2; _zoo_help >&2; return 1 ;;
+    esac
+  done
+  if [[ ! "$__tick" == <-> ]] || (( __tick < 1 )); then
+    print -r -- "zoo: --interval wants a positive whole number of seconds" >&2
+    return 1
+  fi
+
+  local __sf="$(mktemp)" __spid=0 __rc=0
+  # Not a terminal, or asked for one frame: print it and leave. Keeps zoo usable
+  # in a pipe and testable without a pty.
+  if [[ "$__once" == true || ! -t 1 ]]; then
+    local __ps
+    if ! __ps=$(_zoo_ps); then
+      print -r -- "zoo: could not query docker for primates" >&2
+      rm -f "$__sf" "${__sf}.new"
+      return 1
+    fi
+    _zoo_frame "$__ps" "$(_zoo_stats 2>/dev/null)" 0 "$__tick"
+    rm -f "$__sf" "${__sf}.new"
+    return 0
+  fi
+
+  tput smcup 2>/dev/null; tput civis 2>/dev/null
+  # The `always` block below does NOT run when the shell takes SIGINT: verified by
+  # sending ctrl-c through a pty and finding smcup 1 / rmcup 0 and civis 1 /
+  # cnorm 0 in the captured output — the terminal was left in the alternate screen
+  # with the cursor hidden. `always` covers every other exit and the temp file;
+  # this covers the one a user actually types.
+  trap '_zoo_teardown; return 130' INT TERM
+  {
+    while true; do
+      local __ps
+      if ! __ps=$(_zoo_ps 2>&1); then
+        tput cup 0 0 2>/dev/null
+        print -r -- "zoo: could not query docker for primates — this is not the same as none running:"
+        print -r -- "$__ps" | sed 's/^/  /'
+        print -r -- ""
+        print -r -- " q quit   r retry"
+        tput ed 2>/dev/null
+        read -t "$__tick" -k 1 __key 2>/dev/null
+        [[ "$__key" == q ]] && { __rc=1; break }
+        continue
+      fi
+
+      if (( __spid == 0 )) || ! kill -0 "$__spid" 2>/dev/null; then
+        _zoo_sample "$__sf" &!
+        __spid=$!
+      fi
+
+      local __age=-1 __st=""
+      if [[ -s "$__sf" ]]; then
+        local __all="$(<"$__sf")"
+        __st="${__all#*$'\n'}"
+        __age=$(( $(date +%s) - ${__all%%$'\n'*} ))
+      fi
+
+      tput cup 0 0 2>/dev/null
+      _zoo_frame "$__ps" "$__st" "$__age" "$__tick"
+      tput ed 2>/dev/null
+
+      local __key=""
+      read -t "$__tick" -k 1 __key 2>/dev/null
+      case "$__key" in
+        q) break ;;
+        '?') tput cup 0 0 2>/dev/null; _zoo_help; print -r -- ""
+             print -r -- " any key to return"; tput ed 2>/dev/null
+             read -k 1 2>/dev/null ;;
+        *) ;;   # r, and every other key, just falls through to a redraw
+      esac
+    done
+  } always {
+    _zoo_teardown
+    trap - INT TERM
+    (( __spid )) && kill "$__spid" 2>/dev/null
+    rm -f "$__sf" "${__sf}.new"
+  }
+  return $__rc
+}
+compdef '_values "options" "--interval[seconds between refreshes]" "--once[print one frame and exit]" "--help[usage]"' zoo
 
 # Take A Dump (takes a java heapdump in a running container)
 function tad() {
