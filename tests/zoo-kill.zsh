@@ -25,7 +25,19 @@ source "$ZF" >/dev/null 2>&1
 CALLS="$(mktemp)"
 trap 'rm -f "$CALLS"' EXIT
 primate-session-kill() { print -r -- "session-kill $*" >> "$CALLS"; print -r -- "removing $1 (home volume persists)" }
-docker() { print -r -- "docker $*" >> "$CALLS"; return 0 }
+# `docker inspect` answers with INSPECT_ID so the session path's id check (F6) can
+# be driven both ways. _expect_id sets it to a full-length id whose prefix is the
+# short id a row would carry.
+INSPECT_ID=""
+docker() {
+  print -r -- "docker $*" >> "$CALLS"
+  if [[ "${1:-}" == inspect ]]; then
+    [[ -n "$INSPECT_ID" ]] || return 1
+    print -r -- "$INSPECT_ID"
+  fi
+  return 0
+}
+_expect_id() { INSPECT_ID="${1}$(printf '0%.0s' {1..$(( 64 - ${#1} ))})" }
 _called() { cat "$CALLS" 2>/dev/null }
 _reset()  { : > "$CALLS" }
 _primate_self_container_id() { print -r -- "$SELF64" }
@@ -49,19 +61,39 @@ _want "refuses the container zoo runs in" "$out" "refusing"
   || { print -r -- "  FAIL it still called: $(_called)" >&2; (( fails++ )); }
 
 print -r -- "self-guard does not over-match:"
-_reset
+_reset; _expect_id "$OTHER12"
 out="$(_zoo_kill session other "$OTHER12" 2>&1)"
 _wantnot "a different container is not refused" "$out" "refusing"
 _want "and is actually killed" "$(_called)" "session-kill other"
 
 print -r -- "dispatch:"
-_reset; _zoo_kill session sess1 bbbb2222cccc >/dev/null 2>&1
+_reset; _expect_id bbbb2222cccc; _zoo_kill session sess1 bbbb2222cccc >/dev/null 2>&1
 _want "session goes through primate-session-kill" "$(_called)" "session-kill sess1"
 _wantnot "session does not use docker rm"         "$(_called)" "docker rm"
 
 _reset; out="$(_zoo_kill primate vigilant_fox cccc3333dddd 2>&1)"
 _want "foreground uses docker rm -f"    "$(_called)" "docker rm -f cccc3333dddd"
 _want "and says why that is the kill"   "$out"     "--rm, so this is the kill"
+
+print -r -- "the selected id must still belong to the name (F6):"
+# The confirm prompt blocks on a keypress, so the row can be arbitrarily stale, and
+# primate-session-kill resolves by NAME — and session names are reusable. Killing
+# the container that now answers to that name is the failure being closed.
+_reset; INSPECT_ID=""            # docker inspect finds nothing
+out="$(_zoo_kill session vanished bbbb2222cccc 2>&1)"; rc=$?
+_want "a vanished session is refused" "$out" "no longer exists"
+[[ -z "$(_called | grep session-kill)" ]] && print -r -- "  ok   killed nothing" \
+  || { print -r -- "  FAIL it still killed: $(_called)" >&2; (( fails++ )); }
+
+_reset; _expect_id 9999deadbeef   # same name, DIFFERENT container
+out="$(_zoo_kill session recycled bbbb2222cccc 2>&1)"
+_want "a recycled name is refused" "$out" "different container than the one selected"
+[[ -z "$(_called | grep session-kill)" ]] && print -r -- "  ok   killed nothing" \
+  || { print -r -- "  FAIL it still killed: $(_called)" >&2; (( fails++ )); }
+
+_reset; _expect_id bbbb2222cccc   # unchanged
+_zoo_kill session steady bbbb2222cccc >/dev/null 2>&1
+_want "an unchanged session is still killed" "$(_called)" "session-kill steady"
 
 print -r -- "empty id is refused, not treated as a prefix match:"
 # Every string starts with the empty string, so `$self == ""*` is true and an
@@ -78,7 +110,7 @@ _wantnot "does not blame the self-guard" "$out" "is the container zoo is running
 
 print -r -- "guard is not bypassed when self id is unavailable (on a host):"
 _primate_self_container_id() { print -r -- "" }
-_reset; _zoo_kill session anything aaaa1111bbbb >/dev/null 2>&1
+_reset; _expect_id aaaa1111bbbb; _zoo_kill session anything aaaa1111bbbb >/dev/null 2>&1
 _want "kills normally when not in a container" "$(_called)" "session-kill anything"
 
 if (( fails )); then print -r -- "FAILED ($fails)" >&2; exit 1; fi

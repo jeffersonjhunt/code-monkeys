@@ -74,5 +74,45 @@ _assert_ge "prompt names kind AND container"  "$(_count 'kill primate fixturebox
 _assert_ge "no internal-error from a bad row" "$(( 1 - $(_count 'internal error') ))" 1
 rm -rf "$FIXD"
 
+# A CONFIRMED kill, end to end. The section above presses n and stops one keystroke
+# short of the thing the feature exists for — which is exactly how a kill branch
+# that referenced a variable removed three commits earlier shipped "verified": the
+# prompt rendered correctly and nothing ever pressed y.
+#
+# Safe by construction: the fixture row carries the id of a container this test
+# created, so the only thing it can kill is its own. kind=primate, so _zoo_kill
+# removes it by id and no name resolution is involved.
+if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
+  print -r -- "a confirmed kill actually kills:"
+  docker rm -f zoo-killtest >/dev/null 2>&1
+  if docker run -d --name zoo-killtest --label primate.managed --label primate.image=minion \
+       minion sleep 120 >/dev/null 2>&1; then
+    KID="$(docker ps --filter name=zoo-killtest --format '{{.ID}}')"
+    KD="$(mktemp -d)"
+    print -r -- "${KID}\x1fzoo-killtest\x1fminion\x1fUp 1 minute" \
+      | sed 's/\\x1f/\x1f/g' > "$KD/managed"
+    : > "$KD/sessions"; : > "$KD/stats"
+    KRUN="zsh -c 'source ${ZF:A} >/dev/null 2>&1
+      export ZOO_PS_SESSION_SOURCE=$KD/sessions ZOO_PS_MANAGED_SOURCE=$KD/managed ZOO_STATS_SOURCE=$KD/stats
+      zoo -i 1'"
+    ( sleep 2; printf 'k'; sleep 1; printf 'y'; sleep 2; printf ' '; sleep 1; printf 'q'; sleep 1 ) \
+      | timeout 30 script -qec "$KRUN" /dev/null > "$OUT" 2>&1
+    _assert_ge "the kill ran"                  "$(_count 'so this is the kill')" 1
+    _assert_ge "no internal error"             "$(( 1 - $(_count 'internal error') ))" 1
+    _assert_ge "no bogus refusal"              "$(( 1 - $(_count 'refusing') ))" 1
+    if docker ps -a --format '{{.Names}}' | grep -qx zoo-killtest; then
+      print -r -- "  FAIL the container is still there — the kill did nothing" >&2; (( fails++ ))
+      docker rm -f zoo-killtest >/dev/null 2>&1
+    else
+      print -r -- "  ok   the container is gone"
+    fi
+    rm -rf "$KD"
+  else
+    print -r -- "  SKIPPED — could not start a throwaway container (is the minion image local?)"
+  fi
+else
+  print -r -- "  SKIPPED — no reachable docker daemon; a confirmed kill was NOT tested."
+fi
+
 if (( fails )); then print -r -- "FAILED ($fails)" >&2; exit 1; fi
 print -r -- "PASSED"

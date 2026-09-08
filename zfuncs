@@ -706,9 +706,11 @@ function primate-session-kill() {
 # completed sample. A loop that refetched both together would freeze for two
 # seconds per tick and swallow keystrokes.
 #
-# ZOO_PS_SOURCE / ZOO_STATS_SOURCE replace either query with a file so the
-# collector can be fed fixtures and tested on a machine with no daemon. That is
-# their only purpose — zoo talks to one daemon and is not fleet-aware.
+# ZOO_PS_SESSION_SOURCE / ZOO_PS_MANAGED_SOURCE / ZOO_STATS_SOURCE replace the
+# three docker queries with files so the collector can be fed fixtures and tested
+# on a machine with no daemon. The two ps seams are separate because `kind` is
+# decided by which query matched, and one merged fixture could not exercise that.
+# Fixtures are their only purpose — zoo talks to one daemon and is not fleet-aware.
 
 # Every primate, one row: kind, name, image, status, id, legacy — separated by
 # 0x1F (unit separator), which cannot occur in a container name, image or status.
@@ -918,6 +920,24 @@ function _zoo_kill() {
     return 1
   fi
   if [[ "$__kind" == session ]]; then
+    # The row this came from is as old as the confirm prompt has been open, which
+    # is unbounded — it blocks on a keypress. primate-session-kill resolves by
+    # NAME, and session names are reusable, so a session killed and recreated
+    # under the same name while the prompt sat open would be the one removed.
+    # Check that the id zoo actually selected still belongs to that name.
+    #
+    # This bounds the race to milliseconds rather than removing it: primate-session-kill
+    # resolves the name again itself. Bounding it is the point — the window being
+    # closed is human thinking time.
+    local __now="$(docker inspect --format '{{.Id}}' "$__name" 2>/dev/null)"
+    if [[ -z "$__now" ]]; then
+      print -r -- "refusing: ${__name} no longer exists."
+      return 1
+    fi
+    if [[ "$__now" != "${__id}"* ]]; then
+      print -r -- "refusing: ${__name} is a different container than the one selected."
+      return 1
+    fi
     primate-session-kill "$__name"
   else
     print -r -- "removing ${__name} (foreground primate; --rm, so this is the kill)"
@@ -933,7 +953,7 @@ function _zoo_teardown() {
 function _zoo_help() {
   print -r -- "zoo — top(1) for primates"
   print -r -- ""
-  print -r -- "  usage: zoo [-i|--interval <seconds>] [--once]"
+  print -r -- "  usage: zoo [-i|--interval <seconds>] [--once] [-h|--help]"
   print -r -- ""
   print -r -- "  ↑ ↓  select a row    k  kill the selected row (asks first)"
   print -r -- "  q    quit            r  refresh now         ?  this help"
@@ -962,7 +982,14 @@ function zoo() {
   local __tick=3 __once=false
   while (( $# )); do
     case "$1" in
-      -i|--interval) __tick="${2:-}"; shift 2 || return 1 ;;
+      -i|--interval)
+        # Check before shifting: setting __tick empty and then letting `shift 2`
+        # fail produced a raw "shift count must be <= $#" instead of this message.
+        if (( $# < 2 )); then
+          print -r -- "zoo: --interval wants a positive whole number of seconds" >&2
+          return 1
+        fi
+        __tick="$2"; shift 2 ;;
       --once)        __once=true; shift ;;
       -h|--help)     _zoo_help; return 0 ;;
       *) print -r -- "zoo: unknown option: $1" >&2; _zoo_help >&2; return 1 ;;
@@ -1075,7 +1102,7 @@ function zoo() {
            local __c=""; read -k 1 __c 2>/dev/null
            if [[ "$__c" == y ]]; then
              tput cup 0 0 2>/dev/null; print -r -- "zoo"; print -r -- ""
-             _zoo_kill "${__g[1]}" "${__g[2]}" "${__g[5]}" 2>&1 | sed 's/^/  /'
+             _zoo_kill "$ZOO_KIND" "$ZOO_NAME" "$ZOO_ID" 2>&1 | sed 's/^/  /'
              print -r -- ""
              print -r -- " any key to continue"
              tput ed 2>/dev/null; read -k 1 2>/dev/null
@@ -1089,7 +1116,10 @@ function zoo() {
   } always {
     _zoo_teardown
     trap - INT TERM
-    (( __spid )) && kill "$__spid" 2>/dev/null
+    # The sampler is not killed. It is disowned and exits on its own in about two
+    # seconds, so by the time zoo leaves its pid has very likely been reaped and
+    # may have been reused — signalling it could hit an unrelated process. It
+    # writes only to the temp files removed on the next line.
     rm -f "$__sf" "${__sf}.new"
   }
   return $__rc
