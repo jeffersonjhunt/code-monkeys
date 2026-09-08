@@ -742,11 +742,29 @@ function _zoo_stats() {
   docker stats --no-stream --format '{{.ID}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}'
 }
 
+# Normalises ps output into one tab-separated row per primate:
+#   kind, name, image, status, id, legacy
+# Split out because the render loop and the action keys must agree on what row N
+# is. Two parsers would be two answers to that question, and the one that matters
+# is the one the kill lands on.
+function _zoo_rows() {
+  local __line
+  for __line in ${(f)1}; do
+    [[ -n "$__line" ]] || continue
+    local __f=("${(@s:	:)__line}")
+    (( ${#__f} >= 5 )) || continue
+    local __kind=primate __legacy=0
+    [[ "${__f[5]}" == *primate.session=* ]] && __kind=session
+    [[ "${__f[5]}" == *primate.managed=* ]] || __legacy=1
+    print -r -- "${__kind}	${__f[2]}	${__f[3]}	${__f[4]}	${__f[1]}	${__legacy}"
+  done
+}
+
 # Renders one frame to stdout. Split from the loop so it can be diffed against a
 # fixture without a terminal.
-#   $1 ps rows   $2 stats rows   $3 stats age in seconds (-1 = none yet)   $4 tick
+#   $1 ps rows  $2 stats rows  $3 stats age (-1 = none yet)  $4 tick  $5 selected row (0 = none)
 function _zoo_frame() {
-  local __ps="$1" __st="$2" __age="$3" __tick="$4"
+  local __ps="$1" __st="$2" __age="$3" __tick="$4" __sel="${5:-0}"
   local -A __cpu __mem __memp __pids
   local __line __id __rest
 
@@ -764,24 +782,18 @@ function _zoo_frame() {
   local -a __rows
   local __np=0 __ns=0 __legacy=0
   local __wn=4 __wi=5 __ws=6
-  for __line in ${(f)__ps}; do
+  for __line in ${(f)"$(_zoo_rows "$__ps")"}; do
     [[ -n "$__line" ]] || continue
     local __f=("${(@s:	:)__line}")
-    local __name="${__f[2]}" __image="${__f[3]}" __status="${__f[4]}" __labels="${__f[5]}"
     # if/else, not `a && { b } || c`: (( n++ )) evaluates to the OLD value, so the
     # first session made the ++ return 0, which is false, which ran the || branch
     # too and counted it as a primate as well.
-    local __kind=primate
-    if [[ "$__labels" == *primate.session=* ]]; then
-      __kind=session; (( __ns++ ))
-    else
-      (( __np++ ))
-    fi
-    [[ "$__labels" == *primate.managed=* ]] || __legacy=1
-    (( ${#__name}   > __wn )) && __wn=${#__name}
-    (( ${#__image}  > __wi )) && __wi=${#__image}
-    (( ${#__status} > __ws )) && __ws=${#__status}
-    __rows+=("${__kind}	${__name}	${__image}	${__status}	${__f[1]}")
+    if [[ "${__f[1]}" == session ]]; then (( __ns++ )); else (( __np++ )); fi
+    (( ${__f[6]} )) && __legacy=1
+    (( ${#__f[2]} > __wn )) && __wn=${#__f[2]}
+    (( ${#__f[3]} > __wi )) && __wi=${#__f[3]}
+    (( ${#__f[4]} > __ws )) && __ws=${#__f[4]}
+    __rows+=("$__line")
   done
 
   local __stale="" __agetxt="none yet"
@@ -792,7 +804,7 @@ function _zoo_frame() {
 
   print -r -- "zoo — ${__np} primate$( (( __np == 1 )) || print -n s ), ${__ns} session$( (( __ns == 1 )) || print -n s ) · $(date +%H:%M:%S) · tick ${__tick}s · stats ${__agetxt}${__stale}"
   print -r -- ""
-  printf "%-7s  %-*s  %-*s  %-*s  %6s  %-17s  %6s  %5s\n" \
+  printf "  %-7s  %-*s  %-*s  %-*s  %6s  %-17s  %6s  %5s\n" \
     KIND $__wn NAME $__wi IMAGE $__ws STATUS "CPU%" MEM "MEM%" PIDS
 
   if (( ${#__rows} == 0 )); then
@@ -800,18 +812,25 @@ function _zoo_frame() {
     print -r -- "  no primates — start one with: primate <image>   or   primate-session <image> [name]"
   fi
 
-  local __r
+  local __r __n=0
   for __r in "${__rows[@]}"; do
+    (( __n++ ))
     local __g=("${(@s:	:)__r}")
     local __id="${__g[5]}"
     local __c="${__cpu[$__id]:-—}" __m="${__mem[$__id]:-—}" __mp="${__memp[$__id]:-—}" __p="${__pids[$__id]:-—}"
-    printf "%-7s  %-*s  %-*s  %-*s  %6s  %-17s  %6s  %5s\n" \
-      "${__g[1]}" $__wn "${__g[2]}" $__wi "${__g[3]}" $__ws "${__g[4]}" "$__c" "$__m" "$__mp" "$__p"
+    local __mark="  "
+    (( __n == __sel )) && __mark="> "
+    printf "%s%-7s  %-*s  %-*s  %-*s  %6s  %-17s  %6s  %5s\n" \
+      "$__mark" "${__g[1]}" $__wn "${__g[2]}" $__wi "${__g[3]}" $__ws "${__g[4]}" "$__c" "$__m" "$__mp" "$__p"
   done
 
   print -r -- ""
   (( __legacy )) && print -r -- "note: a container above predates primate.managed; it is matched by primate.session until it is recycled."
-  print -r -- " q quit   r refresh   ? help"
+  if (( ${#__rows} )); then
+    print -r -- " ↑↓ select   k kill   q quit   r refresh   ? help"
+  else
+    print -r -- " q quit   r refresh   ? help"
+  fi
 }
 
 # The stats sample, written atomically by a background job: line 1 is the epoch
@@ -821,6 +840,37 @@ function _zoo_sample() {
   local __out="$1"
   { print -r -- "$(date +%s)"; _zoo_stats 2>/dev/null } > "${__out}.new" 2>/dev/null \
     && mv -f "${__out}.new" "$__out"
+}
+
+# Kills one row. Sessions go through primate-session-kill so the label resolver
+# stays the single answer to "which container is that name"; a foreground primate
+# is --rm, so removing it IS the kill.
+#
+# Refuses the container zoo is itself running in. docker ps gives a short id and
+# _primate_self_container_id a full one, so the comparison is a prefix, not an
+# equality — comparing them directly would silently never match and the guard
+# would look present while doing nothing.
+function _zoo_kill() {
+  local __kind="$1" __name="$2" __id="$3"
+  # An empty id would make the prefix test below match ANY self id — every string
+  # starts with the empty string — so zoo would refuse every kill and blame the
+  # self-guard. Refuse the call itself instead, loudly: an empty id here means the
+  # caller failed to parse a row, which is a bug, not a container to act on.
+  if [[ -z "$__id" || -z "$__name" ]]; then
+    print -r -- "zoo: internal error — kill called with no container (name='${__name}' id='${__id}')"
+    return 2
+  fi
+  local __self="$(_primate_self_container_id)"
+  if [[ -n "$__self" && "$__self" == "${__id}"* ]]; then
+    print -r -- "refusing: ${__name} is the container zoo is running in."
+    return 1
+  fi
+  if [[ "$__kind" == session ]]; then
+    primate-session-kill "$__name"
+  else
+    print -r -- "removing ${__name} (foreground primate; --rm, so this is the kill)"
+    docker rm -f "$__id" >/dev/null || return 1
+  fi
 }
 
 function _zoo_teardown() {
@@ -833,7 +883,11 @@ function _zoo_help() {
   print -r -- ""
   print -r -- "  usage: zoo [-i|--interval <seconds>] [--once]"
   print -r -- ""
-  print -r -- "  q  quit          r  refresh now        ?  this help"
+  print -r -- "  ↑ ↓  select a row    k  kill the selected row (asks first)"
+  print -r -- "  q    quit            r  refresh now         ?  this help"
+  print -r -- ""
+  print -r -- "  j/k are not bound to navigation: k is kill, and overloading it is"
+  print -r -- "  how a navigation keystroke becomes a destructive one."
   print -r -- ""
   print -r -- "  KIND is 'session' for a detached primate-session container and"
   print -r -- "  'primate' for a foreground primate. Stopped sessions are listed"
@@ -847,7 +901,9 @@ function _zoo_help() {
   print -r -- "  sample older than three ticks is marked stale rather than shown as"
   print -r -- "  current."
   print -r -- ""
-  print -r -- "  Read-only. Killing, attaching and launching are not wired up yet."
+  print -r -- "  Killing a session leaves its <image>-home volume alone. zoo refuses to"
+  print -r -- "  kill the container it is itself running in. Attaching and launching are"
+  print -r -- "  not wired up yet."
 }
 
 function zoo() {
@@ -865,7 +921,7 @@ function zoo() {
     return 1
   fi
 
-  local __sf="$(mktemp)" __spid=0 __rc=0
+  local __sf="$(mktemp)" __spid=0 __rc=0 __sel=1
   # Not a terminal, or asked for one frame: print it and leave. Keeps zoo usable
   # in a pipe and testable without a pty.
   if [[ "$__once" == true || ! -t 1 ]]; then
@@ -914,14 +970,57 @@ function zoo() {
         __age=$(( $(date +%s) - ${__all%%$'\n'*} ))
       fi
 
+      # Same parse the frame uses, so "row 3" means the same thing to the cursor
+      # and to the kill. Clamped every tick because the list shrinks under us.
+      local -a __rowarr=(${(f)"$(_zoo_rows "$__ps")"})
+      local __nrows=${#__rowarr}
+      (( __sel > __nrows )) && __sel=$__nrows
+      (( __nrows > 0 && __sel < 1 )) && __sel=1
+
       tput cup 0 0 2>/dev/null
-      _zoo_frame "$__ps" "$__st" "$__age" "$__tick"
+      _zoo_frame "$__ps" "$__st" "$__age" "$__tick" "$__sel"
       tput ed 2>/dev/null
 
       local __key=""
       read -t "$__tick" -k 1 __key 2>/dev/null
+
+      # Arrows arrive as ESC [ A / ESC [ B. j/k are deliberately not bound: k is
+      # kill, and quietly overloading it is how a navigation keystroke becomes a
+      # destructive one.
+      if [[ "$__key" == $'\e' ]]; then
+        local __seq=""
+        read -k 2 -t 1 __seq 2>/dev/null
+        case "$__seq" in
+          '[A') (( __sel > 1 )) && (( __sel-- )) ;;
+          '[B') (( __sel < __nrows )) && (( __sel++ )) ;;
+        esac
+        continue
+      fi
+
       case "$__key" in
         q) break ;;
+        k) (( __nrows == 0 )) && continue
+           local __g=("${(@s:	:)${__rowarr[$__sel]}}")
+           tput cup 0 0 2>/dev/null
+           print -r -- "zoo — confirm"
+           print -r -- ""
+           print -r -- "  kill ${__g[1]} ${__g[2]}   (${__g[3]}, ${__g[4]})"
+           if [[ "${__g[1]}" == session ]]; then
+             print -r -- "  the ${__g[3]}-home volume persists; the session can be started again."
+           else
+             print -r -- "  a foreground primate is --rm, so removing it is the kill."
+           fi
+           print -r -- ""
+           print -r -- "  y  confirm       any other key cancels"
+           tput ed 2>/dev/null
+           local __c=""; read -k 1 __c 2>/dev/null
+           if [[ "$__c" == y ]]; then
+             tput cup 0 0 2>/dev/null; print -r -- "zoo"; print -r -- ""
+             _zoo_kill "${__g[1]}" "${__g[2]}" "${__g[5]}" 2>&1 | sed 's/^/  /'
+             print -r -- ""
+             print -r -- " any key to continue"
+             tput ed 2>/dev/null; read -k 1 2>/dev/null
+           fi ;;
         '?') tput cup 0 0 2>/dev/null; _zoo_help; print -r -- ""
              print -r -- " any key to return"; tput ed 2>/dev/null
              read -k 1 2>/dev/null ;;

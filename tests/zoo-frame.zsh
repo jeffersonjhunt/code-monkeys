@@ -54,6 +54,23 @@ _want "merges stats onto the right row"   "$out" "4.48%"
 _want "stopped container shows no stats"  "$out" "—"
 _wantnot "stopped row did not borrow stats" "${out#*cold}" "0.04%"
 _want "flags the pre-primate.managed one" "$out" "predates primate.managed"
+_want "offers the keys that exist"        "$out" "k kill"
+
+print -r -- "selection marker:"
+sel1="$(ZOO_PS_SOURCE="$FIX/ps" ZOO_STATS_SOURCE="$FIX/stats" _zoo_frame "$(cat "$FIX/ps")" "$(cat "$FIX/stats")" 0 3 1)"
+sel3="$(_zoo_frame "$(cat "$FIX/ps")" "$(cat "$FIX/stats")" 0 3 3)"
+_want "row 1 marked when selected"     "$sel1" "> primate  vigilant_fox"
+_wantnot "row 3 not marked then"       "$sel1" "> session  cold"
+_want "row 3 marked when selected"     "$sel3" "> session  cold"
+_wantnot "row 1 not marked then"       "$sel3" "> primate  vigilant_fox"
+_want "no marker at all with 0"        "$(_zoo_frame "$(cat "$FIX/ps")" "" -1 3 0)" "  primate  vigilant_fox"
+
+print -r -- "row parsing agrees with what the frame shows:"
+rows="$(_zoo_rows "$(cat "$FIX/ps")")"
+_want "row 1 is the foreground primate" "${rows%%$'\n'*}" "primate	vigilant_fox"
+n=$(print -r -- "$rows" | grep -c .)
+if (( n == 4 )); then print -r -- "  ok   four rows parsed"
+else print -r -- "  FAIL parsed $n rows, wanted 4" >&2; (( fails++ )); fi
 
 print -r -- "all-managed fixture:"
 grep -v 'ddd4' "$FIX/ps" > "$FIX/ps2"
