@@ -97,4 +97,16 @@ else
   echo "WARNING: $SRC/bin/primate-pull missing — skipping it; the rest of the sync is done." >&2
 fi
 
+# zoo, for the same reason and with the same guard: on a host `setup` symlinks bin/zoo into
+# ~/.local/bin, but nothing links anything into a primate, so the copy is made here. Inside a
+# primate zoo lists, attaches, opens shells and kills, but cannot launch — _primate_roster finds no
+# primates/ beside this standalone ~/.zfuncs, and zoo offers only what exists.
+if [ -f "$SRC/bin/zoo" ]; then
+  mkdir -p "$HOME/.local/bin"
+  cp "$SRC/bin/zoo" "$HOME/.local/bin/zoo"
+  chmod +x "$HOME/.local/bin/zoo"
+else
+  echo "WARNING: $SRC/bin/zoo missing — skipping it; the rest of the sync is done." >&2
+fi
+
 # ownership is fixed by the EXIT trap above, on success and on failure alike.
