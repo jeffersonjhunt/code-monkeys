@@ -98,14 +98,15 @@ repeated `--filter label=`, so selecting both sets takes more than one query.
 
 ### 7.2 The launchers
 
-`primate()`, `primate-session()`, `primate-session-resume()`, `primate-session-kill()` and
-`primate-session-list()` are zsh functions in `zfuncs`. The launchers own the workspace
-mount, the refusal to mount `$HOME`, the docker socket gid, the home volume, and the
-first-run sync that places vault-managed configs into a new volume.
+Currently the primates are managed with `primate()`, `primate-session()`,
+`primate-session-resume()`, `primate-session-kill()` and `primate-session-list()` are
+zsh functions in `zfuncs`. The launchers own the workspace mount, the refusal to mount `$HOME`,
+the docker socket gid, the home volume, and the first-run sync that places vault-managed
+configs into a new volume.
 
-Starting and attaching must go through them. Anything that cannot call a zsh function must
-arrange for one to be called, or that logic has to be extracted into something both a shell
-and a program can invoke.
+Using the existing launchers is not a requirement for the future design. The functions can be
+reused or entirely replaced by the new zoo feature using any language (zsh, python, c++,
+etc...).
 
 ### 7.3 Container identity
 
@@ -141,6 +142,7 @@ The API returns bytes and nanoseconds rather than strings like `686MiB / 31.29Gi
   refresh, attributes, colour, timed input and resize, and supports leaving curses to run a
   normal command and re-entering. It does not name special keys — arrows arrive as raw
   escape sequences.
+- tmux is installed on every machine, including the Mac.
 - `~/.zfuncs` is a symlink into the repository, so the checked-out branch is the user's live
   environment. Develop in a git worktree.
 
