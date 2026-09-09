@@ -91,6 +91,7 @@ class FakeDaemon:
 
     INSPECT_RE = re.compile(r"^/containers/([0-9a-f]{64})/json$")
     DELETE_RE = re.compile(r"^/containers/([0-9a-f]{64})\?force=true$")
+    START_RE = re.compile(r"^/containers/([0-9a-f]{64})/start$")
 
     def find(self, id_):
         return next((c for c in self.containers if c["Id"] == id_), None)
@@ -113,6 +114,15 @@ class FakeDaemon:
             if c is None:
                 return 404, b'{"message":"No such container"}'
             self.containers.remove(c)
+            return 204, b""
+        m = self.START_RE.match(url)
+        if m and method == "POST":
+            c = self.find(m.group(1))
+            if c is None:
+                return 404, b'{"message":"No such container"}'
+            if c["State"] == "running":
+                return 304, b""
+            c["State"], c["Status"] = "running", "Up 1 second"
             return 204, b""
         m = self.STATS_RE.match(url)
         if m:
@@ -300,9 +310,82 @@ class KillTest(unittest.TestCase):
         self.assertIn("stopped session 'build'", text)
         self.assertIn("no longer be resumed", text)
 
+    def test_actions_depend_on_kind_state_and_a_docker_cli(self):
+        rows = self.rows
+        cli = "/usr/bin/docker"
+        self.assertEqual(zoo.actions_for(rows[SESSION_OLD], "", cli), [("a", "attach"), ("e", "shell"), ("x", "kill")])
+        self.assertEqual(zoo.actions_for(rows[SESSION_STOPPED], "", cli), [("a", "resume"), ("x", "kill")])
+        self.assertEqual(zoo.actions_for(rows[FOREGROUND], "", cli), [("e", "shell"), ("x", "kill")])
+        # No docker CLI: nothing that hands over the terminal is offered, kill still is.
+        self.assertEqual(zoo.actions_for(rows[SESSION_OLD], "", None), [("x", "kill")])
+        self.assertEqual(zoo.actions_for(rows[SESSION_NEW], SESSION_NEW, cli), [])
+
+    def test_why_not_explains_every_unoffered_key(self):
+        rows = self.rows
+        self.assertIn("nothing is selected", zoo.why_not("a", None, "", "docker"))
+        self.assertIn("zoo is running in", zoo.why_not("e", rows[SESSION_NEW], SESSION_NEW, "docker"))
+        self.assertIn("no docker command", zoo.why_not("a", rows[SESSION_OLD], "", None))
+        self.assertIn("no tmux", zoo.why_not("a", rows[FOREGROUND], "", "docker"))
+        self.assertIn("not running", zoo.why_not("e", rows[SESSION_STOPPED], "", "docker"))
+
     def test_footer_lists_only_offered_keys(self):
         self.assertTrue(zoo.footer_text([("x", "kill")]).startswith("x kill  "))
         self.assertNotIn("kill", zoo.footer_text([]))
+
+
+class AttachAndShellTest(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeDaemon()
+        self.docker = zoo.Docker(self.fake)
+        self.rows = {r.id: r for r in zoo.rows_from_listing(fixture_listing())}
+
+    def starts(self):
+        return [u for m, u in self.fake.requests if m == "POST"]
+
+    def test_attach_to_a_running_session_execs_tmux_by_id(self):
+        banner, argv = zoo.attach(self.docker, self.rows[SESSION_OLD], "", "/bin/docker", "screen-256color")
+        self.assertEqual(argv, ["/bin/docker", "exec", "-it", "-e", "TERM=screen-256color", SESSION_OLD,
+                                "tmux", "new-session", "-A", "-s", "main"])
+        self.assertIn("attaching to session evoc", banner)
+        self.assertIn("ctrl-b d", banner)
+        self.assertEqual(self.starts(), [])
+
+    def test_attach_to_a_stopped_session_starts_it_first(self):
+        banner, argv = zoo.attach(self.docker, self.rows[SESSION_STOPPED], "", "docker", "xterm")
+        self.assertEqual(self.starts(), [f"/containers/{SESSION_STOPPED}/start"])
+        self.assertEqual(self.fake.find(SESSION_STOPPED)["State"], "running")
+        self.assertIn("started stopped session build", banner)
+        self.assertEqual(argv[5:], [SESSION_STOPPED, "tmux", "new-session", "-A", "-s", "main"])
+
+    def test_attach_refuses_a_foreground_primate(self):
+        with self.assertRaises(zoo.Refusal) as ctx:
+            zoo.attach(self.docker, self.rows[FOREGROUND], "", "docker", "xterm")
+        self.assertIn("no tmux", str(ctx.exception))
+        self.assertEqual(self.starts(), [])
+
+    def test_attach_verifies_first(self):
+        self.fake.containers.remove(self.fake.find(SESSION_STOPPED))
+        with self.assertRaises(zoo.Refusal):
+            zoo.attach(self.docker, self.rows[SESSION_STOPPED], "", "docker", "xterm")
+        self.assertEqual(self.starts(), [])
+        with self.assertRaises(zoo.Refusal):
+            zoo.attach(self.docker, self.rows[SESSION_NEW], SESSION_NEW, "docker", "xterm")
+
+    def test_shell_is_a_new_shell_and_says_so(self):
+        banner, argv = zoo.shell(self.docker, self.rows[FOREGROUND], "", "docker", "xterm")
+        self.assertEqual(argv[:6], ["docker", "exec", "-it", "-e", "TERM=xterm", FOREGROUND])
+        self.assertIn("exec zsh", argv[-1])
+        self.assertIn("exec sh", argv[-1])
+        self.assertIn("not its original terminal", banner)
+
+    def test_shell_refuses_a_stopped_container(self):
+        with self.assertRaises(zoo.Refusal) as ctx:
+            zoo.shell(self.docker, self.rows[SESSION_STOPPED], "", "docker", "xterm")
+        self.assertIn("not running", str(ctx.exception))
+
+    def test_start_tolerates_already_running(self):
+        self.docker.start(SESSION_OLD)   # 304 from the daemon is not an error
+        self.assertEqual(self.starts(), [f"/containers/{SESSION_OLD}/start"])
 
 
 # --------------------------------------------------------------------------- samples

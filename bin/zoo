@@ -28,14 +28,16 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
+import subprocess
 import sys
 import textwrap
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.1.0-U2"
+__version__ = "0.1.0-U3"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -145,6 +147,10 @@ class Docker:
     def remove(self, cid: str) -> None:
         """docker rm -f. Named volumes are never removed by this, so <image>-home survives."""
         self._json("DELETE", f"/containers/{cid}?force=true")
+
+    def start(self, cid: str) -> None:
+        """docker start. 304 (already running) is not an error."""
+        self._json("POST", f"/containers/{cid}/start")
 
 
 # --------------------------------------------------------------------------- rows
@@ -290,11 +296,68 @@ def kill(docker: Docker, row: Row, self_id: str) -> str:
     return f"removed {fresh.kind} {fresh.name}; volume {fresh.image}-home kept"
 
 
-def actions_for(row: Optional[Row], self_id: str) -> List[Tuple[str, str]]:
-    """The keys that do something for this row — and only those (spec req 18)."""
+# The tmux session name the launchers use (`primate-session` creates it, `-resume` re-attaches).
+TMUX_SESSION = "main"
+# A shell in any primate: zsh where it exists (every codemonkey-based image), sh otherwise.
+SHELL_CMD = ("sh", "-c", "command -v zsh >/dev/null 2>&1 && exec zsh; exec sh")
+
+
+def exec_argv(cli: str, cid: str, term: str, *cmd: str) -> List[str]:
+    return [cli, "exec", "-it", "-e", f"TERM={term}", cid, *cmd]
+
+
+def attach(docker: Docker, row: Row, self_id: str, cli: str, term: str) -> Tuple[str, List[str]]:
+    """Attach to a session's tmux, starting the container first if it is stopped (spec 12, 13).
+    Returns the banner to print at the hand-off and the command to hand the terminal to."""
+    fresh = verify_target(docker, row, self_id)
+    if fresh.kind != SESSION:
+        raise Refusal(f"{fresh.name} is a foreground primate: it has no tmux to attach to (e opens a shell)")
+    if fresh.running:
+        banner = f"attaching to session {fresh.name} (tmux {TMUX_SESSION}). Detach with ctrl-b d to return to zoo."
+    else:
+        docker.start(fresh.id)
+        banner = (f"started stopped session {fresh.name}; attaching (tmux {TMUX_SESSION}). "
+                  "Detach with ctrl-b d to return to zoo.")
+    return banner, exec_argv(cli, fresh.id, term, "tmux", "new-session", "-A", "-s", TMUX_SESSION)
+
+
+def shell(docker: Docker, row: Row, self_id: str, cli: str, term: str) -> Tuple[str, List[str]]:
+    """A new shell in a running container — not its original terminal, and said so (spec 14)."""
+    fresh = verify_target(docker, row, self_id)
+    if not fresh.running:
+        raise Refusal(f"{fresh.name} is not running")
+    banner = (f"opening a new shell in {fresh.kind} {fresh.name}. This is not its original terminal; "
+              "exit returns to zoo.")
+    return banner, exec_argv(cli, fresh.id, term, *SHELL_CMD)
+
+
+def actions_for(row: Optional[Row], self_id: str, cli: Optional[str] = None) -> List[Tuple[str, str]]:
+    """The keys that do something for this row — and only those (spec req 18). Attach and shell
+    hand the terminal to the docker CLI, so without one they are not offered."""
     if row is None or (self_id and row.id == self_id):
         return []
-    return [("x", "kill")]
+    acts: List[Tuple[str, str]] = []
+    if cli and row.kind == SESSION:
+        acts.append(("a", "attach" if row.running else "resume"))
+    if cli and row.running:
+        acts.append(("e", "shell"))
+    acts.append(("x", "kill"))
+    return acts
+
+
+def why_not(key: str, row: Optional[Row], self_id: str, cli: Optional[str]) -> str:
+    """Why an unoffered key did nothing — said, rather than silently ignored."""
+    if row is None:
+        return "nothing is selected"
+    if self_id and row.id == self_id:
+        return f"{row.name} is the container zoo is running in"
+    if not cli:
+        return "no docker command on PATH: attach and shell hand the terminal to it"
+    if key == "a":
+        return f"{row.name} is a foreground primate: it has no tmux to attach to (e opens a shell)"
+    if key == "e":
+        return f"{row.name} is not running"
+    return "not available here"
 
 
 # --------------------------------------------------------------------------- samples
@@ -519,6 +582,8 @@ HELP_LINES = (
     "  up/down, j/k      select a row",
     "  g / G             first / last row",
     "  PgUp / PgDn       page up / down",
+    "  a                 attach to the session's tmux (resumes a stopped one)",
+    "  e                 open a new shell in the running container",
     "  x                 remove the selected container (asks first)",
     "  + / -             refresh slower / faster",
     "  r                 refresh now",
@@ -574,12 +639,14 @@ class View:
     with a short timeout in between, and redraws only when something changed (spec req 22)."""
 
     def __init__(self, scr, mon: Monitor, interval: float, clock: Callable[[], float] = time.monotonic,
-                 self_id: str = ""):
+                 self_id: str = "", cli: Optional[str] = None, term: str = "xterm"):
         self.scr = scr
         self.mon = mon
         self.interval = interval
         self.clock = clock
         self.self_id = self_id
+        self.cli = cli
+        self.term = term
         self.sel = 0
         self.offset = 0
         self.help = False
@@ -660,13 +727,27 @@ class View:
         n = len(self.mon.rows)
         if key in (ord("q"), 27):
             return "quit"
-        if key == ord("x"):
+        if key in (ord("x"), ord("a"), ord("e")):
             row = self.selected()
-            if ("x", "kill") not in actions_for(row, self.self_id):
-                self.say("nothing to remove here" if row is None else
-                         f"{row.name} is the container zoo is running in", now)
-            else:
+            offered = dict(actions_for(row, self.self_id, self.cli))
+            k = chr(key)
+            if k not in offered:
+                self.say(why_not(k, row, self.self_id, self.cli), now)
+            elif k == "x":
                 self.confirm = (row, confirm_kill_text(row))
+            else:
+                try:
+                    plan = attach if k == "a" else shell
+                    banner, argv = plan(self.mon._docker, row, self.self_id, self.cli, self.term)
+                except Refusal as exc:
+                    self.say(f"refused: {exc}", now)
+                    return None
+                except DockerError as exc:
+                    self.say(f"failed: {exc}", now)
+                    return None
+                rc, err = self.handoff(banner, argv)
+                self.say(err or f"{offered[k]} {row.name} ended (exit {rc}); back in zoo", self.clock())
+                self.tick(self.clock())
             return None
         if key in (curses.KEY_UP, ord("k")):
             self.sel -= 1
@@ -689,6 +770,34 @@ class View:
         elif key == ord("?"):
             self.help = True
         return None
+
+    # -- handing the terminal to a child
+
+    def handoff(self, banner: str, argv: List[str]) -> Tuple[int, str]:
+        """Leave curses, print why, run the child on the terminal, come back (spec 12-15, §2.5).
+
+        Exactly one process owns the terminal at a time: endwin() hands it back to shell mode
+        before the child starts, and the refresh() afterwards re-enters curses, restoring its
+        own tty modes wholesale — so a child that died in raw mode cannot leave zoo unreadable.
+        SIGINT is ignored meanwhile, as a shell does for its foreground job: ctrl-c is the
+        child's to handle, and never takes zoo down with it.
+        """
+        import curses
+        curses.endwin()
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            sys.stdout.write(banner + "\n")
+            sys.stdout.flush()
+            rc = subprocess.call(argv, preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            return rc, ""
+        except OSError as exc:
+            return -1, f"could not run {argv[0]}: {exc}"
+        finally:
+            signal.signal(signal.SIGINT, previous)
+            # The first refresh after endwin() re-enters curses and repaints the whole screen;
+            # a clearok() here was proven redundant by mutation (the suite stayed green without it).
+            self.scr.refresh()
+            self.dirty = True
 
     # -- drawing
 
@@ -756,7 +865,7 @@ class View:
             self._put(h - 1, self.notice, curses.A_REVERSE)
         else:
             self.notice = ""
-            self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id)))
+            self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id, self.cli)))
         self.scr.noutrefresh()
         curses.doupdate()
 
@@ -785,7 +894,9 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         # curses.wrapper restores the terminal in its own finally, on KeyboardInterrupt too — the
         # thing the zsh version's `always` block did not do. The termios restore below is the
         # second line: it also covers whatever a child (tmux, a shell) may leave behind later.
-        return curses.wrapper(lambda scr: View(scr, mon, interval, self_id=self_id).run())
+        cli = shutil.which("docker", path=environ.get("PATH"))
+        term = environ.get("TERM") or "xterm"
+        return curses.wrapper(lambda scr: View(scr, mon, interval, self_id=self_id, cli=cli, term=term).run())
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:
