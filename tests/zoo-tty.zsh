@@ -272,5 +272,57 @@ print -r -- "each rendered line is cleared to end of line:"
 _assert_ge "el after the frame's lines" "$(_count $'\e[K')" 5
 _assert_ge "and the screen is cleared on entry" "$(_count $'\e[H')" 1
 
+# The a key's SUCCESS path — a real tmux re-attach. This is the one path that had no
+# automated cover, because a test that gets it wrong attaches to a live session of
+# the maintainer's. It therefore does not run unless ZOO_TEST_SESSIONS=1 is set,
+# and it creates and destroys the only session it can name.
+#
+# Worth having before the zsh/curses rewrite: that rewrite's handover unit is
+# exactly this path (curses out, tmux owns the terminal, curses back in).
+if [[ "${ZOO_TEST_SESSIONS:-0}" != 1 ]]; then
+  print -r -- "a's tmux re-attach: SKIPPED — set ZOO_TEST_SESSIONS=1 to run it."
+  print -r -- "                    It creates a real session container, so it is opt-in."
+elif ! command -v docker >/dev/null 2>&1 || ! docker version >/dev/null 2>&1; then
+  print -r -- "a's tmux re-attach: SKIPPED — no reachable docker daemon."
+else
+  print -r -- "a re-attaches to a real tmux session:"
+  docker rm -f zoo-attachtest >/dev/null 2>&1
+  if ! docker run -d --name zoo-attachtest \
+        --label primate.managed --label primate.session \
+        --label primate.image=minion --label primate.name=zoo-attachtest \
+        minion sleep 300 >/dev/null 2>&1; then
+    print -r -- "  SKIPPED — could not start a session container (is the minion image local?)"
+  elif ! docker exec zoo-attachtest sh -c 'command -v tmux' >/dev/null 2>&1; then
+    print -r -- "  SKIPPED — no tmux in the image, so there is nothing to re-attach to."
+    docker rm -f zoo-attachtest >/dev/null 2>&1
+  else
+    AID="$(docker ps --filter name=zoo-attachtest --format '{{.ID}}')"
+    AD="$(mktemp -d)"
+    printf '%s\x1fzoo-attachtest\x1fminion\x1fUp 1 minute\n' "$AID" > "$AD/sessions"
+    cp "$AD/sessions" "$AD/managed"; : > "$AD/stats"
+    ARUN2="zsh -c 'source ${ZF:A} >/dev/null 2>&1
+      export ZOO_PS_SESSION_SOURCE=$AD/sessions ZOO_PS_MANAGED_SOURCE=$AD/managed ZOO_STATS_SOURCE=$AD/stats
+      zoo -i 1'"
+    # a -> tmux takes the terminal -> run a marker whose OUTPUT differs from the typed
+    # text -> ctrl-b d to detach -> back in zoo -> q.
+    ( sleep 2; printf 'a'; sleep 5
+      printf 'printf "ZOO%%s\\n" ATTACH_OK\n'; sleep 3
+      printf '\002d'; sleep 3
+      printf 'q'; sleep 2 ) \
+      | timeout 60 script -qec "$ARUN2" /dev/null > "$OUT" 2>&1
+    _assert_ge "a ran a command inside the session's tmux" "$(_count 'ZOOATTACH_OK')" 1
+    _assert_ge "no refusal"        "$(( 1 - $(_count 'refusing') ))" 1
+    _assert_ge "no internal error" "$(( 1 - $(_count 'internal error') ))" 1
+    # Detaching must come back to zoo, not exit it — and this has to be an ORDERING
+    # assertion. Counting the footer alone passed with _zoo_attach sabotaged, because
+    # the footer appears in every frame including ones drawn before ever leaving. Only
+    # a footer drawn AFTER the in-tmux marker proves zoo got the terminal back.
+    _after=$(sed -n '/ZOOATTACH_OK/,$p' "$OUT" 2>/dev/null | grep -c 'q/esc quit')
+    _assert_ge "zoo redrew AFTER the tmux marker" "${_after:-0}" 1
+    docker rm -f zoo-attachtest >/dev/null 2>&1
+    rm -rf "$AD"
+  fi
+fi
+
 if (( fails )); then print -r -- "FAILED ($fails)" >&2; exit 1; fi
 print -r -- "PASSED"
