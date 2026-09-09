@@ -123,13 +123,20 @@ same name.
 | source | returns | cost |
 |---|---|---|
 | `docker ps -a --filter label=… --format …` | container rows | 15–30 ms |
+| API `/containers/json?all=true` | container rows, JSON, 64-character ids | ~13 ms |
 | `docker stats --no-stream` | one sample | ~1.6 s |
 | API `/containers/{id}/stats?stream=false` | one sample, JSON, raw numeric fields | ~2.0 s |
+| API `/containers/{id}/stats?stream=false&one-shot=true` | one reading, no CPU% (the client keeps the previous reading and computes the delta) | **~6 ms** |
 | `docker stats` streamed | a full set every ~500 ms after a ~2 s first sample | — |
 | API `/containers/{id}/stats` streamed | JSON samples, raw numeric fields | — |
 
 The ~2 s for a single sample is the daemon computing CPU% from two readings; it is not
-client overhead, and it applies to the CLI and the API alike.
+client overhead, and it applies to the CLI and the API alike. `one-shot=true` (API ≥ 1.41,
+Docker ≥ 20.10) skips that wait by returning a single reading; CPU% is then the caller's
+delta between two of its own readings, which is what `docker stats` computes internally.
+Measured 2026-09-09 on Docker Desktop 29.7 (arm64): 6 ms per container against 1009 ms for
+the two-reading form. It is what lets a viewer refresh every container per tick with no
+streaming sampler at all.
 
 Streamed `docker stats` emits terminal control sequences even when stdout is not a terminal.
 The API returns bytes and nanoseconds rather than strings like `686MiB / 31.29GiB`.

@@ -1,0 +1,1203 @@
+#!/usr/bin/env python3
+"""zoo — an interactive manager for primates.
+
+Lists the containers that `primate` and `primate-session` start, with live figures, and acts on
+them. Requirements, constraints and measurements are in zoo-spec.md at the repo root; this file
+does not repeat them, but the decisions below cite them.
+
+Why python and not zsh: two zsh implementations were abandoned, and six of the seven failures in
+the spec's catalogue were shell process and terminal hygiene — forks per tick, an `always` block
+that SIGINT skips, a background sampler outliving its parent, job-control notices on the user's
+terminal. Everything here runs in one process and one thread: the docker client speaks HTTP over
+the unix socket from inside the process, so a refresh forks nothing at all.
+
+Why there is no streaming sampler: a stats reading requested with `one-shot=true` costs ~6 ms
+(measured 2026-09-09, Docker Desktop 29.7 and native Linux alike), against ~1-2 s for the form
+that makes the daemon wait for a second sample. CPU% is the delta between two of our own ticks —
+exactly what `docker stats` computes internally — so the "expensive stats" problem that drove
+the previous designs toward coprocesses and temp files does not exist.
+
+Standard library only, on purpose: this runs in the host shell on macOS and Linux and inside
+every primate, and a venv on each of those is a second thing to keep in step.
+"""
+from __future__ import annotations
+
+import argparse
+import http.client
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import textwrap
+import time
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Tuple
+
+__version__ = "0.1.1"
+
+# Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
+# and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
+DEFAULT_SOCKETS = ("/var/run/docker.sock", "~/.docker/run/docker.sock")
+
+# one-shot=true is the whole reason zoo can be single-threaded: see the module docstring.
+STATS_QUERY = "/stats?stream=false&one-shot=true"
+
+# Reads are small and the daemon is local; a hung daemon must not hang the view. Writes are a
+# different matter: `docker start` takes 0.5-2 s on a big container and `rm -f` can too, and a
+# timeout on those reports a failure while the daemon finishes the job anyway (review F1).
+SOCKET_TIMEOUT = 1.0
+MUTATE_TIMEOUT = 30.0
+
+Transport = Callable[..., Tuple[int, bytes]]   # (method, url, timeout=None) -> (status, body)
+
+
+class DockerError(Exception):
+    """The daemon could not be reached, or answered with an error."""
+
+
+class Timeout(DockerError):
+    """The daemon did not answer in time: it is hung or very slow, not gone."""
+
+
+class NotFound(DockerError):
+    """The daemon answered 404: the container is gone."""
+
+
+# --------------------------------------------------------------------------- docker client
+
+
+def socket_path(environ=None, exists=os.path.exists) -> str:
+    """The unix socket to talk to. DOCKER_HOST wins; otherwise the first default that exists.
+
+    Only unix sockets: zoo is single-daemon by design (spec §6) and every host in the fleet
+    reaches its daemon through one. A TCP DOCKER_HOST is an error rather than a silent fallback
+    to a socket the user did not ask for.
+    """
+    environ = os.environ if environ is None else environ
+    host = environ.get("DOCKER_HOST", "")
+    if host:
+        if host.startswith("unix://"):
+            return host[len("unix://"):]
+        raise DockerError(f"DOCKER_HOST={host!r}: zoo speaks only to a unix socket")
+    home = environ.get("HOME", "")
+    for candidate in DEFAULT_SOCKETS:
+        path = candidate.replace("~", home, 1) if candidate.startswith("~") else candidate
+        if exists(path):
+            return path
+    raise DockerError(
+        "no docker socket at " + " or ".join(DEFAULT_SOCKETS) + " (set DOCKER_HOST=unix://...)"
+    )
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path: str, timeout: float):
+        super().__init__("localhost", timeout=timeout)
+        self._path = path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self._path)
+        self.sock = sock
+
+
+def unix_transport(path: str, default_timeout: float = SOCKET_TIMEOUT) -> Transport:
+    """A transport is (method, url, timeout=None) -> (status, body). This is the real one; tests
+    inject fakes. `timeout` overrides the default for one request."""
+
+    def send(method: str, url: str, timeout: Optional[float] = None) -> Tuple[int, bytes]:
+        conn = _UnixHTTPConnection(path, timeout if timeout is not None else default_timeout)
+        try:
+            conn.request(method, url, headers={"Host": "docker"})
+            resp = conn.getresponse()
+            return resp.status, resp.read()
+        except socket.timeout as exc:
+            raise Timeout(f"{method} {url}: timed out after {conn.timeout:g}s") from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise DockerError(f"{method} {url}: {exc}") from exc
+        finally:
+            conn.close()
+
+    return send
+
+
+class Docker:
+    """The handful of Engine API calls zoo makes. Unversioned paths: the daemon picks its own."""
+
+    def __init__(self, transport: Transport):
+        self._send = transport
+
+    def _json(self, method: str, url: str, timeout: Optional[float] = None):
+        status, body = self._send(method, url, timeout)
+        if status == 404:
+            raise NotFound(f"{method} {url}: no such container")
+        if status >= 400:
+            detail = body[:200].decode("utf-8", errors="replace").strip()
+            raise DockerError(f"{method} {url}: HTTP {status} {detail}")
+        if not body:
+            return None
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise DockerError(f"{method} {url}: unparseable response") from exc
+
+    def list_all(self) -> list:
+        return self._json("GET", "/containers/json?all=true") or []
+
+    def inspect(self, cid: str) -> dict:
+        return self._json("GET", f"/containers/{cid}/json")
+
+    def stats(self, cid: str) -> dict:
+        return self._json("GET", f"/containers/{cid}{STATS_QUERY}")
+
+    def remove(self, cid: str) -> None:
+        """docker rm -f. Named volumes are never removed by this, so <image>-home survives."""
+        self._json("DELETE", f"/containers/{cid}?force=true", MUTATE_TIMEOUT)
+
+    def start(self, cid: str) -> None:
+        """docker start. 304 (already running) is not an error."""
+        self._json("POST", f"/containers/{cid}/start", MUTATE_TIMEOUT)
+
+
+# --------------------------------------------------------------------------- rows
+
+SESSION, PRIMATE = "session", "primate"
+
+
+@dataclass(frozen=True)
+class Row:
+    id: str        # the 64-character id: the API gives it whole, so no prefix games (spec §7.3)
+    kind: str      # SESSION or PRIMATE
+    name: str
+    image: str
+    running: bool
+    status: str    # docker's own wording, e.g. "Up 22 hours", "Exited (0) 3 days ago"
+
+
+def is_primate(labels: dict) -> bool:
+    """Identify by label, never by image (spec §7.1). primate.managed is on everything the
+    launchers start now; primate.session alone is a session from before that label existed."""
+    return "primate.managed" in labels or "primate.session" in labels
+
+
+def printable(text: str) -> str:
+    """Labels are free text set by whoever created the container. --once and the hand-off banner
+    print outside curses, where a control character would reach the terminal (review F7)."""
+    return "".join(ch if 32 <= ord(ch) < 127 or ord(ch) >= 160 else "?" for ch in text)
+
+
+def row_from_listing(c: dict) -> Row:
+    cid = c.get("Id") or ""
+    if len(cid) < 12:
+        # An unparsed row must never reach a comparison: an empty id is a prefix of every id.
+        raise DockerError(f"container listing row without a usable id: {c!r}"[:200])
+    labels = c.get("Labels") or {}
+    kind = SESSION if "primate.session" in labels else PRIMATE
+    names = c.get("Names") or []
+    container_name = names[0].lstrip("/") if names else cid[:12]
+    name = (labels.get("primate.name") or container_name) if kind == SESSION else container_name
+    image = labels.get("primate.image") or c.get("Image") or "?"
+    return Row(
+        id=cid,
+        kind=kind,
+        name=printable(name),
+        image=printable(image),
+        running=(c.get("State") == "running"),
+        status=printable(c.get("Status") or ""),
+    )
+
+
+def rows_from_listing(listing: list) -> List[Row]:
+    rows = [row_from_listing(c) for c in listing if is_primate(c.get("Labels") or {})]
+    # Sessions first (they are the durable ones), then by name; the id breaks ties so two
+    # foreground primates of one image keep a stable order between ticks.
+    rows.sort(key=lambda r: (r.kind != SESSION, r.name, r.id))
+    return rows
+
+
+# --------------------------------------------------------------------------- identity
+
+
+def row_from_inspect(doc: dict) -> Row:
+    """The same Row, from /containers/{id}/json — what verify_target reads at the moment of action."""
+    labels = (doc.get("Config") or {}).get("Labels") or {}
+    state = doc.get("State") or {}
+    return row_from_listing({
+        "Id": doc.get("Id") or "",
+        "Names": [doc.get("Name") or ""],
+        "Image": (doc.get("Config") or {}).get("Image") or "",
+        "Labels": labels,
+        "State": state.get("Status") or "",
+        "Status": state.get("Status") or "",
+    })
+
+
+_CONTAINER_ID_RE = re.compile(r"/containers/([0-9a-f]{64})/")
+
+
+def self_container_id(mountinfo: str) -> str:
+    """The 64-character id of the container this process runs in, or "" on a host.
+
+    Docker bind-mounts /etc/hostname, /etc/hosts and /etc/resolv.conf from
+    .../containers/<id>/, so that path names the container itself. Nothing looser: a bare
+    64-hex match would also fit an overlay layer id, and a wrong self id is worse than none —
+    the guard would look present and match nothing (spec §7.3).
+    """
+    m = _CONTAINER_ID_RE.search(mountinfo)
+    return m.group(1) if m else ""
+
+
+def read_self_container_id(path: str = "/proc/self/mountinfo") -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return self_container_id(fh.read())
+    except OSError:
+        return ""   # a host: no mountinfo, or none that names a container
+
+
+class Refusal(Exception):
+    """An action zoo will not take, with the reason to show the user (spec req 26)."""
+
+
+def verify_target(docker: Docker, row: Row, self_id: str) -> Row:
+    """Re-inspect the selected container immediately before acting on it (spec req 25).
+
+    Selection happened earlier; a confirm prompt may have sat open for an hour. The id is
+    what was selected, so a session destroyed and recreated under the same name is simply gone
+    (404), never silently substituted. Returns the fresh Row; raises Refusal otherwise.
+    """
+    if len(row.id) < 12:
+        raise Refusal("nothing usable is selected")
+    if self_id and row.id == self_id:
+        raise Refusal(f"{row.name} is the container zoo is running in")
+    try:
+        doc = docker.inspect(row.id)
+    except NotFound:
+        raise Refusal(f"{row.kind} {row.name} is gone: container {row.id[:12]} no longer exists")
+    except DockerError as exc:
+        raise Refusal(f"cannot verify {row.name}: {exc}")
+    labels = (doc.get("Config") or {}).get("Labels") or {}
+    if not is_primate(labels):
+        raise Refusal(f"{row.name} ({row.id[:12]}) is no longer labelled as a primate")
+    fresh = row_from_inspect(doc)
+    if fresh.id != row.id:
+        raise Refusal(f"container {row.id[:12]} answered as {fresh.id[:12]}")
+    if fresh.kind != row.kind:
+        raise Refusal(f"{row.name} is now a {fresh.kind}, not a {row.kind}")
+    if fresh.name != row.name:
+        raise Refusal(f"container {row.id[:12]} is now named {fresh.name}, not {row.name}")
+    return fresh
+
+
+def confirm_kill_text(row: Row) -> str:
+    """What is destroyed, what survives (spec req 17)."""
+    what = f"{'stopped ' if not row.running else ''}{row.kind} '{row.name}' ({row.image}, {row.status})"
+    if row.kind == SESSION:
+        detail = ("The container and the tmux server inside it are destroyed; it can no longer be "
+                  "resumed." if row.running else "It can no longer be resumed.")
+    else:
+        detail = ("This is a foreground container: the terminal it is running in loses its shell."
+                  if row.running else "")
+    return (f"Remove {what}?  {detail}  The home volume {row.image}-home survives.  "
+            "[y to remove, any other key to keep it]")
+
+
+def kill(docker: Docker, row: Row, self_id: str) -> str:
+    fresh = verify_target(docker, row, self_id)
+    try:
+        docker.remove(fresh.id)
+    except NotFound:
+        return f"{fresh.kind} {fresh.name} was already gone; volume {fresh.image}-home kept"
+    return f"removed {fresh.kind} {fresh.name}; volume {fresh.image}-home kept"
+
+
+# The tmux session name the launchers use (`primate-session` creates it, `-resume` re-attaches).
+TMUX_SESSION = "main"
+# A shell in any primate: zsh where it exists (every codemonkey-based image), sh otherwise.
+SHELL_CMD = ("sh", "-c", "command -v zsh >/dev/null 2>&1 && exec zsh; exec sh")
+
+
+def exec_argv(cli: str, cid: str, term: str, *cmd: str) -> List[str]:
+    return [cli, "exec", "-it", "-e", f"TERM={term}", cid, *cmd]
+
+
+def attach(docker: Docker, row: Row, self_id: str, cli: str, term: str) -> Tuple[str, List[str]]:
+    """Attach to a session's tmux, starting the container first if it is stopped (spec 12, 13).
+    Returns the banner to print at the hand-off and the command to hand the terminal to."""
+    fresh = verify_target(docker, row, self_id)
+    if fresh.kind != SESSION:
+        raise Refusal(f"{fresh.name} is a foreground primate: it has no tmux to attach to (e opens a shell)")
+    if fresh.running:
+        banner = f"attaching to session {fresh.name} (tmux {TMUX_SESSION}). Detach with ctrl-b d to return to zoo."
+    else:
+        docker.start(fresh.id)
+        banner = (f"started stopped session {fresh.name}; attaching (tmux {TMUX_SESSION}). "
+                  "Detach with ctrl-b d to return to zoo.")
+    return banner, exec_argv(cli, fresh.id, term, "tmux", "new-session", "-A", "-s", TMUX_SESSION)
+
+
+def shell(docker: Docker, row: Row, self_id: str, cli: str, term: str) -> Tuple[str, List[str]]:
+    """A new shell in a running container — not its original terminal, and said so (spec 14)."""
+    fresh = verify_target(docker, row, self_id)
+    if not fresh.running:
+        raise Refusal(f"{fresh.name} is not running")
+    banner = (f"opening a new shell in {fresh.kind} {fresh.name}. This is not its original terminal; "
+              "exit returns to zoo.")
+    return banner, exec_argv(cli, fresh.id, term, *SHELL_CMD)
+
+
+# --------------------------------------------------------------------------- launching
+
+
+# Everything about starting a primate — the workspace mount and the refusal to mount $HOME, the
+# docker socket gid, the <image>-home volume, the first-run config sync — lives in the zsh
+# functions in zfuncs, and there only. zoo sources that file in a child zsh and calls them.
+# Duplicating that logic is how this repo once shipped five copies of the ECR pull, two of them
+# missing (spec §7.2).
+ZFUNCS_SNIPPET = 'source "$1" >/dev/null 2>&1; shift; "$@"'
+ROSTER_SNIPPET = 'source "$1" >/dev/null 2>&1; _primate_roster 2>/dev/null'
+_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def zfuncs_path(environ) -> str:
+    """ZOO_ZFUNCS is a test seam; otherwise ~/.zfuncs, which setup symlinks into the checkout on
+    a host and upgrade-home.sh copies into a primate's home volume."""
+    return environ.get("ZOO_ZFUNCS") or os.path.join(environ.get("HOME", ""), ".zfuncs")
+
+
+def read_roster(zfuncs: str, runner=subprocess.run) -> List[str]:
+    """The images `primate` can start, from _primate_roster: codemonkey plus primates/*.dockerfile
+    beside the real zfuncs. Empty inside a primate (the ~/.zfuncs there is a standalone copy with
+    no primates/ beside it) and on any host without a checkout — and then launching is not
+    offered at all, rather than offered and failing (spec req 18)."""
+    if not os.path.isfile(zfuncs):
+        return []
+    try:
+        result = runner(["zsh", "-c", ROSTER_SNIPPET, "zoo-roster", zfuncs],
+                        capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if _IMAGE_NAME_RE.match(line.strip())]
+
+
+def launch_plan(kind: str, zfuncs: str, image: str, name: str, cwd: str) -> Tuple[str, List[str]]:
+    """The banner and the command for `n` (a primate) or `s` (a session)."""
+    if kind == PRIMATE:
+        banner = f"starting primate {image} (workspace: {cwd}). Exit its shell to return to zoo."
+        argv = ["zsh", "-c", ZFUNCS_SNIPPET, "zoo-launch", zfuncs, "primate", image]
+    else:
+        named = f" named {name}" if name else ""
+        banner = (f"starting session {image}{named} (workspace: {cwd}). "
+                  "Detach with ctrl-b d to return to zoo.")
+        argv = ["zsh", "-c", ZFUNCS_SNIPPET, "zoo-launch", zfuncs, "primate-session", image]
+        if name:
+            argv.append(name)
+    return banner, argv
+
+
+LAUNCH_KEYS = [("n", "new"), ("s", "session")]
+# Docker's container-name alphabet; a name outside it fails after the hand-off (review F6).
+NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def name_problem(name: str) -> str:
+    """Why a typed session name would be refused by docker, or "" if it is fine (empty is fine:
+    the launcher picks its default)."""
+    if not name or _NAME_RE.match(name):
+        return ""
+    return f"session names start with a letter or digit and use only letters, digits, _ . - : {name!r}"
+
+
+def actions_for(row: Optional[Row], self_id: str, cli: Optional[str] = None) -> List[Tuple[str, str]]:
+    """The keys that do something for this row — and only those (spec req 18). Attach and shell
+    hand the terminal to the docker CLI, so without one they are not offered."""
+    if row is None or (self_id and row.id == self_id):
+        return []
+    acts: List[Tuple[str, str]] = []
+    if cli and row.kind == SESSION:
+        acts.append(("a", "attach" if row.running else "resume"))
+    if cli and row.running:
+        acts.append(("e", "shell"))
+    acts.append(("x", "kill"))
+    return acts
+
+
+def why_not(key: str, row: Optional[Row], self_id: str, cli: Optional[str]) -> str:
+    """Why an unoffered key did nothing — said, rather than silently ignored."""
+    if row is None:
+        return "nothing is selected"
+    if self_id and row.id == self_id:
+        return f"{row.name} is the container zoo is running in"
+    if not cli:
+        return "no docker command on PATH: attach and shell hand the terminal to it"
+    if key == "a":
+        return f"{row.name} is a foreground primate: it has no tmux to attach to (e opens a shell)"
+    if key == "e":
+        return f"{row.name} is not running"
+    return "not available here"
+
+
+# --------------------------------------------------------------------------- samples
+
+
+@dataclass(frozen=True)
+class Sample:
+    cpu_total: int     # nanoseconds of CPU this container has used, cumulative
+    system_cpu: int    # nanoseconds of CPU the host has used, cumulative
+    online_cpus: int
+    mem_used: int      # bytes, cache excluded the way `docker stats` excludes it
+    mem_limit: int
+    pids: int
+
+
+def parse_stats(doc: dict) -> Sample:
+    cpu = doc.get("cpu_stats") or {}
+    usage = cpu.get("cpu_usage") or {}
+    online = cpu.get("online_cpus") or len(usage.get("percpu_usage") or []) or 1
+    mem = doc.get("memory_stats") or {}
+    mstats = mem.get("stats") or {}
+    # cgroup v2 reports inactive_file, v1 total_inactive_file; docker subtracts whichever exists.
+    cache = mstats.get("inactive_file", mstats.get("total_inactive_file", 0))
+    return Sample(
+        cpu_total=int(usage.get("total_usage") or 0),
+        system_cpu=int(cpu.get("system_cpu_usage") or 0),
+        online_cpus=int(online),
+        mem_used=max(int(mem.get("usage") or 0) - int(cache), 0),
+        mem_limit=int(mem.get("limit") or 0),
+        pids=int((doc.get("pids_stats") or {}).get("current") or 0),
+    )
+
+
+def cpu_percent(prev: Optional[Sample], cur: Sample) -> Optional[float]:
+    """None means "cannot say yet", which the view must show differently from 0.0 (spec req 5)."""
+    if prev is None:
+        return None
+    d_cpu = cur.cpu_total - prev.cpu_total
+    d_sys = cur.system_cpu - prev.system_cpu
+    if d_sys <= 0 or d_cpu < 0:
+        # No time passed on the host's clock, or the counters reset (container restarted).
+        return None
+    return d_cpu / d_sys * cur.online_cpus * 100.0
+
+
+# --------------------------------------------------------------------------- figures
+
+PENDING, LIVE, STALE, STOPPED = "pending", "live", "stale", "stopped"
+
+
+@dataclass
+class Figures:
+    state: str
+    cpu: Optional[float] = None
+    mem_used: Optional[int] = None
+    mem_limit: Optional[int] = None
+    pids: Optional[int] = None
+    ok_at: Optional[float] = None   # monotonic time of the last successful reading
+    error: str = ""
+
+
+class Monitor:
+    """Turns the daemon's raw readings into per-row figures, one tick at a time.
+
+    Holds the previous sample per container so CPU% can be a delta, and keeps the last good
+    figures when a reading fails so the view can show them as stale rather than blank.
+    """
+
+    def __init__(self, docker: Docker, clock: Callable[[], float] = time.monotonic):
+        self._docker = docker
+        self._clock = clock
+        self._samples: Dict[str, Sample] = {}
+        self.figures: Dict[str, Figures] = {}
+        self.rows: List[Row] = []
+        self.error = ""
+        self.ticked_at: Optional[float] = None
+
+    def _stale(self, cid: str, error: str) -> None:
+        """Keep the last good numbers, marked stale, with the reason."""
+        last = self.figures.get(cid)
+        self.figures[cid] = Figures(
+            STALE,
+            cpu=None,
+            mem_used=last.mem_used if last else None,
+            mem_limit=last.mem_limit if last else None,
+            pids=last.pids if last else None,
+            ok_at=last.ok_at if last else None,
+            error=error,
+        )
+
+    def tick(self) -> List[Row]:
+        now = self._clock()
+        try:
+            listing = self._docker.list_all()
+        except DockerError as exc:
+            # The rows we had are better than none, but every figure on them is now suspect.
+            self.error = str(exc)
+            for fig in self.figures.values():
+                if fig.state != STOPPED:
+                    fig.state = STALE
+                    fig.error = self.error
+            return self.rows
+        self.error = ""
+        rows = rows_from_listing(listing)
+        current = {r.id for r in rows}
+        for gone in [cid for cid in self.figures if cid not in current]:
+            self.figures.pop(gone, None)
+            self._samples.pop(gone, None)
+        slow = ""   # set by the first timeout: the rest of this tick's reads are skipped (review F4)
+        for row in rows:
+            if not row.running:
+                # A stopped container has no stats, and its counters restart with it.
+                self._samples.pop(row.id, None)
+                self.figures[row.id] = Figures(STOPPED)
+                continue
+            if slow:
+                self._stale(row.id, f"skipped: {slow}")
+                continue
+            try:
+                cur = parse_stats(self._docker.stats(row.id))
+            except Timeout as exc:
+                slow = str(exc)
+                self._stale(row.id, slow)
+                continue
+            except DockerError as exc:
+                self._stale(row.id, str(exc))
+                continue
+            cpu = cpu_percent(self._samples.get(row.id), cur)
+            self._samples[row.id] = cur
+            self.figures[row.id] = Figures(
+                LIVE if cpu is not None else PENDING,
+                cpu=cpu,
+                mem_used=cur.mem_used,
+                mem_limit=cur.mem_limit,
+                pids=cur.pids,
+                ok_at=now,
+            )
+        self.rows = rows
+        self.ticked_at = now
+        return rows
+
+
+# --------------------------------------------------------------------------- text layout
+
+
+def human_bytes(n: int) -> str:
+    value = float(n)
+    for unit in ("B", "K", "M", "G", "T"):
+        if value < 1024 or unit == "T":
+            return f"{value:.0f}{unit}" if unit == "B" else f"{value:.1f}{unit}"
+        value /= 1024
+    return f"{value:.1f}T"
+
+
+def fmt_cpu(fig: Optional[Figures]) -> str:
+    if fig is None or fig.state == STOPPED:
+        return "-"
+    if fig.state == STALE:
+        return "stale"
+    if fig.state == PENDING or fig.cpu is None:
+        return "..."
+    return f"{fig.cpu:.1f}"
+
+
+def fmt_mem(fig: Optional[Figures]) -> str:
+    if fig is None or fig.state == STOPPED:
+        return "-"
+    if fig.mem_used is None or fig.mem_limit is None:
+        return "?"
+    text = f"{human_bytes(fig.mem_used)}/{human_bytes(fig.mem_limit)}"
+    return text + "?" if fig.state == STALE else text
+
+
+def fmt_pids(fig: Optional[Figures]) -> str:
+    if fig is None or fig.state == STOPPED:
+        return "-"
+    if fig.pids is None:
+        return "?"
+    return f"{fig.pids}?" if fig.state == STALE else str(fig.pids)
+
+
+COLUMNS = ("KIND", "NAME", "IMAGE", "STATUS", "CPU%", "MEM", "PIDS")
+_RIGHT = {"CPU%", "PIDS"}
+_SHRINK_ORDER = ("STATUS", "IMAGE", "NAME")  # what to squeeze first on a narrow terminal
+_MIN_COL = 4
+
+
+HERE = " (here)"   # appended to the name of the container zoo itself runs in
+
+
+def _cells(row: Row, fig: Optional[Figures], self_id: str = "") -> Tuple[str, ...]:
+    name = row.name + HERE if self_id and row.id == self_id else row.name
+    return (row.kind, name, row.image, row.status, fmt_cpu(fig), fmt_mem(fig), fmt_pids(fig))
+
+
+def _fit(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    return text[: max(width - 1, 0)] + "~"
+
+
+def layout(rows: List[Row], figures: Dict[str, Figures], width: int, self_id: str = "") -> List[str]:
+    """Header plus one line per row, every line at most `width` wide (spec req 6)."""
+    table = [COLUMNS] + [_cells(r, figures.get(r.id), self_id) for r in rows]
+    widths = [max(len(line[i]) for line in table) for i in range(len(COLUMNS))]
+    gap = 2
+    over = sum(widths) + gap * (len(COLUMNS) - 1) - width
+    for name in _SHRINK_ORDER:
+        if over <= 0:
+            break
+        i = COLUMNS.index(name)
+        give = min(over, widths[i] - _MIN_COL)
+        if give > 0:
+            widths[i] -= give
+            over -= give
+    lines = []
+    for line in table:
+        parts = []
+        for i, cell in enumerate(line):
+            cell = _fit(cell, widths[i])
+            parts.append(cell.rjust(widths[i]) if COLUMNS[i] in _RIGHT else cell.ljust(widths[i]))
+        lines.append((" " * gap).join(parts).rstrip()[:width])
+    return lines
+
+
+# --------------------------------------------------------------------------- curses view
+
+MIN_INTERVAL, MAX_INTERVAL = 0.5, 60.0
+CLI_MIN_INTERVAL = 0.1   # tests tick fast; a person never needs to
+
+HELP_LINES = (
+    "zoo keys",
+    "",
+    "  up/down, j/k      select a row",
+    "  g / G             first / last row",
+    "  PgUp / PgDn       page up / down",
+    "  a                 attach to the session's tmux (resumes a stopped one)",
+    "  e                 open a new shell in the running container",
+    "  x                 remove the selected container (asks first)",
+    "  + / -             refresh slower / faster",
+    "  r                 refresh now",
+    "  ?                 this help",
+    "  q, ctrl-c         quit (Esc cancels a picker, prompt or confirm)",
+    "",
+    "  any key closes this help",
+)
+
+FOOTER = "j/k select  +/- refresh  r now  ? help  q quit"
+NOTICE_SECONDS = 4.0
+
+
+def footer_text(actions: List[Tuple[str, str]], roster: bool = False) -> str:
+    keys = actions + (LAUNCH_KEYS if roster else [])
+    return "  ".join([f"{k} {label}" for k, label in keys] + [FOOTER])
+
+
+NO_ROSTER = "no primate roster here (launch needs a host checkout: ~/.zfuncs beside primates/)"
+
+
+def help_lines(roster: bool) -> Tuple[str, ...]:
+    if roster:
+        extra = ("  n                 start a primate from the roster",
+                 "  s                 start a session from the roster, optionally named")
+    else:
+        extra = (f"  n / s             unavailable: {NO_ROSTER}",)
+    return HELP_LINES[:3] + extra + HELP_LINES[3:]
+
+
+def aged(figures: Dict[str, Figures], now: float, stale_after: float) -> Dict[str, Figures]:
+    """The figures as the view should show them: a reading older than `stale_after` is stale even
+    if nothing failed — the daemon may simply have stopped answering (spec req 5)."""
+    out = {}
+    for cid, fig in figures.items():
+        if fig.state in (LIVE, PENDING) and fig.ok_at is not None and now - fig.ok_at > stale_after:
+            fig = Figures(STALE, fig.cpu, fig.mem_used, fig.mem_limit, fig.pids, fig.ok_at,
+                          error=f"last reading {now - fig.ok_at:.0f}s ago")
+        out[cid] = fig
+    return out
+
+
+def title_text(n: int, offset: int, body: int, interval: float, age: Optional[float], width: int) -> str:
+    """The title line. On a narrow terminal the optional parts go first — the row indicator stays,
+    because on a list taller than the screen it is the only thing saying where you are."""
+    keep = [f"zoo  {n} primate{'s' if n != 1 else ''}"]
+    if n > body:
+        keep.append(f"rows {offset + 1}-{min(offset + body, n)} of {n}")
+    optional = [f"refresh {interval:g}s"]
+    if age is not None:
+        optional.append(f"stats {age:.0f}s ago")
+    text = "  ".join(keep + optional)
+    while len(text) > width and optional:
+        optional.pop()
+        text = "  ".join(keep + optional)
+    return text
+
+
+def follow_selection(rows: List[Row], sel: int, selected_id: str) -> int:
+    """Where the selection is after rows changed: on the same container if it is still listed,
+    else at the clamped index (review F3). Rows re-sort every tick, so an index alone drifts."""
+    if selected_id:
+        for i, row in enumerate(rows):
+            if row.id == selected_id:
+                return i
+    return min(max(sel, 0), max(len(rows) - 1, 0))
+
+
+def stats_age(figures: Dict[str, Figures], now: float) -> Optional[float]:
+    times = [f.ok_at for f in figures.values() if f.ok_at is not None]
+    return max(now - max(times), 0.0) if times else None
+
+
+class View:
+    """The interactive loop. One thread: ticks the monitor when the interval elapses, reads a key
+    with a short timeout in between, and redraws only when something changed (spec req 22)."""
+
+    def __init__(self, scr, mon: Monitor, interval: float, clock: Callable[[], float] = time.monotonic,
+                 self_id: str = "", cli: Optional[str] = None, term: str = "xterm",
+                 roster: Optional[List[str]] = None, zfuncs: str = "", cwd: str = ""):
+        self.scr = scr
+        self.mon = mon
+        self.interval = interval
+        self.clock = clock
+        self.self_id = self_id
+        self.cli = cli
+        self.term = term
+        self.roster = roster or []
+        self.zfuncs = zfuncs
+        self.cwd = cwd
+        self.picker: Optional[dict] = None    # {"kind", "sel"} while choosing an image
+        self.prompt: Optional[dict] = None    # {"image", "text"} while naming a session
+        self.sel = 0
+        self.selected_id = ""   # the container under the highlight; the index follows it
+        self.offset = 0
+        self.help = False
+        self.confirm: Optional[Tuple[Row, str]] = None   # (row, prompt) while a kill awaits y/n
+        self.notice = ""
+        self.notice_at = -1e9
+        self.last_tick = -1e9
+        self.dirty = True
+
+    def selected(self) -> Optional[Row]:
+        rows = self.mon.rows
+        return rows[self.sel] if 0 <= self.sel < len(rows) else None
+
+    def say(self, text: str, now: float) -> None:
+        self.notice = text
+        self.notice_at = now
+        self.dirty = True
+
+    # -- loop
+
+    def run(self) -> int:
+        import curses
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        try:
+            curses.use_default_colors()
+        except curses.error:
+            pass
+        try:
+            curses.set_escdelay(25)   # Esc alone should not wait a second to be believed
+        except AttributeError:
+            pass
+        self.scr.keypad(True)
+        self.scr.timeout(100)
+        last_draw = -1e9
+        while True:
+            now = self.clock()
+            if now - self.last_tick >= self.interval:
+                self.tick(now)
+                now = self.clock()   # the readings are newer than `now`; an age must not be negative
+            if self.dirty or now - last_draw >= 1.0:
+                self.draw(now)
+                last_draw = now
+                self.dirty = False
+            key = self.scr.getch()
+            if key == -1:
+                continue
+            if self.handle(key, now) == "quit":
+                return 0
+            self.dirty = True
+
+    def tick(self, now: float) -> None:
+        self.mon.tick()
+        self.last_tick = now
+        self.dirty = True
+
+    def handle(self, key: int, now: float) -> Optional[str]:
+        import curses
+        if key == curses.KEY_RESIZE:
+            return None
+        if self.notice:
+            self.notice = ""
+        if self.help:
+            self.help = False
+            return None
+        if self.picker is not None:
+            return self.handle_picker(key, now)
+        if self.prompt is not None:
+            return self.handle_prompt(key, now)
+        if self.confirm is not None:
+            row, _ = self.confirm
+            self.confirm = None
+            if key == ord("y"):
+                try:
+                    self.say(kill(self.mon._docker, row, self.self_id), now)
+                except Refusal as exc:
+                    self.say(f"refused: {exc}", now)
+                except DockerError as exc:
+                    self.say(f"failed: {exc}", now)
+                self.tick(now)
+            else:
+                self.say(f"kept {row.kind} {row.name}", now)
+            return None
+        n = len(self.mon.rows)
+        if key == ord("q"):
+            return "quit"
+        if key == 27:
+            return None   # a bare Esc, or the head of a sequence ncurses does not know: not a quit (review F5)
+        if key in (ord("n"), ord("s")):
+            if not self.roster:
+                self.say(NO_ROSTER, now)
+            else:
+                self.picker = {"kind": PRIMATE if key == ord("n") else SESSION, "sel": 0}
+            return None
+        if key in (ord("x"), ord("a"), ord("e")):
+            row = self.selected()
+            offered = dict(actions_for(row, self.self_id, self.cli))
+            k = chr(key)
+            if k not in offered:
+                self.say(why_not(k, row, self.self_id, self.cli), now)
+            elif k == "x":
+                self.confirm = (row, confirm_kill_text(row))
+            else:
+                try:
+                    plan = attach if k == "a" else shell
+                    banner, argv = plan(self.mon._docker, row, self.self_id, self.cli, self.term)
+                except Refusal as exc:
+                    self.say(f"refused: {exc}", now)
+                    return None
+                except DockerError as exc:
+                    self.say(f"failed: {exc}", now)
+                    return None
+                rc, err = self.handoff(banner, argv)
+                self.say(err or f"{offered[k]} {row.name} ended (exit {rc}); back in zoo", self.clock())
+                self.tick(self.clock())
+            return None
+        moved = True
+        if key in (curses.KEY_UP, ord("k")):
+            self.sel -= 1
+        elif key in (curses.KEY_DOWN, ord("j")):
+            self.sel += 1
+        elif key in (curses.KEY_HOME, ord("g")):
+            self.sel = 0
+        elif key in (curses.KEY_END, ord("G")):
+            self.sel = n - 1
+        elif key == curses.KEY_PPAGE:
+            self.sel -= self.body_height()
+        elif key == curses.KEY_NPAGE:
+            self.sel += self.body_height()
+        else:
+            moved = False
+        if moved:
+            self.selected_id = ""   # the index is the user's choice now; _clamp records the new id
+        elif key in (ord("+"), ord("=")):
+            self.interval = min(MAX_INTERVAL, self.interval + 1.0)
+        elif key == ord("-"):
+            self.interval = max(MIN_INTERVAL, self.interval - 1.0)
+        elif key == ord("r"):
+            self.tick(now)
+        elif key == ord("?"):
+            self.help = True
+        return None
+
+    # -- launching
+
+    def handle_picker(self, key: int, now: float) -> None:
+        import curses
+        pk = self.picker
+        if key in (27, ord("q")):
+            self.picker = None
+            self.say("launch cancelled", now)
+        elif key in (curses.KEY_UP, ord("k")):
+            pk["sel"] = max(pk["sel"] - 1, 0)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            pk["sel"] = min(pk["sel"] + 1, len(self.roster) - 1)
+        elif key in (10, 13, curses.KEY_ENTER):
+            image = self.roster[pk["sel"]]
+            self.picker = None
+            if pk["kind"] == PRIMATE:
+                self.launch(PRIMATE, image, "")
+            else:
+                self.prompt = {"image": image, "text": ""}
+        return None
+
+    def handle_prompt(self, key: int, now: float) -> None:
+        import curses
+        pr = self.prompt
+        if key == 27:
+            self.prompt = None
+            self.say("launch cancelled", now)
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            pr["text"] = pr["text"][:-1]
+        elif key in (10, 13, curses.KEY_ENTER):
+            problem = name_problem(pr["text"])
+            if problem:
+                self.say(problem, now)
+                return None
+            self.prompt = None
+            self.launch(SESSION, pr["image"], pr["text"])
+        elif 32 <= key < 127 and chr(key) in NAME_CHARS and len(pr["text"]) < 64:
+            pr["text"] += chr(key)
+        return None
+
+    def launch(self, kind: str, image: str, name: str) -> None:
+        banner, argv = launch_plan(kind, self.zfuncs, image, name, self.cwd)
+        rc, err = self.handoff(banner, argv)
+        what = f"{kind} {image}" + (f" ({name})" if name else "")
+        self.say(err or f"{what} ended (exit {rc}); back in zoo", self.clock())
+        self.tick(self.clock())
+
+    def draw_picker(self, body: int, w: int) -> None:
+        import curses
+        pk = self.picker
+        what = "primate" if pk["kind"] == PRIMATE else "session"
+        self._put(2, f"Start a {what}: choose an image (Enter starts, Esc cancels)", curses.A_BOLD)
+        room = max(body - 1, 1)
+        offset = max(0, min(pk["sel"] - room + 1, len(self.roster) - room))
+        for i, image in enumerate(self.roster[offset: offset + room]):
+            self._put(3 + i, f"  {image}", curses.A_REVERSE if offset + i == pk["sel"] else 0)
+
+    def draw_prompt(self, w: int) -> None:
+        import curses
+        pr = self.prompt
+        self._put(2, f"Session name for {pr['image']} (Enter for the default "
+                     f"'{pr['image']}-session', Esc cancels):", curses.A_BOLD)
+        self._put(3, f"  {pr['text']}_")
+
+    # -- handing the terminal to a child
+
+    def handoff(self, banner: str, argv: List[str]) -> Tuple[int, str]:
+        """Leave curses, print why, run the child on the terminal, come back (spec 12-15, §2.5).
+
+        Exactly one process owns the terminal at a time: endwin() hands it back to shell mode
+        before the child starts, and the refresh() afterwards re-enters curses, restoring its
+        own tty modes wholesale — so a child that died in raw mode cannot leave zoo unreadable.
+        SIGINT is ignored meanwhile, as a shell does for its foreground job: ctrl-c is the
+        child's to handle, and never takes zoo down with it.
+        """
+        import curses
+        curses.endwin()
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        rc, err = -1, ""
+        try:
+            sys.stdout.write(banner + "\n")
+            sys.stdout.flush()
+            try:
+                rc = subprocess.call(argv, preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            except OSError as exc:
+                err = f"could not run {argv[0]}: {exc}"
+            if rc != 0 or err:
+                # Whatever the child said on its way out — a refusal, a docker error — is on the
+                # main screen right now and would be hidden the instant curses re-enters (review F2).
+                sys.stdout.write((err + "\n" if err else "") + f"[exit {rc}] press Enter to return to zoo\n")
+                sys.stdout.flush()
+                try:
+                    sys.stdin.readline()
+                except OSError:
+                    pass
+            return rc, err
+        finally:
+            signal.signal(signal.SIGINT, previous)
+            # The first refresh after endwin() re-enters curses and repaints the whole screen;
+            # a clearok() here was proven redundant by mutation (the suite stayed green without it).
+            self.scr.refresh()
+            self.dirty = True
+
+    # -- drawing
+
+    def body_height(self) -> int:
+        h, _ = self.scr.getmaxyx()
+        return max(h - 3, 1)   # title, column header, footer
+
+    def _clamp(self, n: int) -> None:
+        body = self.body_height()
+        rows = self.mon.rows
+        self.sel = follow_selection(rows, self.sel, self.selected_id)
+        self.selected_id = rows[self.sel].id if rows else ""
+        if self.sel < self.offset:
+            self.offset = self.sel
+        elif self.sel >= self.offset + body:
+            self.offset = self.sel - body + 1
+        self.offset = min(max(self.offset, 0), max(n - body, 0))
+
+    def _put(self, y: int, text: str, attr: int = 0) -> None:
+        import curses
+        h, w = self.scr.getmaxyx()
+        if y < 0 or y >= h or w < 2:
+            return
+        try:
+            # w-1: writing the last cell of a line makes curses wrap or complain.
+            self.scr.addnstr(y, 0, text.ljust(w - 1), w - 1, attr)
+        except curses.error:
+            pass
+
+    def title(self, now: float, n: int, width: int) -> str:
+        return title_text(n, self.offset, self.body_height(), self.interval,
+                          stats_age(self.mon.figures, now), width)
+
+    def draw(self, now: float) -> None:
+        import curses
+        h, w = self.scr.getmaxyx()
+        self.scr.erase()
+        rows = self.mon.rows
+        n = len(rows)
+        self._clamp(n)
+        if h < 4 or w < 12:
+            self._put(0, "zoo: terminal too small")
+            self.scr.noutrefresh()
+            curses.doupdate()
+            return
+        figures = aged(self.mon.figures, now, 2 * self.interval)
+        lines = layout(rows, figures, w - 1, self.self_id)
+        self._put(0, self.title(now, n, w - 1), curses.A_BOLD)
+        if self.mon.error:
+            self._put(0, f"daemon unreachable: {self.mon.error}", curses.A_BOLD | curses.A_REVERSE)
+        self._put(1, lines[0], curses.A_REVERSE)
+        body = self.body_height()
+        if self.help:
+            for i, text in enumerate(help_lines(bool(self.roster))[:body]):
+                self._put(2 + i, text)
+        elif self.picker is not None:
+            self.draw_picker(body, w)
+        elif self.prompt is not None:
+            self.draw_prompt(w)
+        elif self.confirm is not None:
+            # A volume name like claude-home must never be split at its hyphen.
+            wrapped = textwrap.wrap(self.confirm[1], max(w - 2, 10), break_on_hyphens=False)
+            for i, text in enumerate(wrapped[:body]):
+                self._put(2 + i, text, curses.A_BOLD)
+        elif n == 0:
+            self._put(2, "No primates." if not self.mon.error else "")
+        else:
+            for i, text in enumerate(lines[1 + self.offset: 1 + self.offset + body]):
+                self._put(2 + i, text, curses.A_REVERSE if self.offset + i == self.sel else 0)
+        if self.notice and now - self.notice_at < NOTICE_SECONDS:
+            self._put(h - 1, self.notice, curses.A_REVERSE)
+        else:
+            self.notice = ""
+            self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id, self.cli), bool(self.roster)))
+        self.scr.noutrefresh()
+        curses.doupdate()
+
+
+def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -> int:
+    """Own the terminal for the view's lifetime and hand it back exactly as found (spec req 20)."""
+    if not environ.get("TERM"):
+        print("zoo: TERM is not set, so there is no terminal to draw on; use --once for a plain frame",
+              file=stderr)
+        return 1
+    if not (stdin.isatty() and stdout.isatty()):
+        print("zoo: the interactive view needs a terminal; use --once for a plain frame", file=stderr)
+        return 1
+    try:
+        import curses
+        import termios
+    except ImportError as exc:
+        print(f"zoo: this python has no {exc.name} module; use --once for a plain frame", file=stderr)
+        return 1
+    # ZOO_MOUNTINFO is a test seam: the pty suite runs on a host and inside a primate alike, and
+    # must be able to exercise the "zoo is inside one of these" branch in both (spec req 28).
+    self_id = read_self_container_id(environ.get("ZOO_MOUNTINFO") or "/proc/self/mountinfo")
+    fd = stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        # curses.wrapper restores the terminal in its own finally, on KeyboardInterrupt too — the
+        # thing the zsh version's `always` block did not do. The termios restore below is the
+        # second line: it also covers whatever a child (tmux, a shell) may leave behind later.
+        cli = shutil.which("docker", path=environ.get("PATH"))
+        term = environ.get("TERM") or "xterm"
+        zfuncs = zfuncs_path(environ)
+        roster = read_roster(zfuncs)
+        return curses.wrapper(lambda scr: View(scr, mon, interval, self_id=self_id, cli=cli, term=term,
+                                               roster=roster, zfuncs=zfuncs, cwd=os.getcwd()).run())
+    except KeyboardInterrupt:
+        return 130
+    except curses.error as exc:
+        print(f"zoo: cannot start the terminal view: {exc}", file=stderr)
+        return 1
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+# --------------------------------------------------------------------------- entry point
+
+# The gap between the two readings `--once` takes so its CPU% is a real delta, not "...".
+ONCE_GAP = 0.5
+
+
+def once(mon: Monitor, width: int, stdout, stderr, sleep=time.sleep, self_id: str = "") -> int:
+    for attempt in (1, 2):
+        mon.tick()
+        if mon.error:
+            # Failed is not "found nothing": the two must never look alike (sdlc verify rules).
+            print(f"zoo: cannot list containers: {mon.error}", file=stderr)
+            return 1
+        if attempt == 1:
+            if not mon.rows:
+                print("No primates.", file=stdout)
+                return 0
+            sleep(ONCE_GAP)
+    for line in layout(mon.rows, mon.figures, width, self_id):
+        print(line, file=stdout)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="zoo",
+        description="An interactive manager for primates: the containers primate and "
+        "primate-session start.",
+    )
+    p.add_argument("--once", action="store_true",
+                   help=f"print one frame and exit (two readings {ONCE_GAP:.1f}s apart, so CPU%% is real)")
+    p.add_argument("-i", "--interval", type=float, default=2.0, metavar="SECONDS",
+                   help="seconds between refreshes (default 2)")
+    p.add_argument("--width", type=int, default=None, metavar="COLS",
+                   help="frame width for --once (default: the terminal's)")
+    p.add_argument("--version", action="version", version=f"zoo {__version__}")
+    return p
+
+
+def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[Transport] = None,
+         sleep=time.sleep, stdin=None) -> int:
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
+    stderr = sys.stderr if stderr is None else stderr
+    environ = os.environ if environ is None else environ
+    args = build_parser().parse_args(argv)
+    if args.interval < CLI_MIN_INTERVAL:
+        print(f"zoo: --interval must be at least {CLI_MIN_INTERVAL}s", file=stderr)
+        return 2
+    try:
+        transport = transport or unix_transport(socket_path(environ))
+    except DockerError as exc:
+        print(f"zoo: {exc}", file=stderr)
+        return 1
+    mon = Monitor(Docker(transport))
+    if args.once:
+        width = args.width or shutil.get_terminal_size(fallback=(120, 24)).columns
+        self_id = read_self_container_id(environ.get("ZOO_MOUNTINFO") or "/proc/self/mountinfo")
+        return once(mon, width, stdout, stderr, sleep=sleep, self_id=self_id)
+    return interactive(mon, args.interval, environ, stdin, stdout, stderr)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
