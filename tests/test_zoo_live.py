@@ -129,7 +129,10 @@ class LiveSessionTest(unittest.TestCase):
         self.sh.wait_screen(f"attach {NAME} ended", timeout=20)
         self.sh.wait_screen("KIND", timeout=20)
         self.sh.send("e")
-        self.sh.wait_screen("not its original terminal", timeout=20)
+        # The full banner exceeds 80 columns with a pid in the name and wraps mid-word on the real
+        # terminal; its wording is asserted by the hermetic pty suite. Here: that it began, and
+        # that a shell in the container followed.
+        self.sh.wait_screen("opening a new shell in session", timeout=20)
         time.sleep(2)
         self.sh.send("echo SHELL-IN-$(hostname)\r")
         self.sh.wait_screen(f"SHELL-IN-{IMAGE}", timeout=20)   # the launchers set --hostname <image>
