@@ -84,6 +84,31 @@ _wantnot "row 3 not marked then"     "$sel1" "> session  old"
 _want "row 3 marked when selected"   "$sel3" "> session  old"
 _want "no marker with 0"             "$(_zoo_frame "$rows" "" -1 3 0)" "  session  scratch"
 
+print -r -- "the table windows to the terminal, following the cursor:"
+# More primates than fit would scroll the alternate screen, after which every
+# cup 0 0 lands wrong — the same failure the image picker hit at 17 images on a
+# 24-line terminal. Reported from real use for the picker; this is the same bug
+# one screen over.
+many=""
+for i in 1 2 3 4 5 6; do many+="primate${US}box${i}${US}minion${US}Up 1 min${US}id${i}${US}0"$'\n'; done
+w="$(_zoo_frame "$many" "" -1 3 5 3)"
+_want    "shows the selected row"        "$w" "> primate  box5"
+_want    "and its neighbours"            "$w" "primate  box4"
+_wantnot "not rows outside the window"   "$w" "box1"
+_want    "marks what is above"           "$w" "⋯ 2 more above"
+_want    "marks what is below"           "$w" "⋯ 1 more below"
+_want    "counts ALL rows, not the window" "$w" "6 primates"
+n=$(print -r -- "$w" | grep -c "primate  box")
+if (( n == 3 )); then print -r -- "  ok   exactly 3 rows rendered"
+else print -r -- "  FAIL rendered $n rows, wanted 3" >&2; (( fails++ )); fi
+
+# max 0 means no window: --once and a pipe must still get everything.
+full="$(_zoo_frame "$many" "" -1 3 0 0)"
+nf=$(print -r -- "$full" | grep -c "primate  box")
+if (( nf == 6 )); then print -r -- "  ok   unwindowed when max is 0"
+else print -r -- "  FAIL unwindowed render gave $nf rows, wanted 6" >&2; (( fails++ )); fi
+_wantnot "and no markers then"           "$full" "more above"
+
 print -r -- "no legacy containers:"
 grep -v 'ddd4' "$FIX/sessions" > "$FIX/sessions2"
 out2="$(_out "$FIX/sessions2" "$FIX/managed" "$FIX/stats")"

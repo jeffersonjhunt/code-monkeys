@@ -814,8 +814,13 @@ function _zoo_rows() {
 # Renders one frame to stdout. Split from the loop so it can be diffed against a
 # fixture without a terminal.
 #   $1 ps rows  $2 stats rows  $3 stats age (-1 = none yet)  $4 tick  $5 selected row (0 = none)
+#   $6 max rows to show (0 = all)
+#
+# $6 exists so --once and a pipe still get every row while the interactive view is
+# windowed to the terminal. Truncating a piped frame to the height of a terminal
+# that is not there would answer a question nobody asked.
 function _zoo_frame() {
-  local __ps="$1" __st="$2" __age="$3" __tick="$4" __sel="${5:-0}"
+  local __ps="$1" __st="$2" __age="$3" __tick="$4" __sel="${5:-0}" __max="${6:-0}"
   local -A __cpu __mem __memp __pids
   local __line __id __rest
 
@@ -865,9 +870,23 @@ function _zoo_frame() {
     print -r -- "  no primates — start one with: primate <image>   or   primate-session <image> [name]"
   fi
 
+  # Window the table the way the picker windows the roster. More primates than fit
+  # scroll the alternate screen, and after that every cup 0 0 lands in the wrong
+  # place — the same failure the picker hit at 17 images on a 24-line terminal. The
+  # selected row is what must stay visible, so the window follows it.
+  local __first=1 __last=${#__rows}
+  if (( __max > 0 && ${#__rows} > __max )); then
+    __last=$__max
+    if (( __sel > __max )); then
+      __first=$(( __sel - __max + 1 )); __last=$__sel
+    fi
+  fi
+  (( __first > 1 )) && print -r -- "    ⋯ $(( __first - 1 )) more above"
+
   local __r __n=0
   for __r in "${__rows[@]}"; do
     (( __n++ ))
+    (( __n < __first || __n > __last )) && continue
     _zoo_field "$__r" || continue
     local __c="${__cpu[$ZOO_ID]:-—}" __m="${__mem[$ZOO_ID]:-—}"
     local __mp="${__memp[$ZOO_ID]:-—}" __p="${__pids[$ZOO_ID]:-—}"
@@ -878,12 +897,14 @@ function _zoo_frame() {
       "$__c" "$__m" "$__mp" "$__p"
   done
 
+  (( __last < ${#__rows} )) && print -r -- "    ⋯ $(( ${#__rows} - __last )) more below"
+
   print -r -- ""
   (( __legacy )) && print -r -- "note: a container above predates primate.managed; it is matched by primate.session until it is recycled."
   if (( ${#__rows} )); then
-    print -r -- " ↑↓ select   a resume   e shell   k kill   n new session   N new primate   q quit   ? help"
+    print -r -- " ↑↓ select   a resume   e shell   k kill   n new session   N new primate   q/esc quit   ? help"
   else
-    print -r -- " n new session   N new primate   q quit   r refresh   ? help"
+    print -r -- " n new session   N new primate   r refresh   q/esc quit   ? help"
   fi
 }
 
@@ -1022,23 +1043,45 @@ function _zoo_pick_image() {
     tput ed 2>/dev/null; read -k 1 2>/dev/null
     return 1
   fi
-  local __i=1 __key __seq __n __im
+  local __i=1 __key __seq __n __im __out
+  local __home="$(tput cup 0 0 2>/dev/null)" __ed="$(tput ed 2>/dev/null)"
+  # The table underneath may be taller than this menu, and 17 images plus chrome is
+  # 23 lines — enough to scroll a standard terminal, after which every cup 0 0 lands
+  # in the wrong place. Clear once on entry, then window the list to what fits.
+  tput clear 2>/dev/null
   while true; do
-    tput cup 0 0 2>/dev/null
-    print -r -- "zoo — $1"
-    print -r -- ""
+    local __lines=${LINES:-24}
+    local __vis=$(( __lines - 8 ))
+    (( __vis < 3 )) && __vis=3
+    (( __vis > ${#__imgs} )) && __vis=${#__imgs}
+    local __start=1
+    (( __i > __vis )) && __start=$(( __i - __vis + 1 ))
+    local __end=$(( __start + __vis - 1 ))
+
+    __out="zoo — $1
+"
     # The workspace is whatever zoo was started in, because that is what the
     # launchers mount. Worth showing before starting something, not after.
-    print -r -- "  workspace to mount: $(pwd)"
-    print -r -- ""
+    __out+="
+  workspace to mount: $(pwd)
+"
+    (( __start > 1 )) && __out+="    ⋯ ${__start} more above
+" || __out+="
+"
     __n=0
     for __im in "${__imgs[@]}"; do
       (( __n++ ))
-      if (( __n == __i )); then print -r -- "  > ${__im}"; else print -r -- "    ${__im}"; fi
+      (( __n < __start || __n > __end )) && continue
+      if (( __n == __i )); then __out+="  > ${__im}
+"; else __out+="    ${__im}
+"; fi
     done
-    print -r -- ""
-    print -r -- " ↑↓ choose   enter start   esc / q cancel"
-    tput ed 2>/dev/null
+    (( __end < ${#__imgs} )) && __out+="    ⋯ $(( ${#__imgs} - __end )) more below
+"
+    __out+="
+ ↑↓ choose   enter start   esc / q cancel"
+    print -rn -- "${__home}${__out}
+${__ed}"
     read -k 1 __key 2>/dev/null || return 1
     case "$__key" in
       $'\n'|$'\r') ZOO_PICK="${__imgs[$__i]}"; return 0 ;;
@@ -1069,6 +1112,8 @@ function _zoo_help() {
   print -r -- "  k    kill (asks)     e  open a NEW shell in the container"
   print -r -- "  n    new session     N  new foreground primate"
   print -r -- "  q    quit            r  refresh now         ?  this help"
+  print -r -- ""
+  print -r -- "  q, esc and ctrl-c all quit — whichever you reach for means leave."
   print -r -- ""
   print -r -- "  j/k are not bound to navigation: k is kill, and overloading it is"
   print -r -- "  how a navigation keystroke becomes a destructive one."
@@ -1125,6 +1170,17 @@ function zoo() {
   # still be running; a write into a directory that no longer exists creates nothing,
   # whereas a sample completing just after two files were deleted left an orphan in
   # /tmp on every such race.
+  # Job-control chatter belongs nowhere near a full-screen redraw: starting the
+  # background sampler otherwise flashes a job line over the table. local_options
+  # puts both back when the function returns.
+  setopt local_options no_monitor no_notify
+
+  # Fetched once. Emitting a frame as home + body + clear-to-end in ONE write is
+  # what stops the flicker: the previous code issued a write per print, so a
+  # dozen-line table was a dozen visible paint steps every tick.
+  local __HOME="$(tput cup 0 0 2>/dev/null)" __ED="$(tput ed 2>/dev/null)"
+  local __CLR="$(tput clear 2>/dev/null)"
+
   local __sd="$(mktemp -d)" __spid=0 __rc=0 __sel=1
   local __sf="${__sd}/stats"
   # Not a terminal, or asked for one frame: print it and leave. Keeps zoo usable
@@ -1182,9 +1238,11 @@ function zoo() {
       (( __sel > __nrows )) && __sel=$__nrows
       (( __nrows > 0 && __sel < 1 )) && __sel=1
 
-      tput cup 0 0 2>/dev/null
-      _zoo_frame "$__ps" "$__st" "$__age" "$__tick" "$__sel"
-      tput ed 2>/dev/null
+      # Room for the header, column head, blanks, the legacy note and the footer.
+      local __vis=$(( ${LINES:-24} - 8 ))
+      (( __vis < 3 )) && __vis=3
+      print -rn -- "${__HOME}$(_zoo_frame "$__ps" "$__st" "$__age" "$__tick" "$__sel" "$__vis")
+${__ED}"
 
       local __key=""
       read -t "$__tick" -k 1 __key 2>/dev/null
@@ -1198,6 +1256,9 @@ function zoo() {
         case "$__seq" in
           '[A') (( __sel > 1 )) && (( __sel-- )) ;;
           '[B') (( __sel < __nrows )) && (( __sel++ )) ;;
+          # A bare ESC is not an arrow. q, ESC and ctrl-c should all mean "leave",
+          # because a user reaching for any of them wants out, not a redraw.
+          '')   break ;;
         esac
         continue
       fi

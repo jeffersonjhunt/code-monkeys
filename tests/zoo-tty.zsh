@@ -233,5 +233,34 @@ _assert_ge "emits no alternate screen"  "$(( 1 - $(_count "$_esc_smcup") ))" 1
 if (( rc == 0 )); then print -r -- "  ok   still quits cleanly on q"
 else print -r -- "  FAIL exited $rc with no TERM" >&2; (( fails++ )); fi
 
+# Reported from real use: q worked, esc did not. A user reaching for q, esc or
+# ctrl-c wants out; esc used to fall through to a redraw because it is also the
+# first byte of an arrow sequence.
+print -r -- "q, esc and ctrl-c all quit:"
+( sleep 2; printf '\033'; sleep 3 ) | timeout 15 script -qec "$RUN" /dev/null > "$OUT" 2>&1
+rc=$?
+if (( rc == 0 )); then print -r -- "  ok   bare esc quits"
+else print -r -- "  FAIL esc did not quit (exit $rc)" >&2; (( fails++ )); fi
+_assert_ge "esc still left the alternate screen" "$(_count "$_esc_rmcup")" 1
+# An arrow, whose first byte is also ESC, must still be an arrow and NOT quit.
+( sleep 2; printf '\033[B'; sleep 1; printf 'q'; sleep 2 ) \
+  | timeout 20 script -qec "$RUN" /dev/null > "$OUT" 2>&1
+_assert_ge "an arrow is still an arrow, not a quit" "$(_count 'zoo ')" 2
+
+# Reported from real use: the picker was 23 lines against a 24-line terminal, so it
+# scrolled and every subsequent cup 0 0 landed in the wrong place.
+print -r -- "the picker fits a short terminal:"
+PD="$(mktemp -d)"; : > "$PD/sessions"; : > "$PD/managed"; : > "$PD/stats"
+PRUN="zsh -c 'stty rows 14 2>/dev/null
+  source ${ZF:A} >/dev/null 2>&1
+  _primate_roster() { for i in 1 2 3 4 5 6 7 8 9 10 11 12; do print -r -- zoo-img-\$i; done }
+  export ZOO_PS_SESSION_SOURCE=$PD/sessions ZOO_PS_MANAGED_SOURCE=$PD/managed ZOO_STATS_SOURCE=$PD/stats
+  zoo -i 1'"
+( sleep 2; printf 'n'; sleep 2; printf 'q'; sleep 1; printf 'q'; sleep 1 ) \
+  | timeout 25 script -qec "$PRUN" /dev/null > "$OUT" 2>&1
+_assert_ge "windows the list instead of overflowing" "$(_count 'more below')" 1
+_assert_ge "the cursor row is still shown"           "$(_count '> zoo-img-1')" 1
+rm -rf "$PD"
+
 if (( fails )); then print -r -- "FAILED ($fails)" >&2; exit 1; fi
 print -r -- "PASSED"
