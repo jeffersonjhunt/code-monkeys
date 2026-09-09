@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.1.0-U0"
+__version__ = "0.1.0-U1"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -398,6 +398,237 @@ def layout(rows: List[Row], figures: Dict[str, Figures], width: int) -> List[str
     return lines
 
 
+# --------------------------------------------------------------------------- curses view
+
+MIN_INTERVAL, MAX_INTERVAL = 0.5, 60.0
+CLI_MIN_INTERVAL = 0.1   # tests tick fast; a person never needs to
+
+HELP_LINES = (
+    "zoo keys",
+    "",
+    "  up/down, j/k      select a row",
+    "  g / G             first / last row",
+    "  PgUp / PgDn       page up / down",
+    "  + / -             refresh slower / faster",
+    "  r                 refresh now",
+    "  ?                 this help",
+    "  q, Esc, ctrl-c    quit",
+    "",
+    "  any key closes this help",
+)
+
+FOOTER = "j/k select  +/- refresh  r now  ? help  q quit"
+
+
+def aged(figures: Dict[str, Figures], now: float, stale_after: float) -> Dict[str, Figures]:
+    """The figures as the view should show them: a reading older than `stale_after` is stale even
+    if nothing failed — the daemon may simply have stopped answering (spec req 5)."""
+    out = {}
+    for cid, fig in figures.items():
+        if fig.state in (LIVE, PENDING) and fig.ok_at is not None and now - fig.ok_at > stale_after:
+            fig = Figures(STALE, fig.cpu, fig.mem_used, fig.mem_limit, fig.pids, fig.ok_at,
+                          error=f"last reading {now - fig.ok_at:.0f}s ago")
+        out[cid] = fig
+    return out
+
+
+def title_text(n: int, offset: int, body: int, interval: float, age: Optional[float], width: int) -> str:
+    """The title line. On a narrow terminal the optional parts go first — the row indicator stays,
+    because on a list taller than the screen it is the only thing saying where you are."""
+    keep = [f"zoo  {n} primate{'s' if n != 1 else ''}"]
+    if n > body:
+        keep.append(f"rows {offset + 1}-{min(offset + body, n)} of {n}")
+    optional = [f"refresh {interval:g}s"]
+    if age is not None:
+        optional.append(f"stats {age:.0f}s ago")
+    text = "  ".join(keep + optional)
+    while len(text) > width and optional:
+        optional.pop()
+        text = "  ".join(keep + optional)
+    return text
+
+
+def stats_age(figures: Dict[str, Figures], now: float) -> Optional[float]:
+    times = [f.ok_at for f in figures.values() if f.ok_at is not None]
+    return max(now - max(times), 0.0) if times else None
+
+
+class View:
+    """The interactive loop. One thread: ticks the monitor when the interval elapses, reads a key
+    with a short timeout in between, and redraws only when something changed (spec req 22)."""
+
+    def __init__(self, scr, mon: Monitor, interval: float, clock: Callable[[], float] = time.monotonic):
+        self.scr = scr
+        self.mon = mon
+        self.interval = interval
+        self.clock = clock
+        self.sel = 0
+        self.offset = 0
+        self.help = False
+        self.last_tick = -1e9
+        self.dirty = True
+
+    # -- loop
+
+    def run(self) -> int:
+        import curses
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        try:
+            curses.use_default_colors()
+        except curses.error:
+            pass
+        self.scr.keypad(True)
+        self.scr.timeout(100)
+        last_draw = -1e9
+        while True:
+            now = self.clock()
+            if now - self.last_tick >= self.interval:
+                self.tick(now)
+                now = self.clock()   # the readings are newer than `now`; an age must not be negative
+            if self.dirty or now - last_draw >= 1.0:
+                self.draw(now)
+                last_draw = now
+                self.dirty = False
+            key = self.scr.getch()
+            if key == -1:
+                continue
+            if self.handle(key, now) == "quit":
+                return 0
+            self.dirty = True
+
+    def tick(self, now: float) -> None:
+        self.mon.tick()
+        self.last_tick = now
+        self.dirty = True
+
+    def handle(self, key: int, now: float) -> Optional[str]:
+        import curses
+        if key == curses.KEY_RESIZE:
+            return None
+        if self.help:
+            self.help = False
+            return None
+        n = len(self.mon.rows)
+        if key in (ord("q"), 27):
+            return "quit"
+        if key in (curses.KEY_UP, ord("k")):
+            self.sel -= 1
+        elif key in (curses.KEY_DOWN, ord("j")):
+            self.sel += 1
+        elif key in (curses.KEY_HOME, ord("g")):
+            self.sel = 0
+        elif key in (curses.KEY_END, ord("G")):
+            self.sel = n - 1
+        elif key == curses.KEY_PPAGE:
+            self.sel -= self.body_height()
+        elif key == curses.KEY_NPAGE:
+            self.sel += self.body_height()
+        elif key in (ord("+"), ord("=")):
+            self.interval = min(MAX_INTERVAL, self.interval + 1.0)
+        elif key == ord("-"):
+            self.interval = max(MIN_INTERVAL, self.interval - 1.0)
+        elif key == ord("r"):
+            self.tick(now)
+        elif key == ord("?"):
+            self.help = True
+        return None
+
+    # -- drawing
+
+    def body_height(self) -> int:
+        h, _ = self.scr.getmaxyx()
+        return max(h - 3, 1)   # title, column header, footer
+
+    def _clamp(self, n: int) -> None:
+        body = self.body_height()
+        self.sel = min(max(self.sel, 0), max(n - 1, 0))
+        if self.sel < self.offset:
+            self.offset = self.sel
+        elif self.sel >= self.offset + body:
+            self.offset = self.sel - body + 1
+        self.offset = min(max(self.offset, 0), max(n - body, 0))
+
+    def _put(self, y: int, text: str, attr: int = 0) -> None:
+        import curses
+        h, w = self.scr.getmaxyx()
+        if y < 0 or y >= h or w < 2:
+            return
+        try:
+            # w-1: writing the last cell of a line makes curses wrap or complain.
+            self.scr.addnstr(y, 0, text.ljust(w - 1), w - 1, attr)
+        except curses.error:
+            pass
+
+    def title(self, now: float, n: int, width: int) -> str:
+        return title_text(n, self.offset, self.body_height(), self.interval,
+                          stats_age(self.mon.figures, now), width)
+
+    def draw(self, now: float) -> None:
+        import curses
+        h, w = self.scr.getmaxyx()
+        self.scr.erase()
+        rows = self.mon.rows
+        n = len(rows)
+        self._clamp(n)
+        if h < 4 or w < 12:
+            self._put(0, "zoo: terminal too small")
+            self.scr.noutrefresh()
+            curses.doupdate()
+            return
+        figures = aged(self.mon.figures, now, 2 * self.interval)
+        lines = layout(rows, figures, w - 1)
+        self._put(0, self.title(now, n, w - 1), curses.A_BOLD)
+        if self.mon.error:
+            self._put(0, f"daemon unreachable: {self.mon.error}", curses.A_BOLD | curses.A_REVERSE)
+        self._put(1, lines[0], curses.A_REVERSE)
+        body = self.body_height()
+        if self.help:
+            for i, text in enumerate(HELP_LINES[:body]):
+                self._put(2 + i, text)
+        elif n == 0:
+            self._put(2, "No primates." if not self.mon.error else "")
+        else:
+            for i, text in enumerate(lines[1 + self.offset: 1 + self.offset + body]):
+                self._put(2 + i, text, curses.A_REVERSE if self.offset + i == self.sel else 0)
+        self._put(h - 1, FOOTER)
+        self.scr.noutrefresh()
+        curses.doupdate()
+
+
+def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -> int:
+    """Own the terminal for the view's lifetime and hand it back exactly as found (spec req 20)."""
+    if not environ.get("TERM"):
+        print("zoo: TERM is not set, so there is no terminal to draw on; use --once for a plain frame",
+              file=stderr)
+        return 1
+    if not (stdin.isatty() and stdout.isatty()):
+        print("zoo: the interactive view needs a terminal; use --once for a plain frame", file=stderr)
+        return 1
+    try:
+        import curses
+        import termios
+    except ImportError as exc:
+        print(f"zoo: this python has no {exc.name} module; use --once for a plain frame", file=stderr)
+        return 1
+    fd = stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        # curses.wrapper restores the terminal in its own finally, on KeyboardInterrupt too — the
+        # thing the zsh version's `always` block did not do. The termios restore below is the
+        # second line: it also covers whatever a child (tmux, a shell) may leave behind later.
+        return curses.wrapper(lambda scr: View(scr, mon, interval).run())
+    except KeyboardInterrupt:
+        return 130
+    except curses.error as exc:
+        print(f"zoo: cannot start the terminal view: {exc}", file=stderr)
+        return 1
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
 # --------------------------------------------------------------------------- entry point
 
 # The gap between the two readings `--once` takes so its CPU% is a real delta, not "...".
@@ -438,10 +669,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[Transport] = None,
-         sleep=time.sleep) -> int:
+         sleep=time.sleep, stdin=None) -> int:
+    stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
+    environ = os.environ if environ is None else environ
     args = build_parser().parse_args(argv)
+    if args.interval < CLI_MIN_INTERVAL:
+        print(f"zoo: --interval must be at least {CLI_MIN_INTERVAL}s", file=stderr)
+        return 2
     try:
         transport = transport or unix_transport(socket_path(environ))
     except DockerError as exc:
@@ -451,8 +687,7 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
     if args.once:
         width = args.width or shutil.get_terminal_size(fallback=(120, 24)).columns
         return once(mon, width, stdout, stderr, sleep=sleep)
-    print("zoo: the interactive view is not built yet (U0 of feat/zoo-py); use --once", file=stderr)
-    return 2
+    return interactive(mon, args.interval, environ, stdin, stdout, stderr)
 
 
 if __name__ == "__main__":

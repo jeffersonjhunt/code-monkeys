@@ -376,10 +376,65 @@ class OnceTest(unittest.TestCase):
         self.assertEqual((rc, out.getvalue()), (1, ""))
         self.assertIn("zoo: cannot list containers", err.getvalue())
 
-    def test_interactive_mode_is_declared_missing_in_u0(self):
-        rc, out, err = self.run_main([], FakeDaemon())
+    def test_interval_has_a_floor(self):
+        rc, out, err = self.run_main(["-i", "0.01", "--once"], FakeDaemon())
         self.assertEqual((rc, out), (2, ""))
-        self.assertIn("not built yet", err)
+        self.assertIn("--interval", err)
+
+
+class InteractiveRefusalTest(unittest.TestCase):
+    """The curses view itself is exercised through a pty in test_zoo_tty.py; here only the two
+    refusals that must happen before curses is touched (spec req 28: TERM set and unset)."""
+
+    def run_main(self, environ):
+        out, err = io.StringIO(), io.StringIO()
+        rc = zoo.main([], stdin=io.StringIO(), stdout=out, stderr=err, environ=environ,
+                      transport=FakeDaemon())
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_no_term_is_refused_before_curses(self):
+        rc, out, err = self.run_main({})
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("TERM is not set", err)
+
+    def test_no_tty_is_refused_before_curses(self):
+        rc, out, err = self.run_main({"TERM": "xterm-256color"})
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("needs a terminal", err)
+
+
+class AgedTest(unittest.TestCase):
+    def test_an_old_reading_is_shown_stale_even_if_nothing_failed(self):
+        figs = {
+            "fresh": zoo.Figures(zoo.LIVE, cpu=1.0, mem_used=1, mem_limit=2, pids=3, ok_at=99.0),
+            "old": zoo.Figures(zoo.LIVE, cpu=1.0, mem_used=1, mem_limit=2, pids=3, ok_at=90.0),
+            "pending-old": zoo.Figures(zoo.PENDING, mem_used=1, mem_limit=2, pids=3, ok_at=90.0),
+            "stopped": zoo.Figures(zoo.STOPPED),
+        }
+        shown = zoo.aged(figs, now=100.0, stale_after=4.0)
+        self.assertEqual(shown["fresh"].state, zoo.LIVE)
+        self.assertEqual(shown["old"].state, zoo.STALE)
+        self.assertEqual((shown["old"].mem_used, shown["old"].pids), (1, 3))   # numbers kept
+        self.assertIn("10s ago", shown["old"].error)
+        self.assertEqual(shown["pending-old"].state, zoo.STALE)
+        self.assertEqual(shown["stopped"].state, zoo.STOPPED)
+        self.assertEqual(figs["old"].state, zoo.LIVE)   # the monitor's own record is untouched
+
+    def test_title_drops_optional_parts_before_the_row_indicator(self):
+        full = zoo.title_text(40, 0, 21, 0.2, 3.0, 120)
+        self.assertEqual(full, "zoo  40 primates  rows 1-21 of 40  refresh 0.2s  stats 3s ago")
+        self.assertEqual(zoo.title_text(40, 0, 21, 0.2, 3.0, 50), "zoo  40 primates  rows 1-21 of 40  refresh 0.2s")
+        self.assertEqual(zoo.title_text(40, 0, 21, 0.2, 3.0, 40), "zoo  40 primates  rows 1-21 of 40")
+        self.assertEqual(zoo.title_text(40, 19, 21, 0.2, 3.0, 20), "zoo  40 primates  rows 20-40 of 40")  # never dropped
+        self.assertEqual(zoo.title_text(1, 0, 21, 2.0, None, 80), "zoo  1 primate  refresh 2s")
+        self.assertEqual(zoo.title_text(0, 0, 21, 2.0, None, 80), "zoo  0 primates  refresh 2s")
+
+    def test_stats_age_is_the_newest_reading_or_none(self):
+        self.assertIsNone(zoo.stats_age({}, 100.0))
+        self.assertIsNone(zoo.stats_age({"a": zoo.Figures(zoo.STOPPED)}, 100.0))
+        figs = {"a": zoo.Figures(zoo.LIVE, ok_at=90.0), "b": zoo.Figures(zoo.LIVE, ok_at=97.0)}
+        self.assertEqual(zoo.stats_age(figs, 100.0), 3.0)
+        self.assertEqual(zoo.stats_age(figs, 96.5), 0.0)   # a reading newer than the clock is 0, not -0
 
 
 if __name__ == "__main__":
