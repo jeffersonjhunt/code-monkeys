@@ -37,6 +37,11 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 ZOO = ROOT / "bin" / "zoo"
 
 SMCUP, RMCUP = b"\x1b[?1049h", b"\x1b[?1049l"
+
+
+def has_row(screen, name):
+    """A row for `name` is on screen: '<kind>  <name>  ...' regardless of column widths."""
+    return any(re.match(rf"^(session|primate)\s+{re.escape(name)}(\s|$)", line) for line in screen.text())
 CIVIS, CNORM = b"\x1b[?25l", b"\x1b[?25h"
 PROMPT = "@Z@ "
 PROMPT_RE = re.compile(rb"(?:^|[\r\n])@Z@ ")
@@ -79,10 +84,29 @@ class DaemonState:
         self.reads = 0
         self.requests = []
 
+    def find(self, id_):
+        return next((c for c in self.containers if c["Id"] == id_), None)
+
+    def deletes(self):
+        return [path for method, path in self.requests if method == "DELETE"]
+
 
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     STATS_RE = re.compile(r"^/containers/([0-9a-f]{64})/stats\?stream=false&one-shot=true$")
+    INSPECT_RE = re.compile(r"^/containers/([0-9a-f]{64})/json$")
+    DELETE_RE = re.compile(r"^/containers/([0-9a-f]{64})\?force=true$")
+
+    def do_DELETE(self):
+        st = self.server.state
+        st.requests.append(("DELETE", self.path))
+        m = self.DELETE_RE.match(self.path)
+        c = st.find(m.group(1)) if m else None
+        if c is None:
+            return self._reply(404, {"message": "No such container"})
+        st.containers.remove(c)
+        self.send_response(204)
+        self.end_headers()
 
     def log_message(self, *args):
         pass
@@ -102,6 +126,14 @@ class _Handler(BaseHTTPRequestHandler):
             return self._reply(500, {"message": "daemon down (fake)"})
         if self.path == "/containers/json?all=true":
             return self._reply(200, st.containers)
+        m = self.INSPECT_RE.match(self.path)
+        if m:
+            c = st.find(m.group(1))
+            if c is None:
+                return self._reply(404, {"message": "No such container"})
+            return self._reply(200, {"Id": c["Id"], "Name": c["Names"][0],
+                                     "Config": {"Image": c["Image"], "Labels": c["Labels"]},
+                                     "State": {"Status": c["State"], "Running": c["State"] == "running"}})
         if self.STATS_RE.match(self.path):
             if not st.stats_ok:
                 return self._reply(500, {"message": "stats broken (fake)"})
@@ -301,6 +333,14 @@ class Shell:
                 raise AssertionError(f"{needle!r} never appeared on screen:\n" + "\n".join(self.screen.text()))
             self._read(min(remaining, 0.2))
 
+    def wait_until(self, pred, what, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while not pred(self.screen):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(f"{what} never happened on screen:\n" + "\n".join(self.screen.text()))
+            self._read(min(remaining, 0.2))
+
     def wait_screen_gone(self, needle, timeout=10.0):
         deadline = time.monotonic() + timeout
         while needle in self.screen:
@@ -365,6 +405,7 @@ class Shell:
 @unittest.skipUnless(shutil.which("zsh"), "SKIPPED: zsh is not installed, so the pty suite cannot run")
 class TtyTest(unittest.TestCase):
     fixture = staticmethod(fixture_small)
+    extra_env = {}
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -381,6 +422,8 @@ class TtyTest(unittest.TestCase):
             "PATH": f"{home / 'bin'}:{pathlib.Path(sys.executable).parent}:/usr/bin:/bin",
             "DOCKER_HOST": f"unix://{sock}",
         }
+        for key, value in self.extra_env.items():
+            env[key] = value.replace("{home}", str(home))
         self.sh = Shell(env)
         self.sh.send(f"PROMPT='{PROMPT}'\r")
         self.sh.expect(PROMPT_RE)
@@ -464,6 +507,59 @@ class TtyTest(unittest.TestCase):
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
+    def wait_for_delete(self, id_, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        path = f"/containers/{id_}?force=true"
+        while path not in self.state.deletes():
+            if time.monotonic() > deadline:
+                raise AssertionError(f"no DELETE for {id_[:12]}; requests: {self.state.requests[-6:]}")
+            self.sh._read(0.1)
+
+    def test_kill_asks_first_and_removes_only_on_y(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send("j")                        # build (stopped) is first; evoc second
+        self.sh.send("x")
+        self.sh.wait_screen("Remove session 'evoc'")
+        self.sh.wait_screen("claude-home survives")
+        self.sh.send("n")
+        self.sh.wait_screen("kept session evoc")
+        self.sh.wait_screen_gone("Remove session")
+        self.assertEqual(self.state.deletes(), [])
+        self.sh.send("x")
+        self.sh.wait_screen("Remove session 'evoc'")
+        self.sh.send("y")
+        self.wait_for_delete(cid("aa"))
+        self.sh.wait_screen("removed session evoc; volume claude-home kept")
+        self.sh.wait_until(lambda scr: not has_row(scr, "evoc"), "the evoc row disappearing")
+        self.assertEqual(self.state.deletes(), [f"/containers/{cid('aa')}?force=true"])
+        self.assertIn("scratch", self.sh.screen)  # the neighbour is untouched
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_kill_refuses_a_session_recreated_under_the_same_name(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send("j")
+        self.sh.send("x")
+        self.sh.wait_screen("Remove session 'evoc'")
+        # While the prompt waits, evoc is destroyed and recreated with a new id (spec §7.3).
+        self.state.containers.remove(self.state.find(cid("aa")))
+        self.state.containers.append(session("evoc", "a1"))
+        self.sh.send("y")
+        self.sh.wait_screen("refused: session evoc is gone")
+        self.assertEqual(self.state.deletes(), [])
+        self.assertIsNotNone(self.state.find(cid("a1")))
+        # The new container is killable on a fresh selection, so the refusal was about the id.
+        self.sh.wait_until(lambda scr: has_row(scr, "evoc"), "the recreated evoc row")
+        self.sh.send("x")
+        self.sh.wait_screen("Remove session 'evoc'")
+        self.sh.send("y")
+        self.wait_for_delete(cid("a1"))
+        self.assertEqual(self.state.deletes(), [f"/containers/{cid('a1')}?force=true"])
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
     def test_daemon_trouble_is_shown_not_blank(self):
         self.start_zoo()
         self.sh.wait_screen("evoc")
@@ -480,6 +576,44 @@ class TtyTest(unittest.TestCase):
         self.sh.wait_screen("40.0")
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
+
+
+class InsideAContainerTtyTest(TtyTest):
+    """zoo running inside one of the rows: the row is marked, and it can never be its own target."""
+    extra_env = {"ZOO_MOUNTINFO": "{home}/mountinfo"}
+
+    def setUp(self):
+        super().setUp()
+
+    def test_own_row_is_marked_and_cannot_be_killed(self):
+        mountinfo = pathlib.Path(self.tmp.name) / "mountinfo"
+        mountinfo.write_text(
+            "1250 1234 254:1 /docker/containers/" + cid("bb") + "/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n")
+        self.start_zoo()
+        self.sh.wait_screen("scratch (here)")
+        self.sh.wait_screen("x kill")            # build is selected first, and is killable
+        self.sh.send("G")                        # scratch sorts last
+        self.sh.wait_screen_gone("x kill")       # the footer changed for the row zoo runs in
+        self.sh.send("x")
+        self.sh.wait_screen("scratch is the container zoo is running in")
+        self.assertEqual(self.state.deletes(), [])
+        self.sh.send("k")                        # evoc, one up: still killable
+        self.sh.wait_screen("x kill")
+        self.sh.send("x")
+        self.sh.wait_screen("Remove session 'evoc'")
+        self.sh.send("y")
+        self.wait_for_delete(cid("aa"))
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    test_frame_shows_states_and_hides_the_unlabelled = None
+    test_daemon_trouble_is_shown_not_blank = None
+    test_help_opens_and_closes_and_interval_keys_work = None
+    test_q_quits_and_restores_the_terminal = None
+    test_ctrl_c_quits_and_restores_the_terminal = None
+    test_without_term_zoo_refuses_before_touching_the_screen = None
+    test_kill_asks_first_and_removes_only_on_y = None
+    test_kill_refuses_a_session_recreated_under_the_same_name = None
 
 
 class LongListTtyTest(TtyTest):
@@ -518,6 +652,8 @@ class LongListTtyTest(TtyTest):
     test_q_quits_and_restores_the_terminal = None
     test_ctrl_c_quits_and_restores_the_terminal = None
     test_without_term_zoo_refuses_before_touching_the_screen = None
+    test_kill_asks_first_and_removes_only_on_y = None
+    test_kill_refuses_a_session_recreated_under_the_same_name = None
 
 
 if __name__ == "__main__":

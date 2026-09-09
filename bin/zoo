@@ -26,14 +26,16 @@ import argparse
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import sys
+import textwrap
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.1.0-U1"
+__version__ = "0.1.0-U2"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -140,6 +142,10 @@ class Docker:
     def stats(self, cid: str) -> dict:
         return self._json("GET", f"/containers/{cid}{STATS_QUERY}")
 
+    def remove(self, cid: str) -> None:
+        """docker rm -f. Named volumes are never removed by this, so <image>-home survives."""
+        self._json("DELETE", f"/containers/{cid}?force=true")
+
 
 # --------------------------------------------------------------------------- rows
 
@@ -189,6 +195,106 @@ def rows_from_listing(listing: list) -> List[Row]:
     # foreground primates of one image keep a stable order between ticks.
     rows.sort(key=lambda r: (r.kind != SESSION, r.name, r.id))
     return rows
+
+
+# --------------------------------------------------------------------------- identity
+
+
+def row_from_inspect(doc: dict) -> Row:
+    """The same Row, from /containers/{id}/json — what verify_target reads at the moment of action."""
+    labels = (doc.get("Config") or {}).get("Labels") or {}
+    state = doc.get("State") or {}
+    return row_from_listing({
+        "Id": doc.get("Id") or "",
+        "Names": [doc.get("Name") or ""],
+        "Image": (doc.get("Config") or {}).get("Image") or "",
+        "Labels": labels,
+        "State": state.get("Status") or "",
+        "Status": state.get("Status") or "",
+    })
+
+
+_CONTAINER_ID_RE = re.compile(r"/containers/([0-9a-f]{64})/")
+
+
+def self_container_id(mountinfo: str) -> str:
+    """The 64-character id of the container this process runs in, or "" on a host.
+
+    Docker bind-mounts /etc/hostname, /etc/hosts and /etc/resolv.conf from
+    .../containers/<id>/, so that path names the container itself. Nothing looser: a bare
+    64-hex match would also fit an overlay layer id, and a wrong self id is worse than none —
+    the guard would look present and match nothing (spec §7.3).
+    """
+    m = _CONTAINER_ID_RE.search(mountinfo)
+    return m.group(1) if m else ""
+
+
+def read_self_container_id(path: str = "/proc/self/mountinfo") -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return self_container_id(fh.read())
+    except OSError:
+        return ""   # a host: no mountinfo, or none that names a container
+
+
+class Refusal(Exception):
+    """An action zoo will not take, with the reason to show the user (spec req 26)."""
+
+
+def verify_target(docker: Docker, row: Row, self_id: str) -> Row:
+    """Re-inspect the selected container immediately before acting on it (spec req 25).
+
+    Selection happened earlier; a confirm prompt may have sat open for an hour. The id is
+    what was selected, so a session destroyed and recreated under the same name is simply gone
+    (404), never silently substituted. Returns the fresh Row; raises Refusal otherwise.
+    """
+    if len(row.id) < 12:
+        raise Refusal("nothing usable is selected")
+    if self_id and row.id == self_id:
+        raise Refusal(f"{row.name} is the container zoo is running in")
+    try:
+        doc = docker.inspect(row.id)
+    except NotFound:
+        raise Refusal(f"{row.kind} {row.name} is gone: container {row.id[:12]} no longer exists")
+    except DockerError as exc:
+        raise Refusal(f"cannot verify {row.name}: {exc}")
+    labels = (doc.get("Config") or {}).get("Labels") or {}
+    if not is_primate(labels):
+        raise Refusal(f"{row.name} ({row.id[:12]}) is no longer labelled as a primate")
+    fresh = row_from_inspect(doc)
+    if fresh.id != row.id:
+        raise Refusal(f"container {row.id[:12]} answered as {fresh.id[:12]}")
+    if fresh.kind != row.kind:
+        raise Refusal(f"{row.name} is now a {fresh.kind}, not a {row.kind}")
+    if fresh.name != row.name:
+        raise Refusal(f"container {row.id[:12]} is now named {fresh.name}, not {row.name}")
+    return fresh
+
+
+def confirm_kill_text(row: Row) -> str:
+    """What is destroyed, what survives (spec req 17)."""
+    what = f"{'stopped ' if not row.running else ''}{row.kind} '{row.name}' ({row.image}, {row.status})"
+    if row.kind == SESSION:
+        detail = ("The container and the tmux server inside it are destroyed; it can no longer be "
+                  "resumed." if row.running else "It can no longer be resumed.")
+    else:
+        detail = ("This is a foreground container: the terminal it is running in loses its shell."
+                  if row.running else "")
+    return (f"Remove {what}?  {detail}  The home volume {row.image}-home survives.  "
+            "[y to remove, any other key to keep it]")
+
+
+def kill(docker: Docker, row: Row, self_id: str) -> str:
+    fresh = verify_target(docker, row, self_id)
+    docker.remove(fresh.id)
+    return f"removed {fresh.kind} {fresh.name}; volume {fresh.image}-home kept"
+
+
+def actions_for(row: Optional[Row], self_id: str) -> List[Tuple[str, str]]:
+    """The keys that do something for this row — and only those (spec req 18)."""
+    if row is None or (self_id and row.id == self_id):
+        return []
+    return [("x", "kill")]
 
 
 # --------------------------------------------------------------------------- samples
@@ -364,8 +470,12 @@ _SHRINK_ORDER = ("STATUS", "IMAGE", "NAME")  # what to squeeze first on a narrow
 _MIN_COL = 4
 
 
-def _cells(row: Row, fig: Optional[Figures]) -> Tuple[str, ...]:
-    return (row.kind, row.name, row.image, row.status, fmt_cpu(fig), fmt_mem(fig), fmt_pids(fig))
+HERE = " (here)"   # appended to the name of the container zoo itself runs in
+
+
+def _cells(row: Row, fig: Optional[Figures], self_id: str = "") -> Tuple[str, ...]:
+    name = row.name + HERE if self_id and row.id == self_id else row.name
+    return (row.kind, name, row.image, row.status, fmt_cpu(fig), fmt_mem(fig), fmt_pids(fig))
 
 
 def _fit(text: str, width: int) -> str:
@@ -374,9 +484,9 @@ def _fit(text: str, width: int) -> str:
     return text[: max(width - 1, 0)] + "~"
 
 
-def layout(rows: List[Row], figures: Dict[str, Figures], width: int) -> List[str]:
+def layout(rows: List[Row], figures: Dict[str, Figures], width: int, self_id: str = "") -> List[str]:
     """Header plus one line per row, every line at most `width` wide (spec req 6)."""
-    table = [COLUMNS] + [_cells(r, figures.get(r.id)) for r in rows]
+    table = [COLUMNS] + [_cells(r, figures.get(r.id), self_id) for r in rows]
     widths = [max(len(line[i]) for line in table) for i in range(len(COLUMNS))]
     gap = 2
     over = sum(widths) + gap * (len(COLUMNS) - 1) - width
@@ -409,6 +519,7 @@ HELP_LINES = (
     "  up/down, j/k      select a row",
     "  g / G             first / last row",
     "  PgUp / PgDn       page up / down",
+    "  x                 remove the selected container (asks first)",
     "  + / -             refresh slower / faster",
     "  r                 refresh now",
     "  ?                 this help",
@@ -418,6 +529,11 @@ HELP_LINES = (
 )
 
 FOOTER = "j/k select  +/- refresh  r now  ? help  q quit"
+NOTICE_SECONDS = 4.0
+
+
+def footer_text(actions: List[Tuple[str, str]]) -> str:
+    return "  ".join([f"{k} {label}" for k, label in actions] + [FOOTER])
 
 
 def aged(figures: Dict[str, Figures], now: float, stale_after: float) -> Dict[str, Figures]:
@@ -457,15 +573,29 @@ class View:
     """The interactive loop. One thread: ticks the monitor when the interval elapses, reads a key
     with a short timeout in between, and redraws only when something changed (spec req 22)."""
 
-    def __init__(self, scr, mon: Monitor, interval: float, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, scr, mon: Monitor, interval: float, clock: Callable[[], float] = time.monotonic,
+                 self_id: str = ""):
         self.scr = scr
         self.mon = mon
         self.interval = interval
         self.clock = clock
+        self.self_id = self_id
         self.sel = 0
         self.offset = 0
         self.help = False
+        self.confirm: Optional[Tuple[Row, str]] = None   # (row, prompt) while a kill awaits y/n
+        self.notice = ""
+        self.notice_at = -1e9
         self.last_tick = -1e9
+        self.dirty = True
+
+    def selected(self) -> Optional[Row]:
+        rows = self.mon.rows
+        return rows[self.sel] if 0 <= self.sel < len(rows) else None
+
+    def say(self, text: str, now: float) -> None:
+        self.notice = text
+        self.notice_at = now
         self.dirty = True
 
     # -- loop
@@ -508,12 +638,36 @@ class View:
         import curses
         if key == curses.KEY_RESIZE:
             return None
+        if self.notice:
+            self.notice = ""
         if self.help:
             self.help = False
+            return None
+        if self.confirm is not None:
+            row, _ = self.confirm
+            self.confirm = None
+            if key == ord("y"):
+                try:
+                    self.say(kill(self.mon._docker, row, self.self_id), now)
+                except Refusal as exc:
+                    self.say(f"refused: {exc}", now)
+                except DockerError as exc:
+                    self.say(f"failed: {exc}", now)
+                self.tick(now)
+            else:
+                self.say(f"kept {row.kind} {row.name}", now)
             return None
         n = len(self.mon.rows)
         if key in (ord("q"), 27):
             return "quit"
+        if key == ord("x"):
+            row = self.selected()
+            if ("x", "kill") not in actions_for(row, self.self_id):
+                self.say("nothing to remove here" if row is None else
+                         f"{row.name} is the container zoo is running in", now)
+            else:
+                self.confirm = (row, confirm_kill_text(row))
+            return None
         if key in (curses.KEY_UP, ord("k")):
             self.sel -= 1
         elif key in (curses.KEY_DOWN, ord("j")):
@@ -579,7 +733,7 @@ class View:
             curses.doupdate()
             return
         figures = aged(self.mon.figures, now, 2 * self.interval)
-        lines = layout(rows, figures, w - 1)
+        lines = layout(rows, figures, w - 1, self.self_id)
         self._put(0, self.title(now, n, w - 1), curses.A_BOLD)
         if self.mon.error:
             self._put(0, f"daemon unreachable: {self.mon.error}", curses.A_BOLD | curses.A_REVERSE)
@@ -588,12 +742,21 @@ class View:
         if self.help:
             for i, text in enumerate(HELP_LINES[:body]):
                 self._put(2 + i, text)
+        elif self.confirm is not None:
+            # A volume name like claude-home must never be split at its hyphen.
+            wrapped = textwrap.wrap(self.confirm[1], max(w - 2, 10), break_on_hyphens=False)
+            for i, text in enumerate(wrapped[:body]):
+                self._put(2 + i, text, curses.A_BOLD)
         elif n == 0:
             self._put(2, "No primates." if not self.mon.error else "")
         else:
             for i, text in enumerate(lines[1 + self.offset: 1 + self.offset + body]):
                 self._put(2 + i, text, curses.A_REVERSE if self.offset + i == self.sel else 0)
-        self._put(h - 1, FOOTER)
+        if self.notice and now - self.notice_at < NOTICE_SECONDS:
+            self._put(h - 1, self.notice, curses.A_REVERSE)
+        else:
+            self.notice = ""
+            self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id)))
         self.scr.noutrefresh()
         curses.doupdate()
 
@@ -613,13 +776,16 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
     except ImportError as exc:
         print(f"zoo: this python has no {exc.name} module; use --once for a plain frame", file=stderr)
         return 1
+    # ZOO_MOUNTINFO is a test seam: the pty suite runs on a host and inside a primate alike, and
+    # must be able to exercise the "zoo is inside one of these" branch in both (spec req 28).
+    self_id = read_self_container_id(environ.get("ZOO_MOUNTINFO") or "/proc/self/mountinfo")
     fd = stdin.fileno()
     saved = termios.tcgetattr(fd)
     try:
         # curses.wrapper restores the terminal in its own finally, on KeyboardInterrupt too — the
         # thing the zsh version's `always` block did not do. The termios restore below is the
         # second line: it also covers whatever a child (tmux, a shell) may leave behind later.
-        return curses.wrapper(lambda scr: View(scr, mon, interval).run())
+        return curses.wrapper(lambda scr: View(scr, mon, interval, self_id=self_id).run())
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:
@@ -635,7 +801,7 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
 ONCE_GAP = 0.5
 
 
-def once(mon: Monitor, width: int, stdout, stderr, sleep=time.sleep) -> int:
+def once(mon: Monitor, width: int, stdout, stderr, sleep=time.sleep, self_id: str = "") -> int:
     for attempt in (1, 2):
         mon.tick()
         if mon.error:
@@ -647,7 +813,7 @@ def once(mon: Monitor, width: int, stdout, stderr, sleep=time.sleep) -> int:
                 print("No primates.", file=stdout)
                 return 0
             sleep(ONCE_GAP)
-    for line in layout(mon.rows, mon.figures, width):
+    for line in layout(mon.rows, mon.figures, width, self_id):
         print(line, file=stdout)
     return 0
 
@@ -686,7 +852,8 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
     mon = Monitor(Docker(transport))
     if args.once:
         width = args.width or shutil.get_terminal_size(fallback=(120, 24)).columns
-        return once(mon, width, stdout, stderr, sleep=sleep)
+        self_id = read_self_container_id(environ.get("ZOO_MOUNTINFO") or "/proc/self/mountinfo")
+        return once(mon, width, stdout, stderr, sleep=sleep, self_id=self_id)
     return interactive(mon, args.interval, environ, stdin, stdout, stderr)
 
 

@@ -60,6 +60,13 @@ def fixture_listing():
     ]
 
 
+def inspect_doc(c):
+    """/containers/{id}/json, from a listing row: the fields zoo reads."""
+    return {"Id": c["Id"], "Name": c["Names"][0],
+            "Config": {"Image": c["Image"], "Labels": c["Labels"]},
+            "State": {"Status": c["State"], "Running": c["State"] == "running"}}
+
+
 def stats_doc(cpu_total, system_cpu, online=4, usage=2_000_000, inactive_file=500_000,
               limit=8_000_000, pids=7):
     return {
@@ -82,12 +89,31 @@ class FakeDaemon:
         self.requests = []
         self.down = False
 
+    INSPECT_RE = re.compile(r"^/containers/([0-9a-f]{64})/json$")
+    DELETE_RE = re.compile(r"^/containers/([0-9a-f]{64})\?force=true$")
+
+    def find(self, id_):
+        return next((c for c in self.containers if c["Id"] == id_), None)
+
     def __call__(self, method, url):
         self.requests.append((method, url))
         if self.down:
             raise zoo.DockerError("connect: connection refused")
         if url == "/containers/json?all=true":
             return 200, json.dumps(self.containers).encode()
+        m = self.INSPECT_RE.match(url)
+        if m:
+            c = self.find(m.group(1))
+            if c is None:
+                return 404, b'{"message":"No such container"}'
+            return 200, json.dumps(inspect_doc(c)).encode()
+        m = self.DELETE_RE.match(url)
+        if m and method == "DELETE":
+            c = self.find(m.group(1))
+            if c is None:
+                return 404, b'{"message":"No such container"}'
+            self.containers.remove(c)
+            return 204, b""
         m = self.STATS_RE.match(url)
         if m:
             entry = self.stats.get(m.group(1))
@@ -142,6 +168,141 @@ class RowsTest(unittest.TestCase):
             zoo.row_from_listing({"Names": ["/x"], "Labels": {"primate.managed": ""}})
         with self.assertRaises(zoo.DockerError):
             zoo.row_from_listing({"Id": "", "Labels": {"primate.managed": ""}})
+
+
+# --------------------------------------------------------------------------- identity
+
+
+MOUNTINFO_IN_CONTAINER = (
+    "1234 1000 0:200 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/ABC,"
+    "upperdir=/var/lib/docker/overlay2/" + "f" * 64 + "/diff\n"
+    "1250 1234 254:1 /docker/containers/" + SESSION_NEW + "/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n"
+    "1251 1234 254:1 /docker/containers/" + SESSION_NEW + "/hosts /etc/hosts rw - ext4 /dev/vda1 rw\n"
+)
+MOUNTINFO_ON_HOST = (
+    "25 30 0:23 / /sys rw,nosuid - sysfs sysfs rw\n"
+    "300 25 254:1 /var/lib/docker/overlay2/" + "e" * 64 + "/merged /mnt rw - ext4 /dev/vda1 rw\n"
+)
+
+
+class IdentityTest(unittest.TestCase):
+    def test_self_id_comes_from_the_containers_path_only(self):
+        self.assertEqual(zoo.self_container_id(MOUNTINFO_IN_CONTAINER), SESSION_NEW)
+        # A layer id is also 64 hex characters; it must not be mistaken for the container.
+        self.assertEqual(zoo.self_container_id(MOUNTINFO_ON_HOST), "")
+        self.assertEqual(zoo.self_container_id(""), "")
+
+    def test_reading_a_missing_mountinfo_is_a_host(self):
+        self.assertEqual(zoo.read_self_container_id("/nonexistent/zoo/mountinfo"), "")
+
+    def test_the_own_row_is_marked_and_offers_nothing(self):
+        rows = {r.id: r for r in zoo.rows_from_listing(fixture_listing())}
+        lines = zoo.layout(list(rows.values()), {}, 120, self_id=SESSION_NEW)
+        self.assertTrue(any("scratch (here)" in l for l in lines))
+        self.assertFalse(any("evoc (here)" in l for l in lines))
+        self.assertEqual(zoo.actions_for(rows[SESSION_NEW], SESSION_NEW), [])
+        self.assertEqual(zoo.actions_for(rows[SESSION_OLD], SESSION_NEW), [("x", "kill")])
+        self.assertEqual(zoo.actions_for(None, SESSION_NEW), [])
+        # An empty self id is a host: it matches nothing, rather than everything.
+        self.assertEqual(zoo.actions_for(rows[SESSION_NEW], ""), [("x", "kill")])
+        self.assertFalse(any("(here)" in l for l in zoo.layout(list(rows.values()), {}, 120, self_id="")))
+
+
+class VerifyTargetTest(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeDaemon()
+        self.docker = zoo.Docker(self.fake)
+        self.rows = {r.id: r for r in zoo.rows_from_listing(fixture_listing())}
+
+    def test_a_live_unchanged_target_verifies(self):
+        fresh = zoo.verify_target(self.docker, self.rows[SESSION_OLD], "")
+        self.assertEqual((fresh.id, fresh.kind, fresh.name), (SESSION_OLD, zoo.SESSION, "evoc"))
+        self.assertIn(("GET", f"/containers/{SESSION_OLD}/json"), self.fake.requests)
+
+    def refusal(self, row, self_id=""):
+        with self.assertRaises(zoo.Refusal) as ctx:
+            zoo.verify_target(self.docker, row, self_id)
+        return str(ctx.exception)
+
+    def test_refuses_the_container_zoo_runs_in(self):
+        msg = self.refusal(self.rows[SESSION_NEW], self_id=SESSION_NEW)
+        self.assertIn("zoo is running in", msg)
+        self.assertNotIn(("GET", f"/containers/{SESSION_NEW}/json"), self.fake.requests)
+
+    def test_refuses_a_gone_container(self):
+        self.fake.containers = [c for c in self.fake.containers if c["Id"] != SESSION_OLD]
+        self.assertIn("is gone", self.refusal(self.rows[SESSION_OLD]))
+
+    def test_refuses_when_the_labels_are_gone(self):
+        self.fake.find(SESSION_OLD)["Labels"] = {}
+        self.assertIn("no longer labelled", self.refusal(self.rows[SESSION_OLD]))
+
+    def test_refuses_a_renamed_container(self):
+        self.fake.find(SESSION_OLD)["Names"] = ["/other"]
+        self.fake.find(SESSION_OLD)["Labels"]["primate.name"] = "other"
+        self.assertIn("now named other", self.refusal(self.rows[SESSION_OLD]))
+
+    def test_refuses_a_kind_change(self):
+        # SESSION_NEW keeps primate.managed, so it is still a primate — just not a session now.
+        del self.fake.find(SESSION_NEW)["Labels"]["primate.session"]
+        self.assertIn("now a primate", self.refusal(self.rows[SESSION_NEW]))
+
+    def test_refuses_when_the_daemon_cannot_answer(self):
+        self.fake.down = True
+        self.assertIn("cannot verify", self.refusal(self.rows[SESSION_OLD]))
+
+    def test_refuses_an_unusable_row(self):
+        row = zoo.Row(id="", kind=zoo.SESSION, name="x", image="i", running=True, status="")
+        self.assertIn("nothing usable", self.refusal(row))
+
+
+class KillTest(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeDaemon()
+        self.docker = zoo.Docker(self.fake)
+        self.rows = {r.id: r for r in zoo.rows_from_listing(fixture_listing())}
+
+    def deletes(self):
+        return [u for m, u in self.fake.requests if m == "DELETE"]
+
+    def test_kill_removes_exactly_the_verified_id(self):
+        msg = zoo.kill(self.docker, self.rows[SESSION_OLD], "")
+        self.assertEqual(self.deletes(), [f"/containers/{SESSION_OLD}?force=true"])
+        self.assertIsNone(self.fake.find(SESSION_OLD))
+        self.assertEqual(msg, "removed session evoc; volume claude-home kept")
+
+    def test_a_recreated_name_is_not_killed_in_its_place(self):
+        stale = self.rows[SESSION_OLD]
+        self.fake.containers.remove(self.fake.find(SESSION_OLD))
+        self.fake.containers.append(listing_row(cid("a1"), "evoc", "claude:latest",
+                                                {"primate.session": "", "primate.image": "claude",
+                                                 "primate.name": "evoc"}))
+        with self.assertRaises(zoo.Refusal):
+            zoo.kill(self.docker, stale, "")
+        self.assertEqual(self.deletes(), [])
+        self.assertIsNotNone(self.fake.find(cid("a1")))
+
+    def test_kill_refuses_self_before_asking_the_daemon(self):
+        with self.assertRaises(zoo.Refusal):
+            zoo.kill(self.docker, self.rows[SESSION_NEW], SESSION_NEW)
+        self.assertEqual(self.fake.requests, [])
+
+    def test_confirm_text_says_what_dies_and_what_survives(self):
+        text = zoo.confirm_kill_text(self.rows[SESSION_OLD])
+        self.assertIn("session 'evoc'", text)
+        self.assertIn("tmux server", text)
+        self.assertIn("claude-home survives", text)
+        text = zoo.confirm_kill_text(self.rows[FOREGROUND])
+        self.assertIn("primate 'wonderful_kirch'", text)
+        self.assertIn("loses its shell", text)
+        self.assertIn("minion-home survives", text)
+        text = zoo.confirm_kill_text(self.rows[SESSION_STOPPED])
+        self.assertIn("stopped session 'build'", text)
+        self.assertIn("no longer be resumed", text)
+
+    def test_footer_lists_only_offered_keys(self):
+        self.assertTrue(zoo.footer_text([("x", "kill")]).startswith("x kill  "))
+        self.assertNotIn("kill", zoo.footer_text([]))
 
 
 # --------------------------------------------------------------------------- samples
