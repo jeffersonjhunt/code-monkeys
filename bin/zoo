@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.1.0-U3"
+__version__ = "0.1.0-U4"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -331,6 +331,60 @@ def shell(docker: Docker, row: Row, self_id: str, cli: str, term: str) -> Tuple[
     return banner, exec_argv(cli, fresh.id, term, *SHELL_CMD)
 
 
+# --------------------------------------------------------------------------- launching
+
+
+# Everything about starting a primate — the workspace mount and the refusal to mount $HOME, the
+# docker socket gid, the <image>-home volume, the first-run config sync — lives in the zsh
+# functions in zfuncs, and there only. zoo sources that file in a child zsh and calls them.
+# Duplicating that logic is how this repo once shipped five copies of the ECR pull, two of them
+# missing (spec §7.2).
+ZFUNCS_SNIPPET = 'source "$1" >/dev/null 2>&1; shift; "$@"'
+ROSTER_SNIPPET = 'source "$1" >/dev/null 2>&1; _primate_roster 2>/dev/null'
+_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def zfuncs_path(environ) -> str:
+    """ZOO_ZFUNCS is a test seam; otherwise ~/.zfuncs, which setup symlinks into the checkout on
+    a host and upgrade-home.sh copies into a primate's home volume."""
+    return environ.get("ZOO_ZFUNCS") or os.path.join(environ.get("HOME", ""), ".zfuncs")
+
+
+def read_roster(zfuncs: str, runner=subprocess.run) -> List[str]:
+    """The images `primate` can start, from _primate_roster: codemonkey plus primates/*.dockerfile
+    beside the real zfuncs. Empty inside a primate (the ~/.zfuncs there is a standalone copy with
+    no primates/ beside it) and on any host without a checkout — and then launching is not
+    offered at all, rather than offered and failing (spec req 18)."""
+    if not os.path.isfile(zfuncs):
+        return []
+    try:
+        result = runner(["zsh", "-c", ROSTER_SNIPPET, "zoo-roster", zfuncs],
+                        capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if _IMAGE_NAME_RE.match(line.strip())]
+
+
+def launch_plan(kind: str, zfuncs: str, image: str, name: str, cwd: str) -> Tuple[str, List[str]]:
+    """The banner and the command for `n` (a primate) or `s` (a session)."""
+    if kind == PRIMATE:
+        banner = f"starting primate {image} (workspace: {cwd}). Exit its shell to return to zoo."
+        argv = ["zsh", "-c", ZFUNCS_SNIPPET, "zoo-launch", zfuncs, "primate", image]
+    else:
+        named = f" named {name}" if name else ""
+        banner = (f"starting session {image}{named} (workspace: {cwd}). "
+                  "Detach with ctrl-b d to return to zoo.")
+        argv = ["zsh", "-c", ZFUNCS_SNIPPET, "zoo-launch", zfuncs, "primate-session", image]
+        if name:
+            argv.append(name)
+    return banner, argv
+
+
+LAUNCH_KEYS = [("n", "new"), ("s", "session")]
+
+
 def actions_for(row: Optional[Row], self_id: str, cli: Optional[str] = None) -> List[Tuple[str, str]]:
     """The keys that do something for this row — and only those (spec req 18). Attach and shell
     hand the terminal to the docker CLI, so without one they are not offered."""
@@ -597,8 +651,21 @@ FOOTER = "j/k select  +/- refresh  r now  ? help  q quit"
 NOTICE_SECONDS = 4.0
 
 
-def footer_text(actions: List[Tuple[str, str]]) -> str:
-    return "  ".join([f"{k} {label}" for k, label in actions] + [FOOTER])
+def footer_text(actions: List[Tuple[str, str]], roster: bool = False) -> str:
+    keys = actions + (LAUNCH_KEYS if roster else [])
+    return "  ".join([f"{k} {label}" for k, label in keys] + [FOOTER])
+
+
+NO_ROSTER = "no primate roster here (launch needs a host checkout: ~/.zfuncs beside primates/)"
+
+
+def help_lines(roster: bool) -> Tuple[str, ...]:
+    if roster:
+        extra = ("  n                 start a primate from the roster",
+                 "  s                 start a session from the roster, optionally named")
+    else:
+        extra = (f"  n / s             unavailable: {NO_ROSTER}",)
+    return HELP_LINES[:3] + extra + HELP_LINES[3:]
 
 
 def aged(figures: Dict[str, Figures], now: float, stale_after: float) -> Dict[str, Figures]:
@@ -639,7 +706,8 @@ class View:
     with a short timeout in between, and redraws only when something changed (spec req 22)."""
 
     def __init__(self, scr, mon: Monitor, interval: float, clock: Callable[[], float] = time.monotonic,
-                 self_id: str = "", cli: Optional[str] = None, term: str = "xterm"):
+                 self_id: str = "", cli: Optional[str] = None, term: str = "xterm",
+                 roster: Optional[List[str]] = None, zfuncs: str = "", cwd: str = ""):
         self.scr = scr
         self.mon = mon
         self.interval = interval
@@ -647,6 +715,11 @@ class View:
         self.self_id = self_id
         self.cli = cli
         self.term = term
+        self.roster = roster or []
+        self.zfuncs = zfuncs
+        self.cwd = cwd
+        self.picker: Optional[dict] = None    # {"kind", "sel"} while choosing an image
+        self.prompt: Optional[dict] = None    # {"image", "text"} while naming a session
         self.sel = 0
         self.offset = 0
         self.help = False
@@ -676,6 +749,10 @@ class View:
         try:
             curses.use_default_colors()
         except curses.error:
+            pass
+        try:
+            curses.set_escdelay(25)   # Esc alone should not wait a second to be believed
+        except AttributeError:
             pass
         self.scr.keypad(True)
         self.scr.timeout(100)
@@ -710,6 +787,10 @@ class View:
         if self.help:
             self.help = False
             return None
+        if self.picker is not None:
+            return self.handle_picker(key, now)
+        if self.prompt is not None:
+            return self.handle_prompt(key, now)
         if self.confirm is not None:
             row, _ = self.confirm
             self.confirm = None
@@ -727,6 +808,12 @@ class View:
         n = len(self.mon.rows)
         if key in (ord("q"), 27):
             return "quit"
+        if key in (ord("n"), ord("s")):
+            if not self.roster:
+                self.say(NO_ROSTER, now)
+            else:
+                self.picker = {"kind": PRIMATE if key == ord("n") else SESSION, "sel": 0}
+            return None
         if key in (ord("x"), ord("a"), ord("e")):
             row = self.selected()
             offered = dict(actions_for(row, self.self_id, self.cli))
@@ -770,6 +857,66 @@ class View:
         elif key == ord("?"):
             self.help = True
         return None
+
+    # -- launching
+
+    def handle_picker(self, key: int, now: float) -> None:
+        import curses
+        pk = self.picker
+        if key in (27, ord("q")):
+            self.picker = None
+            self.say("launch cancelled", now)
+        elif key in (curses.KEY_UP, ord("k")):
+            pk["sel"] = max(pk["sel"] - 1, 0)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            pk["sel"] = min(pk["sel"] + 1, len(self.roster) - 1)
+        elif key in (10, 13, curses.KEY_ENTER):
+            image = self.roster[pk["sel"]]
+            self.picker = None
+            if pk["kind"] == PRIMATE:
+                self.launch(PRIMATE, image, "")
+            else:
+                self.prompt = {"image": image, "text": ""}
+        return None
+
+    def handle_prompt(self, key: int, now: float) -> None:
+        import curses
+        pr = self.prompt
+        if key == 27:
+            self.prompt = None
+            self.say("launch cancelled", now)
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            pr["text"] = pr["text"][:-1]
+        elif key in (10, 13, curses.KEY_ENTER):
+            self.prompt = None
+            self.launch(SESSION, pr["image"], pr["text"].strip())
+        elif 32 <= key < 127 and len(pr["text"]) < 64:
+            pr["text"] += chr(key)
+        return None
+
+    def launch(self, kind: str, image: str, name: str) -> None:
+        banner, argv = launch_plan(kind, self.zfuncs, image, name, self.cwd)
+        rc, err = self.handoff(banner, argv)
+        what = f"{kind} {image}" + (f" ({name})" if name else "")
+        self.say(err or f"{what} ended (exit {rc}); back in zoo", self.clock())
+        self.tick(self.clock())
+
+    def draw_picker(self, body: int, w: int) -> None:
+        import curses
+        pk = self.picker
+        what = "primate" if pk["kind"] == PRIMATE else "session"
+        self._put(2, f"Start a {what}: choose an image (Enter starts, Esc cancels)", curses.A_BOLD)
+        room = max(body - 1, 1)
+        offset = max(0, min(pk["sel"] - room + 1, len(self.roster) - room))
+        for i, image in enumerate(self.roster[offset: offset + room]):
+            self._put(3 + i, f"  {image}", curses.A_REVERSE if offset + i == pk["sel"] else 0)
+
+    def draw_prompt(self, w: int) -> None:
+        import curses
+        pr = self.prompt
+        self._put(2, f"Session name for {pr['image']} (Enter for the default "
+                     f"'{pr['image']}-session', Esc cancels):", curses.A_BOLD)
+        self._put(3, f"  {pr['text']}_")
 
     # -- handing the terminal to a child
 
@@ -849,8 +996,12 @@ class View:
         self._put(1, lines[0], curses.A_REVERSE)
         body = self.body_height()
         if self.help:
-            for i, text in enumerate(HELP_LINES[:body]):
+            for i, text in enumerate(help_lines(bool(self.roster))[:body]):
                 self._put(2 + i, text)
+        elif self.picker is not None:
+            self.draw_picker(body, w)
+        elif self.prompt is not None:
+            self.draw_prompt(w)
         elif self.confirm is not None:
             # A volume name like claude-home must never be split at its hyphen.
             wrapped = textwrap.wrap(self.confirm[1], max(w - 2, 10), break_on_hyphens=False)
@@ -865,7 +1016,7 @@ class View:
             self._put(h - 1, self.notice, curses.A_REVERSE)
         else:
             self.notice = ""
-            self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id, self.cli)))
+            self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id, self.cli), bool(self.roster)))
         self.scr.noutrefresh()
         curses.doupdate()
 
@@ -896,7 +1047,10 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         # second line: it also covers whatever a child (tmux, a shell) may leave behind later.
         cli = shutil.which("docker", path=environ.get("PATH"))
         term = environ.get("TERM") or "xterm"
-        return curses.wrapper(lambda scr: View(scr, mon, interval, self_id=self_id, cli=cli, term=term).run())
+        zfuncs = zfuncs_path(environ)
+        roster = read_roster(zfuncs)
+        return curses.wrapper(lambda scr: View(scr, mon, interval, self_id=self_id, cli=cli, term=term,
+                                               roster=roster, zfuncs=zfuncs, cwd=os.getcwd()).run())
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:

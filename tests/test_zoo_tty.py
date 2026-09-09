@@ -45,6 +45,24 @@ def has_row(screen, name):
 CIVIS, CNORM = b"\x1b[?25l", b"\x1b[?25h"
 PROMPT = "@Z@ "
 
+# Stands in for the real zfuncs. The functions log their arguments and, like the real ones,
+# occupy the terminal until the user is done: a read stands in for the container's shell.
+ZFUNCS_STUB = """
+function _primate_roster() { print -r -- codemonkey; print -r -- claude; print -r -- minion }
+function primate() {
+  print -r -- "primate $*" >> "$HOME/launch.log"
+  printf 'STUB-PRIMATE-%s\\n' "$1"; read line; printf 'STUB-PRIMATE-EXIT\\n'
+}
+function primate-session() {
+  print -r -- "primate-session $*" >> "$HOME/launch.log"
+  printf 'STUB-SESSION-%s-%s\\n' "$1" "${2:-default}"; read line
+}
+"""
+ZFUNCS_STUB_NO_ROSTER = """
+function _primate_roster() { return 1 }
+function primate() { print -r -- "primate $*" >> "$HOME/launch.log" }
+"""
+
 # Stands in for the docker CLI during a hand-off. Logs every call; `exec` behaves like an
 # interactive child: it announces itself, waits for a line, echoes it back transformed (so the
 # typed text and the marker differ), and exits. `read` runs in cooked mode, so ctrl-c kills it.
@@ -456,6 +474,7 @@ class TtyBase(unittest.TestCase):
         }
         for key, value in self.extra_env.items():
             env[key] = value.replace("{home}", str(home))
+        self.prepare_home(home)
         self.sh = Shell(env)
         self.sh.send(f"PROMPT='{PROMPT}'\r")
         self.sh.expect(PROMPT_RE)
@@ -463,6 +482,15 @@ class TtyBase(unittest.TestCase):
         # on job notices below mean something.
         out = self.sh.run("[[ -o monitor ]] && echo MON$((1+1))")
         self.assertIn(b"MON2", out, "job control is off in the test shell; the suite would be blind")
+
+    def prepare_home(self, home):
+        """Hook for fixtures that must exist before the shell starts (a zfuncs stub, mountinfo)."""
+
+    def launches(self):
+        try:
+            return (pathlib.Path(self.tmp.name) / "launch.log").read_text().splitlines()
+        except FileNotFoundError:
+            return []
 
     def tearDown(self):
         self.sh.close()
@@ -733,6 +761,110 @@ class InsideAContainerTtyTest(TtyBase):
         self.sh.wait_screen("Remove session 'evoc'")
         self.sh.send("y")
         self.wait_for_delete(cid("aa"))
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+
+class LaunchTtyTest(TtyBase):
+    """n and s go through the zsh functions, via a stub zfuncs named by ZOO_ZFUNCS."""
+    extra_env = {"ZOO_ZFUNCS": "{home}/zfuncs"}
+
+    def prepare_home(self, home):
+        (home / "zfuncs").write_text(ZFUNCS_STUB)
+
+    def test_n_picks_an_image_and_starts_a_primate(self):
+        before = self.sh.stty()
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        self.sh.send("n")
+        self.sh.wait_screen("Start a primate: choose an image")
+        for image in ("codemonkey", "claude", "minion"):
+            self.sh.wait_screen(image)
+        self.sh.send("j")
+        self.sh.send("\r")
+        self.sh.wait_screen("starting primate claude")
+        self.sh.wait_screen("STUB-PRIMATE-claude")
+        self.sh.send("\r")
+        self.sh.wait_screen("STUB-PRIMATE-EXIT")
+        self.sh.wait_screen("primate claude ended (exit 0); back in zoo")
+        self.sh.wait_screen("KIND")
+        self.assertEqual(self.launches(), ["primate claude"])
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+        self.assertEqual(self.sh.stty(), before)
+
+    def test_s_asks_for_a_name_then_starts_a_session(self):
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        self.sh.send("s")
+        self.sh.wait_screen("Start a session: choose an image")
+        self.sh.send("j")
+        self.sh.send("\r")
+        self.sh.wait_screen("Session name for claude")
+        self.sh.send("scratchx\x7f")            # a typo, backspaced
+        self.sh.wait_screen("  scratch_")
+        self.sh.send("\r")
+        self.sh.wait_screen("starting session claude named scratch")
+        self.sh.wait_screen("STUB-SESSION-claude-scratch")
+        self.sh.send("\r")
+        self.sh.wait_screen("session claude (scratch) ended (exit 0); back in zoo")
+        self.assertEqual(self.launches(), ["primate-session claude scratch"])
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_a_blank_name_means_the_launchers_default(self):
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        self.sh.send("s")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("\r")                       # codemonkey, the first
+        self.sh.wait_screen("Session name for codemonkey")
+        self.sh.send("\r")
+        self.sh.wait_screen("STUB-SESSION-codemonkey-default")
+        self.sh.send("\r")
+        self.sh.wait_screen("session codemonkey ended (exit 0); back in zoo")
+        self.assertEqual(self.launches(), ["primate-session codemonkey"])
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_esc_cancels_the_picker_and_the_prompt(self):
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.send(b"\x1b")
+        self.sh.wait_screen("launch cancelled")
+        self.sh.wait_screen_gone("choose an image")
+        self.sh.send("s")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("\r")
+        self.sh.wait_screen("Session name for codemonkey")
+        self.sh.send(b"\x1b")
+        self.sh.wait_screen("launch cancelled")
+        self.sh.wait_screen_gone("Session name")
+        self.assertEqual(self.launches(), [])
+        self.sh.send("q")                          # and Esc did not quit zoo either time
+        self.sh.expect(PROMPT_RE)
+
+
+class NoRosterTtyTest(TtyBase):
+    """Inside a primate, or on a host without a checkout: nothing to launch from, so no launch."""
+    extra_env = {"ZOO_ZFUNCS": "{home}/zfuncs"}
+
+    def prepare_home(self, home):
+        (home / "zfuncs").write_text(ZFUNCS_STUB_NO_ROSTER)
+
+    def test_launch_is_not_offered_and_says_why(self):
+        self.start_zoo()
+        self.sh.wait_screen("j/k select")
+        self.assertNotIn("n new", self.sh.screen)
+        self.sh.send("n")
+        self.sh.wait_screen("no primate roster here")
+        self.sh.send("?")
+        self.sh.wait_screen("n / s             unavailable")
+        self.sh.send("x")
+        self.sh.wait_screen_gone("unavailable")
+        self.assertEqual(self.launches(), [])
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 

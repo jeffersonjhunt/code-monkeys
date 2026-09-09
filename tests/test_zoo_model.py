@@ -13,8 +13,12 @@ import importlib.util
 import io
 import json
 import pathlib
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -386,6 +390,87 @@ class AttachAndShellTest(unittest.TestCase):
     def test_start_tolerates_already_running(self):
         self.docker.start(SESSION_OLD)   # 304 from the daemon is not an error
         self.assertEqual(self.starts(), [f"/containers/{SESSION_OLD}/start"])
+
+
+# --------------------------------------------------------------------------- launching
+
+
+ZFUNCS_STUB = """
+function _primate_roster() { print -r -- codemonkey; print -r -- claude; print -r -- minion }
+function primate() { print -r -- "primate $*" }
+"""
+ZFUNCS_STUB_NO_ROSTER = """
+function _primate_roster() { return 1 }
+"""
+
+
+class FakeRun:
+    def __init__(self, stdout="", returncode=0, raise_=None):
+        self.stdout, self.returncode, self.raise_ = stdout, returncode, raise_
+        self.calls = []
+
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        if self.raise_:
+            raise self.raise_
+        return subprocess.CompletedProcess(argv, self.returncode, self.stdout, "")
+
+
+class RosterTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.zf = os.path.join(self.tmp.name, "zfuncs")
+        with open(self.zf, "w") as fh:
+            fh.write(ZFUNCS_STUB)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_roster_is_read_through_zsh_from_the_given_file(self):
+        run = FakeRun("codemonkey\nclaude\n  minion \n\nnot a name!\n")
+        self.assertEqual(zoo.read_roster(self.zf, run), ["codemonkey", "claude", "minion"])
+        self.assertEqual(run.calls[0][:3], ["zsh", "-c", zoo.ROSTER_SNIPPET])
+        self.assertEqual(run.calls[0][4], self.zf)
+
+    def test_no_file_no_zsh_or_a_failing_function_means_no_roster(self):
+        self.assertEqual(zoo.read_roster(os.path.join(self.tmp.name, "absent"), FakeRun("claude")), [])
+        self.assertEqual(zoo.read_roster(self.zf, FakeRun("claude", returncode=1)), [])
+        self.assertEqual(zoo.read_roster(self.zf, FakeRun(raise_=FileNotFoundError("zsh"))), [])
+        self.assertEqual(zoo.read_roster(self.zf, FakeRun(raise_=subprocess.TimeoutExpired("zsh", 15))), [])
+
+    @unittest.skipUnless(shutil.which("zsh"), "SKIPPED: zsh not installed; the real-zsh roster read was not tested")
+    def test_real_zsh_reads_a_stub_roster_and_an_empty_one(self):
+        self.assertEqual(zoo.read_roster(self.zf), ["codemonkey", "claude", "minion"])
+        with open(self.zf, "w") as fh:
+            fh.write(ZFUNCS_STUB_NO_ROSTER)
+        self.assertEqual(zoo.read_roster(self.zf), [])
+
+    def test_zfuncs_path_defaults_to_home(self):
+        self.assertEqual(zoo.zfuncs_path({"HOME": "/Users/x"}), "/Users/x/.zfuncs")
+        self.assertEqual(zoo.zfuncs_path({"HOME": "/Users/x", "ZOO_ZFUNCS": "/tmp/zf"}), "/tmp/zf")
+
+
+class LaunchPlanTest(unittest.TestCase):
+    def test_primate_runs_the_zsh_function_by_sourcing_zfuncs(self):
+        banner, argv = zoo.launch_plan(zoo.PRIMATE, "/h/.zfuncs", "claude", "", "/work/proj")
+        self.assertEqual(argv, ["zsh", "-c", zoo.ZFUNCS_SNIPPET, "zoo-launch", "/h/.zfuncs", "primate", "claude"])
+        self.assertIn("starting primate claude", banner)
+        self.assertIn("/work/proj", banner)
+
+    def test_session_passes_the_name_only_when_given(self):
+        _, argv = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "scratch", "/w")
+        self.assertEqual(argv[5:], ["primate-session", "claude", "scratch"])
+        banner, argv = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "", "/w")
+        self.assertEqual(argv[5:], ["primate-session", "claude"])
+        self.assertIn("ctrl-b d", banner)
+        self.assertNotIn("named", banner)
+
+    def test_footer_and_help_offer_launch_only_with_a_roster(self):
+        self.assertIn("n new  s session", zoo.footer_text([("x", "kill")], roster=True))
+        self.assertNotIn("n new", zoo.footer_text([("x", "kill")], roster=False))
+        self.assertTrue(any("start a primate" in l for l in zoo.help_lines(True)))
+        self.assertTrue(any("unavailable" in l for l in zoo.help_lines(False)))
+        self.assertFalse(any("unavailable" in l for l in zoo.help_lines(True)))
 
 
 # --------------------------------------------------------------------------- samples
