@@ -1,193 +1,160 @@
 # zoo — specification
 
-A manager for primates: `top(1)`, but for the containers `primate` and `primate-session`
-start.
-
-This document states **requirements, constraints and evidence**. It deliberately does not
-prescribe an architecture. A previous implementation exists on the `zoo-legacy-ref` branch
-(and a dead-end follow-up on `feat/zoo-stream`); both were abandoned. Read them for
-evidence if useful, not for design.
-
-Every number and claim below was measured, not assumed. Where something is untested, it
-says so.
+`zoo` is an interactive manager for primates: the containers `primate` and
+`primate-session` start. It shows what is running and lets the user act on it without
+leaving the tool.
 
 ---
 
-## 1. What it must do
+## 1. Terms
 
-- List every container started by `primate` or `primate-session`, running or stopped.
-- For each: kind (foreground primate vs detached session), name, image, status, and live
-  CPU / memory / process count.
-- Stopped sessions must be listed — they still hold an `<image>-home` volume and are still
-  resumable.
-- Act on a selected container: kill it, re-attach to a session, open a shell in it.
-- Launch a new primate or session, choosing from the image roster.
-- Be usable in a terminal a person is sitting at, and leave that terminal exactly as it
-  was found.
-
-## 2. Hard constraints
-
-Each of these was learned the expensive way. They are not preferences.
-
-### 2.1 Launch and attach must go through the zsh functions
-
-`primate()`, `primate-session()` and `primate-session-resume()` are **zsh functions** in
-`zfuncs`. They own the workspace mount, the `$HOME` refusal, the docker socket gid, the
-`<image>-home` volume, and the first-run config sync that puts real (gitignored,
-vault-managed) configs into a fresh volume.
-
-Anything that launches or attaches must therefore either **be** a zsh shell, or invoke one.
-Reimplementing that logic is not an option: duplicated launch logic in this repo has
-already caused a production failure (five hand-copied copies of the ECR pull, two of which
-were missing, producing `pull access denied … may require 'docker login'` on a pruned host).
-
-This constraint is what makes a compiled binary or a containerised process awkward. If a
-future design wants one, the honest fix is to extract that logic into something both a
-shell and a program can call — that is real work, not a detail.
-
-### 2.2 Containers must be identified by label, never by image name
-
-Containers carry `primate.managed` and `primate.image`; sessions additionally carry
-`primate.session` and `primate.name`. **These labels already exist in `zfuncs` today** —
-they are the only part of the previous implementation that was kept.
-
-Matching container *images* against the dockerfile roster is wrong, and measurably
-dangerous: `intel-nuc.tworivers` holds six `spark-bench:latest` containers from real eval
-runs, and `spark-bench` **is** in the roster. Name-matching selects 7 of 8 containers there;
-label-matching selects 1. Those six would each have been one keystroke from a kill.
-
-Sessions started before `primate.managed` existed carry only `primate.session`. Docker ANDs
-repeated `--filter label=`, so no single filter selects both sets.
-
-### 2.3 The self-container guard must compare a prefix
-
-A process must refuse to kill or exec into the container it is itself running in.
-
-`docker ps` reports a **12-character** id; the container's own id (from
-`/proc/self/mountinfo` — `/proc/self/cgroup` is empty under cgroup v2 in Docker Desktop's
-VM) is **64 characters**. An equality comparison never matches, so the guard looks present
-in the source while doing nothing.
-
-An **empty** id is also a prefix of every id, so an unparsed row must be rejected before the
-comparison, not fed into it.
-
-**`/proc/self/mountinfo` is empty on a host.** On macOS and on any host shell, the guard is
-inert — correct, and the branch every real invocation takes. Testing only from inside a
-container exercises the other branch.
-
-### 2.4 Session names are reusable; re-verify at the moment of action
-
-`primate-session-kill` and `primate-session-resume` resolve by **name**. A confirmation
-prompt can sit open indefinitely, so the row it names may be stale. Kill and recreate a
-session under the same name while a prompt waits, and the action lands on the new container.
-Verify the selected container id still belongs to that name immediately before acting.
-
-### 2.5 Only one process may own the terminal
-
-If two processes both set termios on the same tty — one rendering, one reading keys — they
-contend. Whatever the design, exactly one must own the terminal at a time, and handing it
-over (to `tmux`, to an interactive shell, to `docker exec -it`) must be explicit.
-
-### 2.6 The user's shell follows the repo working tree
-
-`~/.zfuncs` is a symlink into the repo. Whatever branch is checked out **is** the user's
-live `primate`/`zoo`. Development must happen in a git worktree, or the maintainer's
-everyday environment silently becomes whatever is being worked on. This already happened.
-
-## 3. Measurements
-
-Taken on Docker Desktop (macOS, arm64) and on `intel-nuc.tworivers` (native Linux, x86_64).
-
-| | cost |
+| term | meaning |
 |---|---|
-| `docker ps -a --filter label=… --format …` | **15–30 ms** |
-| `docker stats --no-stream` | **~1.6 s** |
-| Docker Engine API `/containers/{id}/stats?stream=false` | **~2.0 s** |
-| `docker stats` **streamed** | first sample ~2 s, then a full set every **~500 ms** |
+| **primate** | a foreground container from `primate <image>`. Tied to the terminal that started it; `--rm`, so it is gone when it exits. |
+| **session** | a detached container from `primate-session <image> [name]`. PID 1 is `sleep infinity`; a `tmux` server runs inside it, so work survives disconnection. |
+| **home volume** | `<image>-home`, the persistent `/home/codemonkey` for an image. Shared by every container of that image and outlives all of them. |
+| **roster** | the available images: `codemonkey` plus every `primates/*.dockerfile`. |
 
-The ~2 s is the **daemon** waiting for the second sample it needs to compute CPU%. It is not
-client overhead and no client avoids it — the API is not faster. Only streaming removes it.
+---
 
-Streamed `docker stats` emits terminal control (`\e[H`, `\e[K`, `\e[J`) **even when stdout is
-not a tty**, so it cannot be parsed without stripping. The API returns JSON with
-`precpu_stats` and `cpu_stats` in one response, and raw numeric fields (bytes, nanoseconds)
-rather than pre-formatted `686MiB / 31.29GiB` — which matters for sorting or arithmetic.
+## 2. Viewing
 
-`jq` is installed on **every** machine including the Mac. `zsh/curses` (`zmodload zsh/curses`)
-is available on every machine including the Mac; `zcurses` supports `init`, `addwin`,
-`refresh`, `attr`, colour, `timeout`, `input`, `resize`, and `end` → run a normal command →
-`init` again. It does **not** name special keys: an arrow arrives as three raw reads
-(`\e`, `[`, `A`) with the key-name parameter empty, so escape parsing stays manual.
+1. List every primate and every session on the local docker daemon.
+2. List **stopped** sessions as well as running ones — they still hold a home volume and
+   can still be resumed.
+3. Show, per container: kind (primate or session), name, image, status, uptime, CPU
+   percentage, memory used and total, and process count.
+4. Show live figures, refreshed on an interval the user can set.
+5. Indicate clearly when figures are unavailable or stale, distinguishably from a container
+   that is genuinely idle.
+6. Remain correct when the list is longer or wider than the terminal.
 
-## 4. Testing requirements
+## 3. Lifecycle
 
-### 4.1 Job control exists only in a shell reading from a terminal
+7. **Start a primate** from an image chosen out of the roster.
+8. **Start a session** from a chosen image, optionally naming it.
+9. **Support multiple sessions per image**, each independently named, listed, selectable and
+   actionable. `claude` may have `scratch`, `review` and `build` sessions at once.
+10. **Stop a primate** — the container is removed.
+11. **Stop a session** — the container is removed, **the home volume is preserved**.
+12. **Reattach to a running session**, entering its `tmux`.
+13. **Resume a stopped session** — start it, then attach.
+14. **Open a shell** in any running container. This is a new shell, not the original
+    terminal, and must be presented as such.
+15. Return to `zoo` when an attached session or shell ends.
 
-`zsh -c`, `zsh -i -c` and `zsh -i script.zsh` all report `monitor=off` and produce **no**
-job-control messages. Feeding commands **through a pty** to `zsh -if` does produce them.
+## 4. Interaction
 
-A suite without that is structurally blind to background-process noise, terminal-state
-damage, and signal handling — the exact defects that reached the maintainer instead of the
-tests. Any implementation must be tested in a shell with job control on.
+16. Select a row; act on the selection.
+17. Confirm before anything destructive, showing what will be destroyed and what will
+    survive (for a session: that the home volume remains).
+18. Offer only actions that exist. An advertised key that does nothing is worse than an
+    absent one.
+19. Provide help listing the keys.
+20. Exit on the user's terminating keys, and restore the terminal exactly as found —
+    including after an interrupt.
+21. Print no stray output: no job-control notices, no messages from background work, no
+    residue after exit.
+22. Render without visible flicker or churn.
 
-### 4.2 Every assertion must be watched failing
+## 5. Safety
 
-Six assertions in the previous implementation passed while proving nothing. Every one was an
-**absence** — "nothing was launched", "no refusal", "the name appears", "the footer appears" —
-satisfied by the code doing nothing at all. None was found by inspection; all were found by
-deliberately breaking the code and re-running.
+23. Act only on primates and sessions. Other containers on the daemon must be invisible and
+    unreachable.
+24. Never act on the container `zoo` is itself running in.
+25. Verify the selected container is still the intended one at the moment of action, not
+    only at the moment of selection.
+26. Refuse and explain rather than guessing when a target is ambiguous, gone, or of the
+    wrong kind.
 
-Two specific traps, both of which caught the previous implementation more than once:
+## 6. Non-goals
 
-- **Terminal echo satisfies a marker.** If a test types `echo MARKER` into a shell, `MARKER`
-  appears in the capture whether or not anything ran. The marker's *output* must differ from
-  the text typed to produce it.
-- **A string present in every frame proves nothing.** Counting a footer that appears on every
-  render cannot distinguish "came back" from "never left". Order matters: assert the marker
-  appears *after* the event.
-
-### 4.3 Environment forks must both be covered
-
-Testing the convenient side looks like full coverage. Concretely: `TERM` set vs unset
-(`tput` emits nothing without a terminfo entry), inside a container vs on a host
-(`/proc/self/mountinfo`), macOS daemon vs native Linux, and a shell with job control vs
-without.
-
-Tests must not depend on ambient state — an image happening to be local, a roster on disk,
-`TERM` happening to be set. All three caused a suite to pass on one machine and fail on
-another for reasons unrelated to the code.
-
-### 4.4 Session tests are opt-in
-
-Tests that create or attach to primate sessions must be explicitly enabled and must skip
-loudly otherwise. Running a suite must never start session containers on a machine where the
-maintainer has live ones.
-
-## 5. Non-goals
-
-- Not a general docker UI. Non-primate containers are out of scope and must stay invisible.
-- Not multi-host. One daemon.
+- Not a general docker UI.
+- Not multi-host: one daemon.
 - Not a process viewer *inside* a primate.
-- Not a replacement for `primate-session-list`, which stays as the scriptable view.
+- Not a replacement for `primate-session-list`, the scriptable listing.
 
-## 6. Failure catalogue
+---
 
-Recorded so the same ground is not re-covered. From the abandoned implementation:
+## 7. The system it runs in
 
-- A confirmed kill that killed nothing for three commits, because the branch referenced a
-  variable removed in a refactor. Unit tests of the kill function passed throughout; the
-  suite never pressed the confirm key.
-- Five functions silently deleted by an edit that replaced a *range* between two markers
-  without asserting what else the range contained. `zsh -n` passed; the display was fine;
-  only the test suite noticed.
-- "Flashes of processing" traced to roughly a dozen `fork`s per tick — including two
-  subshells whose only purpose was deciding whether to print the letter `s`. `zsh/datetime`
-  provides `$EPOCHSECONDS` and `strftime` with no fork.
-- Terminal left in the alternate screen with the cursor hidden after ctrl-c, because zsh's
-  `always` block does not run when the shell takes SIGINT.
-- Line tails surviving a redraw, because `tput ed` clears to end of *screen* and nothing
-  cleared each line.
-- A list 23 lines tall on a 24-line terminal, scrolling the alternate screen so every
-  subsequent cursor-home landed in the wrong place.
-- A background sampler outliving the process that spawned it, printing
-  `mv: rename …: No such file or directory` on the terminal after exit.
+### 7.1 Identification
+
+Containers carry labels, set by the launchers and already present in `zfuncs`:
+
+| label | on | value |
+|---|---|---|
+| `primate.managed` | both | empty |
+| `primate.image` | both | the image name |
+| `primate.session` | sessions | empty |
+| `primate.name` | sessions | the session name |
+
+Identify containers by these labels. Image names are not sufficient: `spark-bench` is both a
+roster image and the image of unrelated eval containers, so matching on image selects
+containers `zoo` must not touch.
+
+Sessions created before `primate.managed` existed carry only `primate.session`. Docker ANDs
+repeated `--filter label=`, so selecting both sets takes more than one query.
+
+### 7.2 The launchers
+
+`primate()`, `primate-session()`, `primate-session-resume()`, `primate-session-kill()` and
+`primate-session-list()` are zsh functions in `zfuncs`. The launchers own the workspace
+mount, the refusal to mount `$HOME`, the docker socket gid, the home volume, and the
+first-run sync that places vault-managed configs into a new volume.
+
+Starting and attaching must go through them. Anything that cannot call a zsh function must
+arrange for one to be called, or that logic has to be extracted into something both a shell
+and a program can invoke.
+
+### 7.3 Container identity
+
+`docker ps` reports a 12-character id. A process's own container id is 64 characters, read
+from `/proc/self/mountinfo` (`/proc/self/cgroup` is empty under cgroup v2 in Docker
+Desktop). Comparisons between the two are prefix comparisons. On a host, rather than inside
+a container, there is no such id.
+
+Session **names are reusable** — a session may be destroyed and another created with the
+same name.
+
+### 7.4 Data sources
+
+| source | returns | cost |
+|---|---|---|
+| `docker ps -a --filter label=… --format …` | container rows | 15–30 ms |
+| `docker stats --no-stream` | one sample | ~1.6 s |
+| API `/containers/{id}/stats?stream=false` | one sample, JSON, raw numeric fields | ~2.0 s |
+| `docker stats` streamed | a full set every ~500 ms after a ~2 s first sample | — |
+| API `/containers/{id}/stats` streamed | JSON samples, raw numeric fields | — |
+
+The ~2 s for a single sample is the daemon computing CPU% from two readings; it is not
+client overhead, and it applies to the CLI and the API alike.
+
+Streamed `docker stats` emits terminal control sequences even when stdout is not a terminal.
+The API returns bytes and nanoseconds rather than strings like `686MiB / 31.29GiB`.
+
+### 7.5 Environment
+
+- Hosts: macOS (Docker Desktop, arm64) and Linux (x86_64 and arm64).
+- `jq` is installed on every machine, including the Mac.
+- `zsh/curses` is available on every machine, including the Mac. It provides windows,
+  refresh, attributes, colour, timed input and resize, and supports leaving curses to run a
+  normal command and re-entering. It does not name special keys — arrows arrive as raw
+  escape sequences.
+- `~/.zfuncs` is a symlink into the repository, so the checked-out branch is the user's live
+  environment. Develop in a git worktree.
+
+---
+
+## 8. Verification
+
+27. Behaviour must be verified in a shell with **job control enabled** — one reading
+    commands from a terminal. `zsh -c`, `zsh -i -c` and `zsh -i script.zsh` all run without
+    it and cannot observe background-process notices or interrupt handling.
+28. Cover both sides of each environment split: `TERM` set and unset, inside a container and
+    on a host, macOS daemon and Linux daemon.
+29. Tests must not depend on ambient state — which images happen to be local, whether a
+    roster is on disk, whether `TERM` happens to be set.
+30. Tests that create or attach to sessions must be opt-in and skip loudly by default, so a
+    test run never disturbs live sessions.
+31. Confirm each assertion can fail: break the behaviour it covers and see it go red.
