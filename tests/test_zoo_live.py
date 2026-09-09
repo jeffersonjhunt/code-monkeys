@@ -120,11 +120,11 @@ class LiveSessionTest(unittest.TestCase):
         self.start_zoo()
         self.select(NAME)
         self.sh.send("a")
-        self.sh.wait_screen(f"attaching to session {NAME}", timeout=20)
+        self.sh.expect(f"attaching to session {NAME}".encode(), timeout=20)
         # Inside tmux now. Prove it with tmux's own environment, then detach.
         time.sleep(2)
         self.sh.send("echo TMUX-IS-$(( 20 + 3 ))\r")
-        self.sh.wait_screen("TMUX-IS-23", timeout=20)
+        self.sh.expect(b"TMUX-IS-23", timeout=20)
         self.sh.send(b"\x02d")   # ctrl-b d
         self.sh.wait_screen(f"attach {NAME} ended", timeout=20)
         self.sh.wait_screen("KIND", timeout=20)
@@ -132,10 +132,10 @@ class LiveSessionTest(unittest.TestCase):
         # The full banner exceeds 80 columns with a pid in the name and wraps mid-word on the real
         # terminal; its wording is asserted by the hermetic pty suite. Here: that it began, and
         # that a shell in the container followed.
-        self.sh.wait_screen("opening a new shell in session", timeout=20)
+        self.sh.expect(b"opening a new shell in session", timeout=20)
         time.sleep(2)
         self.sh.send("echo SHELL-IN-$(hostname)\r")
-        self.sh.wait_screen(f"SHELL-IN-{IMAGE}", timeout=20)   # the launchers set --hostname <image>
+        self.sh.expect(f"SHELL-IN-{IMAGE}".encode(), timeout=20)   # the launchers set --hostname <image>
         self.sh.send("exit\r")
         self.sh.wait_screen(f"shell {NAME} ended", timeout=20)
         self.sh.send("q")

@@ -91,7 +91,9 @@ class FakeDaemon:
         self.containers = fixture_listing() if containers is None else containers
         self.stats = {} if stats is None else stats   # id -> doc | callable | int (HTTP status)
         self.requests = []
+        self.timeouts = []
         self.down = False
+        self.slow_stats = False
 
     INSPECT_RE = re.compile(r"^/containers/([0-9a-f]{64})/json$")
     DELETE_RE = re.compile(r"^/containers/([0-9a-f]{64})\?force=true$")
@@ -100,10 +102,13 @@ class FakeDaemon:
     def find(self, id_):
         return next((c for c in self.containers if c["Id"] == id_), None)
 
-    def __call__(self, method, url):
+    def __call__(self, method, url, timeout=None):
         self.requests.append((method, url))
+        self.timeouts.append((method, url, timeout))
         if self.down:
             raise zoo.DockerError("connect: connection refused")
+        if self.slow_stats and self.STATS_RE.match(url):
+            raise zoo.Timeout(f"GET {url}: timed out after 1s")
         if url == "/containers/json?all=true":
             return 200, json.dumps(self.containers).encode()
         m = self.INSPECT_RE.match(url)
@@ -270,6 +275,46 @@ class VerifyTargetTest(unittest.TestCase):
         self.assertIn("nothing usable", self.refusal(row))
 
 
+class SelectionTest(unittest.TestCase):
+    def test_selection_follows_the_container_not_the_index(self):
+        rows = zoo.rows_from_listing(fixture_listing())   # build, evoc, scratch, wonderful_kirch
+        evoc = rows[1]
+        newcomer = zoo.row_from_listing(listing_row(cid("01"), "aardvark", "claude:latest",
+                                                    {"primate.session": "", "primate.name": "aardvark"}))
+        rows2 = zoo.rows_from_listing([*fixture_listing(), listing_row(cid("01"), "aardvark", "claude:latest",
+                                                                        {"primate.session": "", "primate.name": "aardvark"})])
+        self.assertEqual(rows2[0].name, "aardvark")
+        self.assertEqual(rows2[zoo.follow_selection(rows2, 1, evoc.id)].id, evoc.id)
+        # The container is gone: the index is clamped, not raised.
+        self.assertEqual(zoo.follow_selection(rows[:2], 5, "nonexistent"), 1)
+        self.assertEqual(zoo.follow_selection([], 3, evoc.id), 0)
+        # No remembered id: the index is the choice.
+        self.assertEqual(zoo.follow_selection(rows2, 2, ""), 2)
+        del newcomer
+
+
+class NameProblemTest(unittest.TestCase):
+    def test_docker_alphabet_only(self):
+        self.assertEqual(zoo.name_problem(""), "")
+        self.assertEqual(zoo.name_problem("scratch"), "")
+        self.assertEqual(zoo.name_problem("build.2_x-y"), "")
+        self.assertIn("start with a letter or digit", zoo.name_problem("-x"))
+        self.assertIn("start with a letter or digit", zoo.name_problem(".hidden"))
+        self.assertNotEqual(zoo.name_problem("a b"), "")
+        self.assertNotIn(" ", zoo.NAME_CHARS)
+        self.assertNotIn("'", zoo.NAME_CHARS)
+
+
+class PrintableTest(unittest.TestCase):
+    def test_control_characters_never_reach_a_cell(self):
+        row = zoo.row_from_listing(listing_row(cid("77"), "ev\x1b[2Joc", "cla\x07ude:latest",
+                                               {"primate.session": "", "primate.name": "ev\x1b[2Joc"},
+                                               status="Up\x00 1 hour"))
+        self.assertEqual((row.name, row.image, row.status), ("ev?[2Joc", "cla?ude:latest", "Up? 1 hour"))
+        self.assertEqual(zoo.printable("plain-name_1.2"), "plain-name_1.2")
+        self.assertEqual(zoo.printable("caf\u00e9"), "caf\u00e9")   # printable non-ASCII is kept
+
+
 class KillTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeDaemon()
@@ -295,6 +340,20 @@ class KillTest(unittest.TestCase):
             zoo.kill(self.docker, stale, "")
         self.assertEqual(self.deletes(), [])
         self.assertIsNotNone(self.fake.find(cid("a1")))
+
+    def test_a_container_gone_between_y_and_rm_is_not_a_failure(self):
+        # inspect succeeds (it is there), then the DELETE meets a 404: someone else removed it.
+        fake = self.fake
+        real_call = fake.__call__
+
+        def racing(method, url, timeout=None):
+            status, body = real_call(method, url, timeout)
+            if method == "DELETE":
+                return 404, b'{"message":"No such container"}'
+            return status, body
+        docker = zoo.Docker(racing)
+        msg = zoo.kill(docker, self.rows[SESSION_OLD], "")
+        self.assertEqual(msg, "session evoc was already gone; volume claude-home kept")
 
     def test_kill_refuses_self_before_asking_the_daemon(self):
         with self.assertRaises(zoo.Refusal):
@@ -386,6 +445,19 @@ class AttachAndShellTest(unittest.TestCase):
         with self.assertRaises(zoo.Refusal) as ctx:
             zoo.shell(self.docker, self.rows[SESSION_STOPPED], "", "docker", "xterm")
         self.assertIn("not running", str(ctx.exception))
+
+    def test_mutating_calls_get_the_long_timeout_and_reads_the_short_one(self):
+        self.fake.stats[SESSION_NEW] = stats_doc(1, 2)
+        self.docker.start(SESSION_STOPPED)
+        self.docker.remove(SESSION_OLD)
+        self.docker.stats(SESSION_NEW)
+        self.docker.inspect(SESSION_NEW)
+        by_method = {(m, u.split("/")[-1].split("?")[0]): t for m, u, t in self.fake.timeouts}
+        self.assertEqual(by_method[("POST", "start")], zoo.MUTATE_TIMEOUT)
+        self.assertEqual(by_method[("DELETE", SESSION_OLD)], zoo.MUTATE_TIMEOUT)
+        self.assertIsNone(by_method[("GET", "stats")])
+        self.assertIsNone(by_method[("GET", "json")])
+        self.assertGreaterEqual(zoo.MUTATE_TIMEOUT, 10 * zoo.SOCKET_TIMEOUT)
 
     def test_start_tolerates_already_running(self):
         self.docker.start(SESSION_OLD)   # 304 from the daemon is not an error
@@ -593,6 +665,27 @@ class MonitorTest(unittest.TestCase):
                 c["State"] = "running"
         self.mon.tick()
         self.assertEqual(self.mon.figures[FOREGROUND].state, zoo.PENDING)
+
+    def test_one_timeout_ends_the_ticks_sampling_and_the_next_tick_retries(self):
+        self.mon.tick()
+        self.fake.slow_stats = True
+        before = len(self.fake.stats_requested_for())
+        self.mon.tick()
+        self.assertEqual(len(self.fake.stats_requested_for()) - before, 1)   # not one per row
+        states = {cid: f.state for cid, f in self.mon.figures.items()}
+        self.assertEqual(states[SESSION_OLD], zoo.STALE)
+        self.assertEqual(states[SESSION_NEW], zoo.STALE)
+        self.assertEqual(states[FOREGROUND], zoo.STALE)
+        self.assertEqual(states[SESSION_STOPPED], zoo.STOPPED)
+        skipped = [f for f in self.mon.figures.values() if f.error.startswith("skipped:")]
+        self.assertEqual(len(skipped), 2)
+        self.assertEqual(self.mon.figures[SESSION_OLD].mem_used, 1_500_000)   # last numbers kept
+        self.fake.slow_stats = False
+        before = len(self.fake.stats_requested_for())
+        self.mon.tick()
+        self.assertEqual(len(self.fake.stats_requested_for()) - before, 3)
+        # The counters are cumulative, so a delta across the gap is still a delta: live, not pending.
+        self.assertEqual(self.mon.figures[SESSION_NEW].state, zoo.LIVE)
 
     def test_a_listing_failure_keeps_rows_and_marks_them_stale(self):
         self.mon.tick()

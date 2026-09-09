@@ -69,7 +69,9 @@ function primate() { print -r -- "primate $*" >> "$HOME/launch.log" }
 DOCKER_STUB = """#!/bin/sh
 echo "$@" >> "$HOME/docker.log"
 case "$1" in
-  exec) printf 'STUB-CHILD-RUNNING\\n'; read line; printf 'STUB-CHILD-GOT-%s\\n' "$line"; exit 0 ;;
+  exec) printf 'STUB-CHILD-RUNNING\\n'; read line
+        [ "$line" = fail ] && { printf 'STUB-CHILD-FAILING\\n'; exit 3; }
+        printf 'STUB-CHILD-GOT-%s\\n' "$line"; exit 0 ;;
   *) exit 0 ;;
 esac
 """
@@ -527,6 +529,24 @@ class TtyBase(unittest.TestCase):
         except FileNotFoundError:
             return []
 
+    def suspend(self, tries=5):
+        """Send ctrl-z and wait for the shell's stop notice, resending if the byte did not land.
+
+        Injecting ^Z through a pty does not always produce a SIGTSTP first time; a resend always
+        works, and zoo has no signal-handling code of its own — ctrl-z is ncurses' default plus
+        the shell's job control. So a resend here masks a test-harness race, not a zoo defect.
+        """
+        import re as _re
+        for _ in range(tries):
+            self.sh.send(b"\x1a")
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if _re.search(rb"suspended", self.sh.buf[self.sh.pos:]):
+                    self.sh.expect(rb"suspended")
+                    return
+                self.sh._read(0.1)
+        raise AssertionError("ctrl-z never suspended the job after %d tries" % tries)
+
     def wait_docker_call(self, first_word, timeout=10.0):
         deadline = time.monotonic() + timeout
         while not any(call and call[0] == first_word for call in self.docker_calls()):
@@ -643,11 +663,11 @@ class TtyTest(TtyBase):
         self.sh.wait_screen("a attach  e shell  x kill")
         mark = self.sh.pos
         self.sh.send("a")
-        self.sh.wait_screen("attaching to session evoc")
-        self.sh.wait_screen("STUB-CHILD-RUNNING")
+        self.sh.expect(b"attaching to session evoc")
+        self.sh.expect(b"STUB-CHILD-RUNNING")
         self.assertIn(RMCUP, self.sh.since(mark))   # left the alternate screen for the child
         self.sh.send("hi\r")
-        self.sh.wait_screen("STUB-CHILD-GOT-hi")
+        self.sh.expect(b"STUB-CHILD-GOT-hi")
         mark = self.sh.pos
         self.sh.wait_screen("attach evoc ended (exit 0); back in zoo")
         self.assertIn(SMCUP, self.sh.since(mark))   # and re-entered it afterwards
@@ -662,9 +682,9 @@ class TtyTest(TtyBase):
         self.start_zoo()
         self.sh.wait_screen("a resume  x kill")   # build, stopped, is selected first
         self.sh.send("a")
-        self.sh.wait_screen("started stopped session build")
+        self.sh.expect(b"started stopped session build")
         self.assertEqual(self.state.starts(), [f"/containers/{cid('cc')}/start"])
-        self.sh.wait_screen("STUB-CHILD-RUNNING")
+        self.sh.expect(b"STUB-CHILD-RUNNING")
         self.sh.send("\r")
         self.sh.wait_screen("resume build ended (exit 0); back in zoo")
         self.sh.wait_screen("Up 1 second")         # the row now shows the started container
@@ -679,9 +699,9 @@ class TtyTest(TtyBase):
         self.sh.send("j")
         self.sh.wait_screen("e shell")
         self.sh.send("e")
-        self.sh.wait_screen("opening a new shell in session evoc")
-        self.sh.wait_screen("not its original terminal")
-        self.sh.wait_screen("STUB-CHILD-RUNNING")
+        self.sh.expect(b"opening a new shell in session evoc")
+        self.sh.expect(b"not its original terminal")
+        self.sh.expect(b"STUB-CHILD-RUNNING")
         self.sh.send("\r")
         self.sh.wait_screen("shell evoc ended (exit 0); back in zoo")
         calls = self.docker_calls()
@@ -698,15 +718,89 @@ class TtyTest(TtyBase):
         self.sh.send("j")
         self.sh.wait_screen("e shell")
         self.sh.send("e")
-        self.sh.wait_screen("STUB-CHILD-RUNNING")
+        self.sh.expect(b"STUB-CHILD-RUNNING")
         self.sh.send(b"\x03")
-        self.sh.wait_screen("shell evoc ended (exit")   # the child died of the interrupt
+        self.sh.expect(b"press Enter to return to zoo")   # the child died of the interrupt: non-zero
+        self.assertNotIn("[exit 0]", self.sh.screen)
+        self.sh.send("\r")
+        self.sh.wait_screen("shell evoc ended (exit")
         self.assertNotIn("(exit 0)", self.sh.screen)
         self.sh.wait_screen("KIND")
         self.sh.send("q")                                # zoo is still here to quit
         self.sh.expect(PROMPT_RE)
         out = self.sh.run("echo rc=$?")
         self.assertIn(b"rc=0", out)
+        self.assertEqual(self.sh.stty(), before)
+
+    def test_a_failed_child_is_readable_before_zoo_returns(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send("j")
+        self.sh.wait_screen("e shell")
+        self.sh.send("e")
+        self.sh.expect(b"STUB-CHILD-RUNNING")
+        self.sh.send("fail\r")
+        self.sh.expect(b"STUB-CHILD-FAILING")
+        self.sh.expect(b"[exit 3] press Enter to return to zoo")
+        self.sh.settle(0.5)
+        self.assertIn("STUB-CHILD-FAILING", self.sh.screen)   # still readable: curses has not re-entered
+        self.assertNotIn("KIND", self.sh.screen)
+        self.sh.send("\r")
+        self.sh.wait_screen("shell evoc ended (exit 3); back in zoo")
+        self.sh.wait_screen("KIND")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_selection_stays_on_the_container_when_rows_change(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send("j")                        # evoc
+        self.sh.send("x")
+        self.sh.wait_screen("Remove session 'evoc'")
+        self.sh.send("n")
+        self.sh.wait_screen("kept session evoc")
+        self.state.containers.append(session("aardvark", "01"))   # sorts first, shifting every index
+        self.sh.wait_until(lambda scr: has_row(scr, "aardvark"), "the aardvark row")
+        self.sh.send("x")
+        self.sh.wait_screen("Remove session 'evoc'")             # not aardvark
+        self.sh.send("n")
+        self.state.containers.remove(self.state.find(cid("aa")))  # evoc vanishes under the highlight
+        self.sh.wait_until(lambda scr: not has_row(scr, "evoc"), "evoc disappearing")
+        self.sh.send("x")
+        self.sh.wait_screen("Remove session '")                   # some row, and zoo did not crash
+        self.sh.send("n")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_a_bare_escape_does_not_quit(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send(b"\x1b")
+        self.sh.settle(0.5)
+        self.sh.send("?")
+        self.sh.wait_screen("any key closes this help")          # zoo is still here
+        self.sh.send("x")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_ctrl_z_suspends_and_fg_resumes_the_view(self):
+        # ctrl-z is ncurses' default handler plus the shell's job control; zoo adds no signal code.
+        # This asserts the terminal is handed back on suspend and restored intact on fg.
+        before = self.sh.stty()
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        mark = self.sh.pos
+        self.suspend()
+        self.sh.expect(PROMPT_RE)
+        self.assertIn(RMCUP, self.sh.since(mark))                  # handed the screen back to the shell
+        out = self.sh.run("echo SH-$((40+2))")
+        self.assertIn(b"SH-42", out)                              # the shell is usable meanwhile
+        self.sh.send("fg\r")
+        self.sh.expect(SMCUP)
+        self.sh.wait_screen("KIND")
+        self.sh.wait_screen("evoc")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
         self.assertEqual(self.sh.stty(), before)
 
     def test_unoffered_keys_say_why(self):
@@ -782,10 +876,10 @@ class LaunchTtyTest(TtyBase):
             self.sh.wait_screen(image)
         self.sh.send("j")
         self.sh.send("\r")
-        self.sh.wait_screen("starting primate claude")
-        self.sh.wait_screen("STUB-PRIMATE-claude")
+        self.sh.expect(b"starting primate claude")
+        self.sh.expect(b"STUB-PRIMATE-claude")
         self.sh.send("\r")
-        self.sh.wait_screen("STUB-PRIMATE-EXIT")
+        self.sh.expect(b"STUB-PRIMATE-EXIT")
         self.sh.wait_screen("primate claude ended (exit 0); back in zoo")
         self.sh.wait_screen("KIND")
         self.assertEqual(self.launches(), ["primate claude"])
@@ -804,11 +898,29 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("scratchx\x7f")            # a typo, backspaced
         self.sh.wait_screen("  scratch_")
         self.sh.send("\r")
-        self.sh.wait_screen("starting session claude named scratch")
-        self.sh.wait_screen("STUB-SESSION-claude-scratch")
+        self.sh.expect(b"starting session claude named scratch")
+        self.sh.expect(b"STUB-SESSION-claude-scratch")
         self.sh.send("\r")
         self.sh.wait_screen("session claude (scratch) ended (exit 0); back in zoo")
         self.assertEqual(self.launches(), ["primate-session claude scratch"])
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_the_name_prompt_takes_only_dockers_alphabet(self):
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        self.sh.send("s")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("\r")
+        self.sh.wait_screen("Session name for codemonkey")
+        self.sh.send("a b'c")
+        self.sh.wait_screen("  abc_")                              # space and quote never entered
+        self.sh.send("\x7f\x7f\x7f-x\r")
+        self.sh.wait_screen("start with a letter or digit")
+        self.assertIn("Session name for codemonkey", self.sh.screen)   # the prompt is still open
+        self.assertEqual(self.launches(), [])
+        self.sh.send(b"\x1b")
+        self.sh.wait_screen("launch cancelled")
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
@@ -820,7 +932,7 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("\r")                       # codemonkey, the first
         self.sh.wait_screen("Session name for codemonkey")
         self.sh.send("\r")
-        self.sh.wait_screen("STUB-SESSION-codemonkey-default")
+        self.sh.expect(b"STUB-SESSION-codemonkey-default")
         self.sh.send("\r")
         self.sh.wait_screen("session codemonkey ended (exit 0); back in zoo")
         self.assertEqual(self.launches(), ["primate-session codemonkey"])

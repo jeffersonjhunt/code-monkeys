@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -46,14 +46,21 @@ DEFAULT_SOCKETS = ("/var/run/docker.sock", "~/.docker/run/docker.sock")
 # one-shot=true is the whole reason zoo can be single-threaded: see the module docstring.
 STATS_QUERY = "/stats?stream=false&one-shot=true"
 
-# Requests are small and the daemon is local; a hung daemon must not hang the view.
+# Reads are small and the daemon is local; a hung daemon must not hang the view. Writes are a
+# different matter: `docker start` takes 0.5-2 s on a big container and `rm -f` can too, and a
+# timeout on those reports a failure while the daemon finishes the job anyway (review F1).
 SOCKET_TIMEOUT = 1.0
+MUTATE_TIMEOUT = 30.0
 
-Transport = Callable[[str, str], Tuple[int, bytes]]
+Transport = Callable[..., Tuple[int, bytes]]   # (method, url, timeout=None) -> (status, body)
 
 
 class DockerError(Exception):
     """The daemon could not be reached, or answered with an error."""
+
+
+class Timeout(DockerError):
+    """The daemon did not answer in time: it is hung or very slow, not gone."""
 
 
 class NotFound(DockerError):
@@ -98,15 +105,18 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
         self.sock = sock
 
 
-def unix_transport(path: str, timeout: float = SOCKET_TIMEOUT) -> Transport:
-    """A transport is (method, url) -> (status, body). This is the real one; tests inject fakes."""
+def unix_transport(path: str, default_timeout: float = SOCKET_TIMEOUT) -> Transport:
+    """A transport is (method, url, timeout=None) -> (status, body). This is the real one; tests
+    inject fakes. `timeout` overrides the default for one request."""
 
-    def send(method: str, url: str) -> Tuple[int, bytes]:
-        conn = _UnixHTTPConnection(path, timeout)
+    def send(method: str, url: str, timeout: Optional[float] = None) -> Tuple[int, bytes]:
+        conn = _UnixHTTPConnection(path, timeout if timeout is not None else default_timeout)
         try:
             conn.request(method, url, headers={"Host": "docker"})
             resp = conn.getresponse()
             return resp.status, resp.read()
+        except socket.timeout as exc:
+            raise Timeout(f"{method} {url}: timed out after {conn.timeout:g}s") from exc
         except (OSError, http.client.HTTPException) as exc:
             raise DockerError(f"{method} {url}: {exc}") from exc
         finally:
@@ -121,8 +131,8 @@ class Docker:
     def __init__(self, transport: Transport):
         self._send = transport
 
-    def _json(self, method: str, url: str):
-        status, body = self._send(method, url)
+    def _json(self, method: str, url: str, timeout: Optional[float] = None):
+        status, body = self._send(method, url, timeout)
         if status == 404:
             raise NotFound(f"{method} {url}: no such container")
         if status >= 400:
@@ -146,11 +156,11 @@ class Docker:
 
     def remove(self, cid: str) -> None:
         """docker rm -f. Named volumes are never removed by this, so <image>-home survives."""
-        self._json("DELETE", f"/containers/{cid}?force=true")
+        self._json("DELETE", f"/containers/{cid}?force=true", MUTATE_TIMEOUT)
 
     def start(self, cid: str) -> None:
         """docker start. 304 (already running) is not an error."""
-        self._json("POST", f"/containers/{cid}/start")
+        self._json("POST", f"/containers/{cid}/start", MUTATE_TIMEOUT)
 
 
 # --------------------------------------------------------------------------- rows
@@ -174,6 +184,12 @@ def is_primate(labels: dict) -> bool:
     return "primate.managed" in labels or "primate.session" in labels
 
 
+def printable(text: str) -> str:
+    """Labels are free text set by whoever created the container. --once and the hand-off banner
+    print outside curses, where a control character would reach the terminal (review F7)."""
+    return "".join(ch if 32 <= ord(ch) < 127 or ord(ch) >= 160 else "?" for ch in text)
+
+
 def row_from_listing(c: dict) -> Row:
     cid = c.get("Id") or ""
     if len(cid) < 12:
@@ -188,10 +204,10 @@ def row_from_listing(c: dict) -> Row:
     return Row(
         id=cid,
         kind=kind,
-        name=name,
-        image=image,
+        name=printable(name),
+        image=printable(image),
         running=(c.get("State") == "running"),
-        status=c.get("Status") or "",
+        status=printable(c.get("Status") or ""),
     )
 
 
@@ -292,7 +308,10 @@ def confirm_kill_text(row: Row) -> str:
 
 def kill(docker: Docker, row: Row, self_id: str) -> str:
     fresh = verify_target(docker, row, self_id)
-    docker.remove(fresh.id)
+    try:
+        docker.remove(fresh.id)
+    except NotFound:
+        return f"{fresh.kind} {fresh.name} was already gone; volume {fresh.image}-home kept"
     return f"removed {fresh.kind} {fresh.name}; volume {fresh.image}-home kept"
 
 
@@ -383,6 +402,17 @@ def launch_plan(kind: str, zfuncs: str, image: str, name: str, cwd: str) -> Tupl
 
 
 LAUNCH_KEYS = [("n", "new"), ("s", "session")]
+# Docker's container-name alphabet; a name outside it fails after the hand-off (review F6).
+NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def name_problem(name: str) -> str:
+    """Why a typed session name would be refused by docker, or "" if it is fine (empty is fine:
+    the launcher picks its default)."""
+    if not name or _NAME_RE.match(name):
+        return ""
+    return f"session names start with a letter or digit and use only letters, digits, _ . - : {name!r}"
 
 
 def actions_for(row: Optional[Row], self_id: str, cli: Optional[str] = None) -> List[Tuple[str, str]]:
@@ -489,6 +519,19 @@ class Monitor:
         self.error = ""
         self.ticked_at: Optional[float] = None
 
+    def _stale(self, cid: str, error: str) -> None:
+        """Keep the last good numbers, marked stale, with the reason."""
+        last = self.figures.get(cid)
+        self.figures[cid] = Figures(
+            STALE,
+            cpu=None,
+            mem_used=last.mem_used if last else None,
+            mem_limit=last.mem_limit if last else None,
+            pids=last.pids if last else None,
+            ok_at=last.ok_at if last else None,
+            error=error,
+        )
+
     def tick(self) -> List[Row]:
         now = self._clock()
         try:
@@ -507,25 +550,24 @@ class Monitor:
         for gone in [cid for cid in self.figures if cid not in current]:
             self.figures.pop(gone, None)
             self._samples.pop(gone, None)
+        slow = ""   # set by the first timeout: the rest of this tick's reads are skipped (review F4)
         for row in rows:
             if not row.running:
                 # A stopped container has no stats, and its counters restart with it.
                 self._samples.pop(row.id, None)
                 self.figures[row.id] = Figures(STOPPED)
                 continue
+            if slow:
+                self._stale(row.id, f"skipped: {slow}")
+                continue
             try:
                 cur = parse_stats(self._docker.stats(row.id))
+            except Timeout as exc:
+                slow = str(exc)
+                self._stale(row.id, slow)
+                continue
             except DockerError as exc:
-                last = self.figures.get(row.id)
-                self.figures[row.id] = Figures(
-                    STALE,
-                    cpu=None,
-                    mem_used=last.mem_used if last else None,
-                    mem_limit=last.mem_limit if last else None,
-                    pids=last.pids if last else None,
-                    ok_at=last.ok_at if last else None,
-                    error=str(exc),
-                )
+                self._stale(row.id, str(exc))
                 continue
             cpu = cpu_percent(self._samples.get(row.id), cur)
             self._samples[row.id] = cur
@@ -642,7 +684,7 @@ HELP_LINES = (
     "  + / -             refresh slower / faster",
     "  r                 refresh now",
     "  ?                 this help",
-    "  q, Esc, ctrl-c    quit",
+    "  q, ctrl-c         quit (Esc cancels a picker, prompt or confirm)",
     "",
     "  any key closes this help",
 )
@@ -696,6 +738,16 @@ def title_text(n: int, offset: int, body: int, interval: float, age: Optional[fl
     return text
 
 
+def follow_selection(rows: List[Row], sel: int, selected_id: str) -> int:
+    """Where the selection is after rows changed: on the same container if it is still listed,
+    else at the clamped index (review F3). Rows re-sort every tick, so an index alone drifts."""
+    if selected_id:
+        for i, row in enumerate(rows):
+            if row.id == selected_id:
+                return i
+    return min(max(sel, 0), max(len(rows) - 1, 0))
+
+
 def stats_age(figures: Dict[str, Figures], now: float) -> Optional[float]:
     times = [f.ok_at for f in figures.values() if f.ok_at is not None]
     return max(now - max(times), 0.0) if times else None
@@ -721,6 +773,7 @@ class View:
         self.picker: Optional[dict] = None    # {"kind", "sel"} while choosing an image
         self.prompt: Optional[dict] = None    # {"image", "text"} while naming a session
         self.sel = 0
+        self.selected_id = ""   # the container under the highlight; the index follows it
         self.offset = 0
         self.help = False
         self.confirm: Optional[Tuple[Row, str]] = None   # (row, prompt) while a kill awaits y/n
@@ -806,8 +859,10 @@ class View:
                 self.say(f"kept {row.kind} {row.name}", now)
             return None
         n = len(self.mon.rows)
-        if key in (ord("q"), 27):
+        if key == ord("q"):
             return "quit"
+        if key == 27:
+            return None   # a bare Esc, or the head of a sequence ncurses does not know: not a quit (review F5)
         if key in (ord("n"), ord("s")):
             if not self.roster:
                 self.say(NO_ROSTER, now)
@@ -836,6 +891,7 @@ class View:
                 self.say(err or f"{offered[k]} {row.name} ended (exit {rc}); back in zoo", self.clock())
                 self.tick(self.clock())
             return None
+        moved = True
         if key in (curses.KEY_UP, ord("k")):
             self.sel -= 1
         elif key in (curses.KEY_DOWN, ord("j")):
@@ -848,6 +904,10 @@ class View:
             self.sel -= self.body_height()
         elif key == curses.KEY_NPAGE:
             self.sel += self.body_height()
+        else:
+            moved = False
+        if moved:
+            self.selected_id = ""   # the index is the user's choice now; _clamp records the new id
         elif key in (ord("+"), ord("=")):
             self.interval = min(MAX_INTERVAL, self.interval + 1.0)
         elif key == ord("-"):
@@ -888,9 +948,13 @@ class View:
         elif key in (curses.KEY_BACKSPACE, 127, 8):
             pr["text"] = pr["text"][:-1]
         elif key in (10, 13, curses.KEY_ENTER):
+            problem = name_problem(pr["text"])
+            if problem:
+                self.say(problem, now)
+                return None
             self.prompt = None
-            self.launch(SESSION, pr["image"], pr["text"].strip())
-        elif 32 <= key < 127 and len(pr["text"]) < 64:
+            self.launch(SESSION, pr["image"], pr["text"])
+        elif 32 <= key < 127 and chr(key) in NAME_CHARS and len(pr["text"]) < 64:
             pr["text"] += chr(key)
         return None
 
@@ -932,13 +996,24 @@ class View:
         import curses
         curses.endwin()
         previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        rc, err = -1, ""
         try:
             sys.stdout.write(banner + "\n")
             sys.stdout.flush()
-            rc = subprocess.call(argv, preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
-            return rc, ""
-        except OSError as exc:
-            return -1, f"could not run {argv[0]}: {exc}"
+            try:
+                rc = subprocess.call(argv, preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            except OSError as exc:
+                err = f"could not run {argv[0]}: {exc}"
+            if rc != 0 or err:
+                # Whatever the child said on its way out — a refusal, a docker error — is on the
+                # main screen right now and would be hidden the instant curses re-enters (review F2).
+                sys.stdout.write((err + "\n" if err else "") + f"[exit {rc}] press Enter to return to zoo\n")
+                sys.stdout.flush()
+                try:
+                    sys.stdin.readline()
+                except OSError:
+                    pass
+            return rc, err
         finally:
             signal.signal(signal.SIGINT, previous)
             # The first refresh after endwin() re-enters curses and repaints the whole screen;
@@ -954,7 +1029,9 @@ class View:
 
     def _clamp(self, n: int) -> None:
         body = self.body_height()
-        self.sel = min(max(self.sel, 0), max(n - 1, 0))
+        rows = self.mon.rows
+        self.sel = follow_selection(rows, self.sel, self.selected_id)
+        self.selected_id = rows[self.sel].id if rows else ""
         if self.sel < self.offset:
             self.offset = self.sel
         elif self.sel >= self.offset + body:
