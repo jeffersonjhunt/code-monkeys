@@ -1045,6 +1045,7 @@ function _zoo_pick_image() {
   fi
   local __i=1 __key __seq __n __im __out
   local __home="$(tput cup 0 0 2>/dev/null)" __ed="$(tput ed 2>/dev/null)"
+  local __el="$(tput el 2>/dev/null)"
   # The table underneath may be taller than this menu, and 17 images plus chrome is
   # 23 lines — enough to scroll a standard terminal, after which every cup 0 0 lands
   # in the wrong place. Clear once on entry, then window the list to what fits.
@@ -1080,7 +1081,9 @@ function _zoo_pick_image() {
 "
     __out+="
  ↑↓ choose   enter start   esc / q cancel"
-    print -rn -- "${__home}${__out}
+    local -a __ol=("${(@f)__out}")
+    __ol=("${__ol[@]/%/$__el}")
+    print -rn -- "${__home}${(F)__ol}
 ${__ed}"
     read -k 1 __key 2>/dev/null || return 1
     case "$__key" in
@@ -1179,7 +1182,10 @@ function zoo() {
   # what stops the flicker: the previous code issued a write per print, so a
   # dozen-line table was a dozen visible paint steps every tick.
   local __HOME="$(tput cup 0 0 2>/dev/null)" __ED="$(tput ed 2>/dev/null)"
-  local __CLR="$(tput clear 2>/dev/null)"
+  # el = clear to end of LINE. ed only clears BELOW the cursor, so a line shorter
+  # than the one it overwrites keeps the old tail — which is what welded fragments
+  # of a raw row, separators and all, onto the end of the header.
+  local __EL="$(tput el 2>/dev/null)"
 
   local __sd="$(mktemp -d)" __spid=0 __rc=0 __sel=1
   local __sf="${__sd}/stats"
@@ -1198,6 +1204,10 @@ function zoo() {
   fi
 
   tput smcup 2>/dev/null; tput civis 2>/dev/null
+  # If smcup is unavailable zoo paints over the live terminal and cup 0 0 homes onto
+  # whatever was already there. One clear on entry — not per frame, which would
+  # reintroduce the flicker.
+  tput clear 2>/dev/null
   # The `always` block below does NOT run when the shell takes SIGINT: verified by
   # sending ctrl-c through a pty and finding smcup 1 / rmcup 0 and civis 1 /
   # cnorm 0 in the captured output — the terminal was left in the alternate screen
@@ -1241,7 +1251,9 @@ function zoo() {
       # Room for the header, column head, blanks, the legacy note and the footer.
       local __vis=$(( ${LINES:-24} - 8 ))
       (( __vis < 3 )) && __vis=3
-      print -rn -- "${__HOME}$(_zoo_frame "$__ps" "$__st" "$__age" "$__tick" "$__sel" "$__vis")
+      local -a __fl=("${(@f)$(_zoo_frame "$__ps" "$__st" "$__age" "$__tick" "$__sel" "$__vis")}")
+      __fl=("${__fl[@]/%/$__EL}")
+      print -rn -- "${__HOME}${(F)__fl}
 ${__ED}"
 
       local __key=""

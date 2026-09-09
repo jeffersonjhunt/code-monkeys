@@ -262,5 +262,15 @@ _assert_ge "windows the list instead of overflowing" "$(_count 'more below')" 1
 _assert_ge "the cursor row is still shown"           "$(_count '> zoo-img-1')" 1
 rm -rf "$PD"
 
+# Reported from real use: fragments of a previous, longer line survived on screen —
+# the header ended in "...stats 3s agoo (stale)sion\C-_code-monkey\C-_..." where
+# \C-_ is the 0x1F row separator. tput ed clears from the cursor to the end of the
+# SCREEN and was only emitted after the last line, so nothing ever cleared the tail
+# of an individual row. Every rendered line must end with clear-to-end-of-line.
+print -r -- "each rendered line is cleared to end of line:"
+( sleep 3; printf 'q'; sleep 1 ) | timeout 15 script -qec "$RUN" /dev/null > "$OUT" 2>&1
+_assert_ge "el after the frame's lines" "$(_count $'\e[K')" 5
+_assert_ge "and the screen is cleared on entry" "$(_count $'\e[H')" 1
+
 if (( fails )); then print -r -- "FAILED ($fails)" >&2; exit 1; fi
 print -r -- "PASSED"
