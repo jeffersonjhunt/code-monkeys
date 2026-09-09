@@ -19,6 +19,7 @@ flist+=(primate-session)
 flist+=(primate-session-list)
 flist+=(primate-session-kill)
 flist+=(primate-session-resume)
+flist+=(zoo)
 
 function() {
   for fname in ${flist}; do
@@ -260,7 +261,14 @@ function primate() {
     __DOCKER_MOUNT=(--volume /var/run/docker.sock:/var/run/docker.sock --group-add "$(_primate_docker_gid)")
   fi
 
+  # Labelled so it can be found by asking docker, the way session containers already are. A
+  # foreground primate used to carry no label at all, which left `primate` containers identifiable
+  # only by matching their image against the roster — a guess, and the guess is what once let
+  # primate-session-kill remove the wrong container. primate.managed is on both launchers so one
+  # filter finds every primate; primate.session still tells the two kinds apart.
   docker run --rm -it \
+    --label primate.managed \
+    --label "primate.image=${__IMAGE}" \
     --hostname "${__IMAGE}" \
     "${__ENV_FILE_MOUNT[@]}" \
     "${__GPU_OPTS[@]}" \
@@ -511,6 +519,7 @@ function primate-session() {
   # an unrelated container get killed in its place. A label is a fact; a naming convention is a guess.
   docker run -d \
     --name "${__NAME}" \
+    --label primate.managed \
     --label primate.session \
     --label "primate.image=${__IMAGE}" \
     --label "primate.name=${__NAME}" \
@@ -680,6 +689,675 @@ function primate-session-kill() {
   echo "removing ${__NAME} (home volume persists)"
   docker rm -f "${__NAME}" >/dev/null
 }
+
+
+# ── zoo ──────────────────────────────────────────────────────────────────────
+#
+# top(1) for primates. U1 is read-only: it lists every primate and session this
+# daemon has, with live CPU and memory, and does nothing else. Keys that act on a
+# container arrive with the units that implement them — an advertised key that
+# does nothing is worse than an absent one.
+#
+# Two-tier refresh, because the two queries differ by 68x (measured on the live
+# daemon, not assumed):
+#   docker ps     ~0.03s  scales with container count; drives every tick
+#   docker stats  ~2.05s  a fixed sampling window, independent of count
+# So stats are sampled in a background job and the table renders from the last
+# completed sample. A loop that refetched both together would freeze for two
+# seconds per tick and swallow keystrokes.
+#
+# ZOO_PS_SESSION_SOURCE / ZOO_PS_MANAGED_SOURCE / ZOO_STATS_SOURCE replace the
+# three docker queries with files so the collector can be fed fixtures and tested
+# on a machine with no daemon. The two ps seams are separate because `kind` is
+# decided by which query matched, and one merged fixture could not exercise that.
+# Fixtures are their only purpose — zoo talks to one daemon and is not fleet-aware.
+
+# Every primate, one row: kind, name, image, status, id, legacy — separated by
+# 0x1F (unit separator), which cannot occur in a container name, image or status.
+#
+# `kind` comes from WHICH query matched, not from string-matching docker's
+# comma-joined label blob. That blob was being tested with
+# `[[ $labels == *primate.session=* ]]`, so a container merely NAMED
+# "weird primate.session= name" classified as a session. The filter already knows
+# the answer exactly; deriving it a second time by substring was inventing a way
+# to be wrong about something already established.
+#
+# Two queries because docker ANDs repeated `--filter label=`, and sessions started
+# before U0 carry primate.session but not primate.managed. Sessions are emitted
+# first so a container matching both is a session; `legacy` is then just the set
+# difference — in the session list, absent from the managed list.
+#
+# Failure and emptiness stay different answers: a non-zero docker exits non-zero
+# here with its stderr intact.
+function _zoo_ps() {
+  local US=$'\x1f'
+  local __sess __mgd
+  if [[ -n "${ZOO_PS_SESSION_SOURCE:-}" || -n "${ZOO_PS_MANAGED_SOURCE:-}" ]]; then
+    __sess="$(cat "${ZOO_PS_SESSION_SOURCE:-/dev/null}" 2>/dev/null)"
+    __mgd="$(cat "${ZOO_PS_MANAGED_SOURCE:-/dev/null}" 2>/dev/null)"
+  else
+    local __fmt="{{.ID}}${US}{{.Names}}${US}{{.Image}}${US}{{.Status}}"
+    __sess=$(docker ps -a --filter 'label=primate.session' --format "$__fmt" 2>&1) \
+      || { print -r -- "$__sess" >&2; return 1 }
+    __mgd=$(docker ps -a --filter 'label=primate.managed' --format "$__fmt" 2>&1) \
+      || { print -r -- "$__mgd" >&2; return 1 }
+  fi
+
+  local -A __ismgd __seen
+  local __l __id __rest
+  for __l in ${(f)__mgd}; do
+    [[ -n "$__l" ]] || continue
+    __ismgd[${__l%%${US}*}]=1
+  done
+  for __l in ${(f)__sess}; do
+    [[ -n "$__l" ]] || continue
+    __id="${__l%%${US}*}"; __rest="${__l#*${US}}"
+    __seen[$__id]=1
+    if (( ${+__ismgd[$__id]} )); then
+      print -r -- "session${US}${__rest}${US}${__id}${US}0"
+    else
+      print -r -- "session${US}${__rest}${US}${__id}${US}1"
+    fi
+  done
+  for __l in ${(f)__mgd}; do
+    [[ -n "$__l" ]] || continue
+    __id="${__l%%${US}*}"
+    (( ${+__seen[$__id]} )) && continue
+    print -r -- "primate${US}${__l#*${US}}${US}${__id}${US}0"
+  done
+}
+
+# id, cpu%, mem usage, mem%, pids — for running containers only.
+function _zoo_stats() {
+  if [[ -n "${ZOO_STATS_SOURCE:-}" ]]; then
+    cat "$ZOO_STATS_SOURCE"
+    return
+  fi
+  local US=$'\x1f'
+  docker stats --no-stream \
+    --format "{{.ID}}${US}{{.CPUPerc}}${US}{{.MemUsage}}${US}{{.MemPerc}}${US}{{.PIDs}}"
+}
+
+# Takes one row apart, once, into named fields. Every use site reads $ZOO_NAME and
+# $ZOO_ID rather than indexing ${__g[2]} and ${__g[5]} after its own split.
+#
+# This is the shape jq would give for free by addressing fields by key. Without it
+# there were five separate splits and only two checked their field count — so a
+# wrong separator produced empty fields that surfaced three steps later as a
+# self-guard refusal, which is exactly how the U2 bug presented and why it was
+# looked for in the wrong place. A bad row now fails HERE, non-zero, at the split.
+#
+# Callers declare the ZOO_* names local, so nothing leaks into the shell:
+#   local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
+#   _zoo_field "$row" || { ...it is not a row... }
+function _zoo_field() {
+  local __f=("${(@ps:\x1f:)1}")
+  (( ${#__f} == 6 )) || return 1
+  ZOO_KIND="${__f[1]}"; ZOO_NAME="${__f[2]}";   ZOO_IMAGE="${__f[3]}"
+  ZOO_STATUS="${__f[4]}"; ZOO_ID="${__f[5]}"; ZOO_LEGACY="${__f[6]}"
+}
+
+# _zoo_ps already emits the final row shape; this is the one place that validates
+# it, so the renderer and the action keys cannot disagree about what row N is.
+# A short row is dropped rather than half-parsed — a row with missing fields is
+# how an empty container id reached the kill.
+function _zoo_rows() {
+  local __line
+  local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
+  for __line in ${(f)1}; do
+    [[ -n "$__line" ]] || continue
+    _zoo_field "$__line" || continue
+    print -r -- "$__line"
+  done
+}
+
+# Renders one frame to stdout. Split from the loop so it can be diffed against a
+# fixture without a terminal.
+#   $1 ps rows  $2 stats rows  $3 stats age (-1 = none yet)  $4 tick  $5 selected row (0 = none)
+#   $6 max rows to show (0 = all)
+#
+# $6 exists so --once and a pipe still get every row while the interactive view is
+# windowed to the terminal. Truncating a piped frame to the height of a terminal
+# that is not there would answer a question nobody asked.
+function _zoo_frame() {
+  local __ps="$1" __st="$2" __age="$3" __tick="$4" __sel="${5:-0}" __max="${6:-0}"
+  local -A __cpu __mem __memp __pids
+  local __line __id __rest
+
+  # Same separator as the ps rows. docker stats fields cannot contain 0x1F either,
+  # and a short row is skipped rather than half-assigned.
+  for __line in ${(f)__st}; do
+    [[ -n "$__line" ]] || continue
+    local __sf=("${(@ps:\x1f:)__line}")
+    (( ${#__sf} == 5 )) || continue
+    __id="${__sf[1]}"
+    __cpu[$__id]="${__sf[2]}";  __mem[$__id]="${__sf[3]}"
+    __memp[$__id]="${__sf[4]}"; __pids[$__id]="${__sf[5]}"
+  done
+
+  # Widths from the data, so a long session name does not shear the table.
+  local -a __rows
+  local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
+  local __np=0 __ns=0 __legacy=0
+  local __wn=4 __wi=5 __ws=6
+  for __line in ${(f)"$(_zoo_rows "$__ps")"}; do
+    [[ -n "$__line" ]] || continue
+    _zoo_field "$__line" || continue
+    # if/else, not `a && { b } || c`: (( n++ )) evaluates to the OLD value, so the
+    # first session made the ++ return 0, which is false, which ran the || branch
+    # too and counted it as a primate as well.
+    if [[ "$ZOO_KIND" == session ]]; then (( __ns++ )); else (( __np++ )); fi
+    (( ZOO_LEGACY )) && __legacy=1
+    (( ${#ZOO_NAME}   > __wn )) && __wn=${#ZOO_NAME}
+    (( ${#ZOO_IMAGE}  > __wi )) && __wi=${#ZOO_IMAGE}
+    (( ${#ZOO_STATUS} > __ws )) && __ws=${#ZOO_STATUS}
+    __rows+=("$__line")
+  done
+
+  local __stale="" __agetxt="none yet"
+  if (( __age >= 0 )); then
+    __agetxt="${__age}s ago"
+    (( __age > __tick * 3 )) && __stale=" (stale)"
+  fi
+
+  print -r -- "zoo — ${__np} primate$( (( __np == 1 )) || print -n s ), ${__ns} session$( (( __ns == 1 )) || print -n s ) · $(date +%H:%M:%S) · tick ${__tick}s · stats ${__agetxt}${__stale}"
+  print -r -- ""
+  printf "  %-7s  %-*s  %-*s  %-*s  %6s  %-17s  %6s  %5s\n" \
+    KIND $__wn NAME $__wi IMAGE $__ws STATUS "CPU%" MEM "MEM%" PIDS
+
+  if (( ${#__rows} == 0 )); then
+    print -r -- ""
+    print -r -- "  no primates — start one with: primate <image>   or   primate-session <image> [name]"
+  fi
+
+  # Window the table the way the picker windows the roster. More primates than fit
+  # scroll the alternate screen, and after that every cup 0 0 lands in the wrong
+  # place — the same failure the picker hit at 17 images on a 24-line terminal. The
+  # selected row is what must stay visible, so the window follows it.
+  local __first=1 __last=${#__rows}
+  if (( __max > 0 && ${#__rows} > __max )); then
+    __last=$__max
+    if (( __sel > __max )); then
+      __first=$(( __sel - __max + 1 )); __last=$__sel
+    fi
+  fi
+  (( __first > 1 )) && print -r -- "    ⋯ $(( __first - 1 )) more above"
+
+  local __r __n=0
+  for __r in "${__rows[@]}"; do
+    (( __n++ ))
+    (( __n < __first || __n > __last )) && continue
+    _zoo_field "$__r" || continue
+    local __c="${__cpu[$ZOO_ID]:-—}" __m="${__mem[$ZOO_ID]:-—}"
+    local __mp="${__memp[$ZOO_ID]:-—}" __p="${__pids[$ZOO_ID]:-—}"
+    local __mark="  "
+    (( __n == __sel )) && __mark="> "
+    printf "%s%-7s  %-*s  %-*s  %-*s  %6s  %-17s  %6s  %5s\n" \
+      "$__mark" "$ZOO_KIND" $__wn "$ZOO_NAME" $__wi "$ZOO_IMAGE" $__ws "$ZOO_STATUS" \
+      "$__c" "$__m" "$__mp" "$__p"
+  done
+
+  (( __last < ${#__rows} )) && print -r -- "    ⋯ $(( ${#__rows} - __last )) more below"
+
+  print -r -- ""
+  (( __legacy )) && print -r -- "note: a container above predates primate.managed; it is matched by primate.session until it is recycled."
+  if (( ${#__rows} )); then
+    print -r -- " ↑↓ select   a resume   e shell   k kill   n new session   N new primate   q/esc quit   ? help"
+  else
+    print -r -- " n new session   N new primate   r refresh   q/esc quit   ? help"
+  fi
+}
+
+# The stats sample, written atomically by a background job: line 1 is the epoch
+# second it completed, the rest is the sample. Carrying the timestamp inside the
+# file avoids a stat(1) that spells its flags differently on Linux and macOS.
+function _zoo_sample() {
+  local __out="$1"
+  # Every part of this is best-effort and detached, and zoo may already have exited
+  # and deleted the directory underneath it — so nothing this job says belongs on
+  # the user's terminal. It used to leave
+  #   mv: rename /var/.../tmp.XXX.new to /var/.../tmp.XXX: No such file or directory
+  # on the screen AFTER zoo had quit: alarming, unactionable, and about a temp file
+  # nobody asked for. Silencing the whole block, not just the inner command, is what
+  # matters — the failing redirect is as loud as the failing mv.
+  {
+    { print -r -- "$(date +%s)"; _zoo_stats } > "${__out}.new" \
+      && mv -f "${__out}.new" "$__out"
+  } 2>/dev/null
+}
+
+# Is $name still the container zoo selected? The row an action key acts on is as
+# old as the prompt has been sitting there, which is unbounded — it blocks on a
+# keypress. Kill and resume both address a session by NAME downstream, and session
+# names are reusable, so the id has to be re-checked at the moment of action.
+#
+# Bounds the race rather than removing it: the downstream call resolves the name
+# again itself. The window being closed is human thinking time.
+function _zoo_same_container() {
+  local __name="$1" __id="$2" __now
+  __now="$(docker inspect --format '{{.Id}}' "$__name" 2>/dev/null)"
+  if [[ -z "$__now" ]]; then
+    print -r -- "refusing: ${__name} no longer exists."
+    return 1
+  fi
+  if [[ "$__now" != "${__id}"* ]]; then
+    print -r -- "refusing: ${__name} is a different container than the one selected."
+    return 1
+  fi
+}
+
+# The preflight every action key shares: a real row, not this container, and — for
+# a session — still the container that was selected. Extracted before the second
+# and third caller arrived rather than after, which is the lesson from the review:
+# the kill path and the confirm prompt disagreeing about a row is what shipped a
+# kill that killed nothing.
+function _zoo_target_ok() {
+  local __kind="$1" __name="$2" __id="$3"
+  # An empty id makes the prefix test below match ANY self id — every string starts
+  # with the empty string — so zoo would refuse every action and blame the
+  # self-guard. An empty id here means the caller failed to parse a row.
+  if [[ -z "$__id" || -z "$__name" ]]; then
+    print -r -- "zoo: internal error — action called with no container (name='${__name}' id='${__id}')"
+    return 2
+  fi
+  # docker ps gives a short id and _primate_self_container_id a full one, so this
+  # is a prefix, not an equality; an equality would never match and the guard would
+  # look present while doing nothing.
+  local __self="$(_primate_self_container_id)"
+  if [[ -n "$__self" && "$__self" == "${__id}"* ]]; then
+    print -r -- "refusing: ${__name} is the container zoo is running in."
+    return 1
+  fi
+  [[ "$__kind" == session ]] || return 0
+  _zoo_same_container "$__name" "$__id"
+}
+
+# Kills one row. Sessions go through primate-session-kill so the label resolver
+# stays the single answer to "which container is that name"; a foreground primate
+# is --rm, so removing it IS the kill.
+#
+# Refuses the container zoo is itself running in. docker ps gives a short id and
+# _primate_self_container_id a full one, so the comparison is a prefix, not an
+# equality — comparing them directly would silently never match and the guard
+# would look present while doing nothing.
+function _zoo_kill() {
+  local __kind="$1" __name="$2" __id="$3"
+  _zoo_target_ok "$__kind" "$__name" "$__id" || return $?
+  if [[ "$__kind" == session ]]; then
+    primate-session-kill "$__name"
+  else
+    print -r -- "removing ${__name} (foreground primate; --rm, so this is the kill)"
+    docker rm -f "$__id" >/dev/null || return 1
+  fi
+}
+
+# Re-attaches to a session's tmux, through primate-session-resume so the label
+# resolver stays the single answer to which container a name means.
+#
+# Sessions only. A foreground primate has no tmux server to re-attach to — its
+# shell is bound to the terminal that started it, which is not this one. Saying so
+# is better than offering `e` silently instead: they are different things and the
+# difference is the point of having two keys.
+function _zoo_attach() {
+  local __kind="$1" __name="$2" __id="$3"
+  if [[ "$__kind" != session ]]; then
+    print -r -- "refusing: ${__name} is a foreground primate — it has no tmux to re-attach to."
+    print -r -- "  its shell belongs to the terminal that started it. 'e' opens a NEW shell in it."
+    return 1
+  fi
+  _zoo_target_ok "$__kind" "$__name" "$__id" || return $?
+  primate-session-resume "$__name"
+}
+
+# Opens a NEW shell in the container. Deliberately not called "attach": it is not
+# the original terminal, and describing it as attaching would be a lie a user only
+# discovers after wondering why their scrollback is gone.
+function _zoo_exec() {
+  local __kind="$1" __name="$2" __id="$3" __status="$4"
+  _zoo_target_ok "$__kind" "$__name" "$__id" || return $?
+  if [[ "$__status" != Up* ]]; then
+    print -r -- "refusing: ${__name} is not running (${__status}) — there is nothing to exec into."
+    [[ "$__kind" == session ]] && print -r -- "  'a' starts a stopped session and re-attaches it."
+    return 1
+  fi
+  docker exec -it "$__id" zsh
+}
+
+# Picks an image from the roster, into ZOO_PICK. Non-zero means cancelled.
+# Caller declares ZOO_PICK local, as with _zoo_field.
+#
+# Same ↑↓ idiom as the table rather than a numbered menu: the roster is 17 images
+# and single-key numbers stop working at 9. Assumes the alternate screen is already
+# up — it is only ever called from inside the loop.
+function _zoo_pick_image() {
+  local -a __imgs=(${(f)"$(_primate_roster)"})
+  if (( ${#__imgs} == 0 )); then
+    tput cup 0 0 2>/dev/null
+    print -r -- "zoo — no roster here"
+    print -r -- ""
+    print -r -- "  The image list comes from primates/*.dockerfile next to zfuncs. Inside a"
+    print -r -- "  primate ~/.zfuncs is a standalone copy with no sibling primates/, so there"
+    print -r -- "  is nothing to offer. Launch from the host checkout."
+    print -r -- ""
+    print -r -- " any key to return"
+    tput ed 2>/dev/null; read -k 1 2>/dev/null
+    return 1
+  fi
+  local __i=1 __key __seq __n __im __out
+  local __home="$(tput cup 0 0 2>/dev/null)" __ed="$(tput ed 2>/dev/null)"
+  local __el="$(tput el 2>/dev/null)"
+  # The table underneath may be taller than this menu, and 17 images plus chrome is
+  # 23 lines — enough to scroll a standard terminal, after which every cup 0 0 lands
+  # in the wrong place. Clear once on entry, then window the list to what fits.
+  tput clear 2>/dev/null
+  while true; do
+    local __lines=${LINES:-24}
+    local __vis=$(( __lines - 8 ))
+    (( __vis < 3 )) && __vis=3
+    (( __vis > ${#__imgs} )) && __vis=${#__imgs}
+    local __start=1
+    (( __i > __vis )) && __start=$(( __i - __vis + 1 ))
+    local __end=$(( __start + __vis - 1 ))
+
+    __out="zoo — $1
+"
+    # The workspace is whatever zoo was started in, because that is what the
+    # launchers mount. Worth showing before starting something, not after.
+    __out+="
+  workspace to mount: $(pwd)
+"
+    (( __start > 1 )) && __out+="    ⋯ ${__start} more above
+" || __out+="
+"
+    __n=0
+    for __im in "${__imgs[@]}"; do
+      (( __n++ ))
+      (( __n < __start || __n > __end )) && continue
+      if (( __n == __i )); then __out+="  > ${__im}
+"; else __out+="    ${__im}
+"; fi
+    done
+    (( __end < ${#__imgs} )) && __out+="    ⋯ $(( ${#__imgs} - __end )) more below
+"
+    __out+="
+ ↑↓ choose   enter start   esc / q cancel"
+    local -a __ol=("${(@f)__out}")
+    __ol=("${__ol[@]/%/$__el}")
+    print -rn -- "${__home}${(F)__ol}
+${__ed}"
+    read -k 1 __key 2>/dev/null || return 1
+    case "$__key" in
+      $'\n'|$'\r') ZOO_PICK="${__imgs[$__i]}"; return 0 ;;
+      q) return 1 ;;
+      $'\e')
+        __seq=""
+        read -k 2 -t 1 __seq 2>/dev/null
+        case "$__seq" in
+          '[A') (( __i > 1 )) && (( __i-- )) ;;
+          '[B') (( __i < ${#__imgs} )) && (( __i++ )) ;;
+          '')   return 1 ;;   # a bare ESC, not an arrow: cancel
+        esac ;;
+    esac
+  done
+}
+
+function _zoo_teardown() {
+  tput cnorm 2>/dev/null
+  tput rmcup 2>/dev/null
+}
+
+function _zoo_help() {
+  print -r -- "zoo — top(1) for primates"
+  print -r -- ""
+  print -r -- "  usage: zoo [-i|--interval <seconds>] [--once] [-h|--help]"
+  print -r -- ""
+  print -r -- "  ↑ ↓  select a row    a  re-attach to a session (tmux)"
+  print -r -- "  k    kill (asks)     e  open a NEW shell in the container"
+  print -r -- "  n    new session     N  new foreground primate"
+  print -r -- "  q    quit            r  refresh now         ?  this help"
+  print -r -- ""
+  print -r -- "  q, esc and ctrl-c all quit — whichever you reach for means leave."
+  print -r -- ""
+  print -r -- "  j/k are not bound to navigation: k is kill, and overloading it is"
+  print -r -- "  how a navigation keystroke becomes a destructive one."
+  print -r -- ""
+  print -r -- "  KIND is 'session' for a detached primate-session container and"
+  print -r -- "  'primate' for a foreground primate. Stopped sessions are listed"
+  print -r -- "  too — they still hold a home volume and are still resumable."
+  print -r -- ""
+  print -r -- "  MEM's total is the docker daemon's memory limit, which on macOS is"
+  print -r -- "  the Docker Desktop VM's, not the host's."
+  print -r -- ""
+  print -r -- "  Stats come from 'docker stats', a ~2s sampling window, so they are"
+  print -r -- "  collected in the background and may lag the table by a tick. A"
+  print -r -- "  sample older than three ticks is marked stale rather than shown as"
+  print -r -- "  current."
+  print -r -- ""
+  print -r -- "  Killing a session leaves its <image>-home volume alone. zoo refuses to"
+  print -r -- "  act on the container it is itself running in."
+  print -r -- ""
+  print -r -- "  'a' works on sessions only: a foreground primate has no tmux server to"
+  print -r -- "  re-attach to, since its shell belongs to the terminal that started it."
+  print -r -- "  'e' opens a NEW shell in any running container — it is not the original"
+  print -r -- "  terminal, which is why it is not called attach."
+  print -r -- ""
+  print -r -- "  n and N pick an image and hand over to primate-session / primate, which"
+  print -r -- "  own the workspace mount, the \$HOME refusal and the first-run config sync."
+  print -r -- "  The workspace mounted is whatever directory zoo was started in, shown on"
+  print -r -- "  the picker before you commit to it. Both return here when they end."
+}
+
+function zoo() {
+  local __tick=3 __once=false
+  while (( $# )); do
+    case "$1" in
+      -i|--interval)
+        # Check before shifting: setting __tick empty and then letting `shift 2`
+        # fail produced a raw "shift count must be <= $#" instead of this message.
+        if (( $# < 2 )); then
+          print -r -- "zoo: --interval wants a positive whole number of seconds" >&2
+          return 1
+        fi
+        __tick="$2"; shift 2 ;;
+      --once)        __once=true; shift ;;
+      -h|--help)     _zoo_help; return 0 ;;
+      *) print -r -- "zoo: unknown option: $1" >&2; _zoo_help >&2; return 1 ;;
+    esac
+  done
+  if [[ ! "$__tick" == <-> ]] || (( __tick < 1 )); then
+    print -r -- "zoo: --interval wants a positive whole number of seconds" >&2
+    return 1
+  fi
+
+  # A directory, not two files. The teardown removes it whole while the sampler may
+  # still be running; a write into a directory that no longer exists creates nothing,
+  # whereas a sample completing just after two files were deleted left an orphan in
+  # /tmp on every such race.
+  # Job-control chatter belongs nowhere near a full-screen redraw: starting the
+  # background sampler otherwise flashes a job line over the table. local_options
+  # puts both back when the function returns.
+  setopt local_options no_monitor no_notify
+
+  # Fetched once. Emitting a frame as home + body + clear-to-end in ONE write is
+  # what stops the flicker: the previous code issued a write per print, so a
+  # dozen-line table was a dozen visible paint steps every tick.
+  local __HOME="$(tput cup 0 0 2>/dev/null)" __ED="$(tput ed 2>/dev/null)"
+  # el = clear to end of LINE. ed only clears BELOW the cursor, so a line shorter
+  # than the one it overwrites keeps the old tail — which is what welded fragments
+  # of a raw row, separators and all, onto the end of the header.
+  local __EL="$(tput el 2>/dev/null)"
+
+  local __sd="$(mktemp -d)" __spid=0 __rc=0 __sel=1
+  local __sf="${__sd}/stats"
+  # Not a terminal, or asked for one frame: print it and leave. Keeps zoo usable
+  # in a pipe and testable without a pty.
+  if [[ "$__once" == true || ! -t 1 ]]; then
+    local __ps
+    if ! __ps=$(_zoo_ps); then
+      print -r -- "zoo: could not query docker for primates" >&2
+      rm -rf "$__sd"
+      return 1
+    fi
+    _zoo_frame "$__ps" "$(_zoo_stats 2>/dev/null)" 0 "$__tick"
+    rm -rf "$__sd"
+    return 0
+  fi
+
+  tput smcup 2>/dev/null; tput civis 2>/dev/null
+  # If smcup is unavailable zoo paints over the live terminal and cup 0 0 homes onto
+  # whatever was already there. One clear on entry — not per frame, which would
+  # reintroduce the flicker.
+  tput clear 2>/dev/null
+  # The `always` block below does NOT run when the shell takes SIGINT: verified by
+  # sending ctrl-c through a pty and finding smcup 1 / rmcup 0 and civis 1 /
+  # cnorm 0 in the captured output — the terminal was left in the alternate screen
+  # with the cursor hidden. `always` covers every other exit and the temp file;
+  # this covers the one a user actually types.
+  trap '_zoo_teardown; return 130' INT TERM
+  {
+    while true; do
+      local __ps
+      if ! __ps=$(_zoo_ps 2>&1); then
+        tput cup 0 0 2>/dev/null
+        print -r -- "zoo: could not query docker for primates — this is not the same as none running:"
+        print -r -- "$__ps" | sed 's/^/  /'
+        print -r -- ""
+        print -r -- " q quit   r retry"
+        tput ed 2>/dev/null
+        read -t "$__tick" -k 1 __key 2>/dev/null
+        [[ "$__key" == q ]] && { __rc=1; break }
+        continue
+      fi
+
+      if (( __spid == 0 )) || ! kill -0 "$__spid" 2>/dev/null; then
+        _zoo_sample "$__sf" &!
+        __spid=$!
+      fi
+
+      local __age=-1 __st=""
+      if [[ -s "$__sf" ]]; then
+        local __all="$(<"$__sf")"
+        __st="${__all#*$'\n'}"
+        __age=$(( $(date +%s) - ${__all%%$'\n'*} ))
+      fi
+
+      # Same parse the frame uses, so "row 3" means the same thing to the cursor
+      # and to the kill. Clamped every tick because the list shrinks under us.
+      local -a __rowarr=(${(f)"$(_zoo_rows "$__ps")"})
+      local __nrows=${#__rowarr}
+      (( __sel > __nrows )) && __sel=$__nrows
+      (( __nrows > 0 && __sel < 1 )) && __sel=1
+
+      # Room for the header, column head, blanks, the legacy note and the footer.
+      local __vis=$(( ${LINES:-24} - 8 ))
+      (( __vis < 3 )) && __vis=3
+      local -a __fl=("${(@f)$(_zoo_frame "$__ps" "$__st" "$__age" "$__tick" "$__sel" "$__vis")}")
+      __fl=("${__fl[@]/%/$__EL}")
+      print -rn -- "${__HOME}${(F)__fl}
+${__ED}"
+
+      local __key=""
+      read -t "$__tick" -k 1 __key 2>/dev/null
+
+      # Arrows arrive as ESC [ A / ESC [ B. j/k are deliberately not bound: k is
+      # kill, and quietly overloading it is how a navigation keystroke becomes a
+      # destructive one.
+      if [[ "$__key" == $'\e' ]]; then
+        local __seq=""
+        read -k 2 -t 1 __seq 2>/dev/null
+        case "$__seq" in
+          '[A') (( __sel > 1 )) && (( __sel-- )) ;;
+          '[B') (( __sel < __nrows )) && (( __sel++ )) ;;
+          # A bare ESC is not an arrow. q, ESC and ctrl-c should all mean "leave",
+          # because a user reaching for any of them wants out, not a redraw.
+          '')   break ;;
+        esac
+        continue
+      fi
+
+      case "$__key" in
+        q) break ;;
+        k) (( __nrows == 0 )) && continue
+           local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
+           if ! _zoo_field "${__rowarr[$__sel]}"; then
+             tput cup 0 0 2>/dev/null
+             print -r -- "zoo: internal error — row ${__sel} is not a row; refusing to act on it."
+             print -r -- ""; print -r -- " any key to continue"
+             tput ed 2>/dev/null; read -k 1 2>/dev/null
+             continue
+           fi
+           tput cup 0 0 2>/dev/null
+           print -r -- "zoo — confirm"
+           print -r -- ""
+           print -r -- "  kill ${ZOO_KIND} ${ZOO_NAME}   (${ZOO_IMAGE}, ${ZOO_STATUS})"
+           if [[ "$ZOO_KIND" == session ]]; then
+             print -r -- "  the ${ZOO_IMAGE}-home volume persists; the session can be started again."
+           else
+             print -r -- "  a foreground primate is --rm, so removing it is the kill."
+           fi
+           print -r -- ""
+           print -r -- "  y  confirm       any other key cancels"
+           tput ed 2>/dev/null
+           local __c=""; read -k 1 __c 2>/dev/null
+           if [[ "$__c" == y ]]; then
+             tput cup 0 0 2>/dev/null; print -r -- "zoo"; print -r -- ""
+             _zoo_kill "$ZOO_KIND" "$ZOO_NAME" "$ZOO_ID" 2>&1 | sed 's/^/  /'
+             print -r -- ""
+             print -r -- " any key to continue"
+             tput ed 2>/dev/null; read -k 1 2>/dev/null
+           fi ;;
+        n|N) local ZOO_PICK=""
+           local __what="new session — detached, survives a disconnect, returns here"
+           [[ "$__key" == N ]] && __what="new foreground primate — owns this terminal until it exits"
+           if _zoo_pick_image "$__what"; then
+             # Hand over exactly as a/e do. Both launchers own the workspace mount,
+             # the $HOME guard and the first-run sync; zoo picks a name and gets out
+             # of the way rather than reimplementing any of it.
+             _zoo_teardown
+             if [[ "$__key" == n ]]; then
+               primate-session "$ZOO_PICK"
+             else
+               primate "$ZOO_PICK"
+             fi || { print -r -- ""; print -r -- "  any key to return to zoo"; read -k 1 2>/dev/null }
+             tput smcup 2>/dev/null; tput civis 2>/dev/null
+           fi ;;
+        a|e) (( __nrows == 0 )) && continue
+           local ZOO_KIND ZOO_NAME ZOO_IMAGE ZOO_STATUS ZOO_ID ZOO_LEGACY
+           if ! _zoo_field "${__rowarr[$__sel]}"; then
+             tput cup 0 0 2>/dev/null
+             print -r -- "zoo: internal error — row ${__sel} is not a row; refusing to act on it."
+             print -r -- ""; print -r -- " any key to continue"
+             tput ed 2>/dev/null; read -k 1 2>/dev/null
+             continue
+           fi
+           # Leave the alternate screen BEFORE acting. A successful handoff needs the
+           # real terminal — tmux and an interactive shell both want it — and a refusal
+           # then prints where the user can scroll back to it. One path for both.
+           _zoo_teardown
+           if [[ "$__key" == a ]]; then
+             _zoo_attach "$ZOO_KIND" "$ZOO_NAME" "$ZOO_ID"
+           else
+             _zoo_exec "$ZOO_KIND" "$ZOO_NAME" "$ZOO_ID" "$ZOO_STATUS"
+           fi || { print -r -- ""; print -r -- "  any key to return to zoo"; read -k 1 2>/dev/null }
+           tput smcup 2>/dev/null; tput civis 2>/dev/null ;;
+        '?') tput cup 0 0 2>/dev/null; _zoo_help; print -r -- ""
+             print -r -- " any key to return"; tput ed 2>/dev/null
+             read -k 1 2>/dev/null ;;
+        *) ;;   # r, and every other key, just falls through to a redraw
+      esac
+    done
+  } always {
+    _zoo_teardown
+    trap - INT TERM
+    # The sampler is still not killed — its pid may already be reaped and reused, and
+    # signalling that would hit an unrelated process. Removing the directory out from
+    # under it is safe now that it is silent: a write into a directory that is gone
+    # creates nothing and says nothing.
+    rm -rf "$__sd"
+  }
+  return $__rc
+}
+compdef '_values "options" "--interval[seconds between refreshes]" "--once[print one frame and exit]" "--help[usage]"' zoo
 
 # Take A Dump (takes a java heapdump in a running container)
 function tad() {
