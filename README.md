@@ -48,7 +48,7 @@ The shell config is layered:
 1. **`zshrc.template`** — installed as `~/.zshrc` inside containers; sources `~/.zbase`, fixes ownership of mounted directories, activates the image's conda environment if present
 2. **`zbase`** — main config: oh-my-zsh setup, plugins, PATH, editor, history settings
 3. **`zaliases`** — aliases (`dps`, `dpi`, `probe`, `nvtop` (GPU monitor via the cuda-base primate), `ocd`, `git.all`, etc.)
-4. **`zfuncs`** — functions: `primate()`, `primate-session()`, `primate-session-list()`, `primate-session-resume()`, `primate-session-kill()`, `primate-upgrade()`, `zoo()`, `which-os()`, `code-here()`, `tree()`, `clamscan()`, `tad()`, `watch()`
+4. **`zfuncs`** — functions: `primate()`, `primate-session()`, `primate-session-list()`, `primate-session-resume()`, `primate-session-kill()`, `primate-upgrade()`, `which-os()`, `code-here()`, `tree()`, `clamscan()`, `tad()`, `watch()`
 
 ## Primates
 
@@ -153,11 +153,6 @@ primate-session claude scratch        # ...under an explicit session name, so on
 primate-session claude build          #    can have several sessions in flight at once
 # ctrl-b d detaches; re-run the same command from anywhere to re-attach
 
-zoo                                   # top(1) for primates: live table of all of them
-                                      #   ↑↓ select, a resume, e shell, k kill,
-                                      #   n new session, N new primate, q quit, ? help
-zoo -i 1                              # ...refreshing every second
-zoo --once                            # one frame, then exit (also what a pipe gets)
 primate-session-list                  # what is in flight, running or stopped
 primate-session-resume scratch        # re-attach by session name — no need to recall the image
 primate-session-resume                # ...and with one session in flight, not even the name
