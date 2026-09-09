@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""zoo — an interactive manager for primates.
+
+Lists the containers that `primate` and `primate-session` start, with live figures, and acts on
+them. Requirements, constraints and measurements are in zoo-spec.md at the repo root; this file
+does not repeat them, but the decisions below cite them.
+
+Why python and not zsh: two zsh implementations were abandoned, and six of the seven failures in
+the spec's catalogue were shell process and terminal hygiene — forks per tick, an `always` block
+that SIGINT skips, a background sampler outliving its parent, job-control notices on the user's
+terminal. Everything here runs in one process and one thread: the docker client speaks HTTP over
+the unix socket from inside the process, so a refresh forks nothing at all.
+
+Why there is no streaming sampler: a stats reading requested with `one-shot=true` costs ~6 ms
+(measured 2026-09-09, Docker Desktop 29.7 and native Linux alike), against ~1-2 s for the form
+that makes the daemon wait for a second sample. CPU% is the delta between two of our own ticks —
+exactly what `docker stats` computes internally — so the "expensive stats" problem that drove
+the previous designs toward coprocesses and temp files does not exist.
+
+Standard library only, on purpose: this runs in the host shell on macOS and Linux and inside
+every primate, and a venv on each of those is a second thing to keep in step.
+"""
+from __future__ import annotations
+
+import argparse
+import http.client
+import json
+import os
+import shutil
+import socket
+import sys
+import time
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Tuple
+
+__version__ = "0.1.0-U0"
+
+# Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
+# and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
+DEFAULT_SOCKETS = ("/var/run/docker.sock", "~/.docker/run/docker.sock")
+
+# one-shot=true is the whole reason zoo can be single-threaded: see the module docstring.
+STATS_QUERY = "/stats?stream=false&one-shot=true"
+
+# Requests are small and the daemon is local; a hung daemon must not hang the view.
+SOCKET_TIMEOUT = 1.0
+
+Transport = Callable[[str, str], Tuple[int, bytes]]
+
+
+class DockerError(Exception):
+    """The daemon could not be reached, or answered with an error."""
+
+
+class NotFound(DockerError):
+    """The daemon answered 404: the container is gone."""
+
+
+# --------------------------------------------------------------------------- docker client
+
+
+def socket_path(environ=None, exists=os.path.exists) -> str:
+    """The unix socket to talk to. DOCKER_HOST wins; otherwise the first default that exists.
+
+    Only unix sockets: zoo is single-daemon by design (spec §6) and every host in the fleet
+    reaches its daemon through one. A TCP DOCKER_HOST is an error rather than a silent fallback
+    to a socket the user did not ask for.
+    """
+    environ = os.environ if environ is None else environ
+    host = environ.get("DOCKER_HOST", "")
+    if host:
+        if host.startswith("unix://"):
+            return host[len("unix://"):]
+        raise DockerError(f"DOCKER_HOST={host!r}: zoo speaks only to a unix socket")
+    home = environ.get("HOME", "")
+    for candidate in DEFAULT_SOCKETS:
+        path = candidate.replace("~", home, 1) if candidate.startswith("~") else candidate
+        if exists(path):
+            return path
+    raise DockerError(
+        "no docker socket at " + " or ".join(DEFAULT_SOCKETS) + " (set DOCKER_HOST=unix://...)"
+    )
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path: str, timeout: float):
+        super().__init__("localhost", timeout=timeout)
+        self._path = path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self._path)
+        self.sock = sock
+
+
+def unix_transport(path: str, timeout: float = SOCKET_TIMEOUT) -> Transport:
+    """A transport is (method, url) -> (status, body). This is the real one; tests inject fakes."""
+
+    def send(method: str, url: str) -> Tuple[int, bytes]:
+        conn = _UnixHTTPConnection(path, timeout)
+        try:
+            conn.request(method, url, headers={"Host": "docker"})
+            resp = conn.getresponse()
+            return resp.status, resp.read()
+        except (OSError, http.client.HTTPException) as exc:
+            raise DockerError(f"{method} {url}: {exc}") from exc
+        finally:
+            conn.close()
+
+    return send
+
+
+class Docker:
+    """The handful of Engine API calls zoo makes. Unversioned paths: the daemon picks its own."""
+
+    def __init__(self, transport: Transport):
+        self._send = transport
+
+    def _json(self, method: str, url: str):
+        status, body = self._send(method, url)
+        if status == 404:
+            raise NotFound(f"{method} {url}: no such container")
+        if status >= 400:
+            detail = body[:200].decode("utf-8", errors="replace").strip()
+            raise DockerError(f"{method} {url}: HTTP {status} {detail}")
+        if not body:
+            return None
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise DockerError(f"{method} {url}: unparseable response") from exc
+
+    def list_all(self) -> list:
+        return self._json("GET", "/containers/json?all=true") or []
+
+    def inspect(self, cid: str) -> dict:
+        return self._json("GET", f"/containers/{cid}/json")
+
+    def stats(self, cid: str) -> dict:
+        return self._json("GET", f"/containers/{cid}{STATS_QUERY}")
+
+
+# --------------------------------------------------------------------------- rows
+
+SESSION, PRIMATE = "session", "primate"
+
+
+@dataclass(frozen=True)
+class Row:
+    id: str        # the 64-character id: the API gives it whole, so no prefix games (spec §7.3)
+    kind: str      # SESSION or PRIMATE
+    name: str
+    image: str
+    running: bool
+    status: str    # docker's own wording, e.g. "Up 22 hours", "Exited (0) 3 days ago"
+
+
+def is_primate(labels: dict) -> bool:
+    """Identify by label, never by image (spec §7.1). primate.managed is on everything the
+    launchers start now; primate.session alone is a session from before that label existed."""
+    return "primate.managed" in labels or "primate.session" in labels
+
+
+def row_from_listing(c: dict) -> Row:
+    cid = c.get("Id") or ""
+    if len(cid) < 12:
+        # An unparsed row must never reach a comparison: an empty id is a prefix of every id.
+        raise DockerError(f"container listing row without a usable id: {c!r}"[:200])
+    labels = c.get("Labels") or {}
+    kind = SESSION if "primate.session" in labels else PRIMATE
+    names = c.get("Names") or []
+    container_name = names[0].lstrip("/") if names else cid[:12]
+    name = (labels.get("primate.name") or container_name) if kind == SESSION else container_name
+    image = labels.get("primate.image") or c.get("Image") or "?"
+    return Row(
+        id=cid,
+        kind=kind,
+        name=name,
+        image=image,
+        running=(c.get("State") == "running"),
+        status=c.get("Status") or "",
+    )
+
+
+def rows_from_listing(listing: list) -> List[Row]:
+    rows = [row_from_listing(c) for c in listing if is_primate(c.get("Labels") or {})]
+    # Sessions first (they are the durable ones), then by name; the id breaks ties so two
+    # foreground primates of one image keep a stable order between ticks.
+    rows.sort(key=lambda r: (r.kind != SESSION, r.name, r.id))
+    return rows
+
+
+# --------------------------------------------------------------------------- samples
+
+
+@dataclass(frozen=True)
+class Sample:
+    cpu_total: int     # nanoseconds of CPU this container has used, cumulative
+    system_cpu: int    # nanoseconds of CPU the host has used, cumulative
+    online_cpus: int
+    mem_used: int      # bytes, cache excluded the way `docker stats` excludes it
+    mem_limit: int
+    pids: int
+
+
+def parse_stats(doc: dict) -> Sample:
+    cpu = doc.get("cpu_stats") or {}
+    usage = cpu.get("cpu_usage") or {}
+    online = cpu.get("online_cpus") or len(usage.get("percpu_usage") or []) or 1
+    mem = doc.get("memory_stats") or {}
+    mstats = mem.get("stats") or {}
+    # cgroup v2 reports inactive_file, v1 total_inactive_file; docker subtracts whichever exists.
+    cache = mstats.get("inactive_file", mstats.get("total_inactive_file", 0))
+    return Sample(
+        cpu_total=int(usage.get("total_usage") or 0),
+        system_cpu=int(cpu.get("system_cpu_usage") or 0),
+        online_cpus=int(online),
+        mem_used=max(int(mem.get("usage") or 0) - int(cache), 0),
+        mem_limit=int(mem.get("limit") or 0),
+        pids=int((doc.get("pids_stats") or {}).get("current") or 0),
+    )
+
+
+def cpu_percent(prev: Optional[Sample], cur: Sample) -> Optional[float]:
+    """None means "cannot say yet", which the view must show differently from 0.0 (spec req 5)."""
+    if prev is None:
+        return None
+    d_cpu = cur.cpu_total - prev.cpu_total
+    d_sys = cur.system_cpu - prev.system_cpu
+    if d_sys <= 0 or d_cpu < 0:
+        # No time passed on the host's clock, or the counters reset (container restarted).
+        return None
+    return d_cpu / d_sys * cur.online_cpus * 100.0
+
+
+# --------------------------------------------------------------------------- figures
+
+PENDING, LIVE, STALE, STOPPED = "pending", "live", "stale", "stopped"
+
+
+@dataclass
+class Figures:
+    state: str
+    cpu: Optional[float] = None
+    mem_used: Optional[int] = None
+    mem_limit: Optional[int] = None
+    pids: Optional[int] = None
+    ok_at: Optional[float] = None   # monotonic time of the last successful reading
+    error: str = ""
+
+
+class Monitor:
+    """Turns the daemon's raw readings into per-row figures, one tick at a time.
+
+    Holds the previous sample per container so CPU% can be a delta, and keeps the last good
+    figures when a reading fails so the view can show them as stale rather than blank.
+    """
+
+    def __init__(self, docker: Docker, clock: Callable[[], float] = time.monotonic):
+        self._docker = docker
+        self._clock = clock
+        self._samples: Dict[str, Sample] = {}
+        self.figures: Dict[str, Figures] = {}
+        self.rows: List[Row] = []
+        self.error = ""
+        self.ticked_at: Optional[float] = None
+
+    def tick(self) -> List[Row]:
+        now = self._clock()
+        try:
+            listing = self._docker.list_all()
+        except DockerError as exc:
+            # The rows we had are better than none, but every figure on them is now suspect.
+            self.error = str(exc)
+            for fig in self.figures.values():
+                if fig.state != STOPPED:
+                    fig.state = STALE
+                    fig.error = self.error
+            return self.rows
+        self.error = ""
+        rows = rows_from_listing(listing)
+        current = {r.id for r in rows}
+        for gone in [cid for cid in self.figures if cid not in current]:
+            self.figures.pop(gone, None)
+            self._samples.pop(gone, None)
+        for row in rows:
+            if not row.running:
+                # A stopped container has no stats, and its counters restart with it.
+                self._samples.pop(row.id, None)
+                self.figures[row.id] = Figures(STOPPED)
+                continue
+            try:
+                cur = parse_stats(self._docker.stats(row.id))
+            except DockerError as exc:
+                last = self.figures.get(row.id)
+                self.figures[row.id] = Figures(
+                    STALE,
+                    cpu=None,
+                    mem_used=last.mem_used if last else None,
+                    mem_limit=last.mem_limit if last else None,
+                    pids=last.pids if last else None,
+                    ok_at=last.ok_at if last else None,
+                    error=str(exc),
+                )
+                continue
+            cpu = cpu_percent(self._samples.get(row.id), cur)
+            self._samples[row.id] = cur
+            self.figures[row.id] = Figures(
+                LIVE if cpu is not None else PENDING,
+                cpu=cpu,
+                mem_used=cur.mem_used,
+                mem_limit=cur.mem_limit,
+                pids=cur.pids,
+                ok_at=now,
+            )
+        self.rows = rows
+        self.ticked_at = now
+        return rows
+
+
+# --------------------------------------------------------------------------- text layout
+
+
+def human_bytes(n: int) -> str:
+    value = float(n)
+    for unit in ("B", "K", "M", "G", "T"):
+        if value < 1024 or unit == "T":
+            return f"{value:.0f}{unit}" if unit == "B" else f"{value:.1f}{unit}"
+        value /= 1024
+    return f"{value:.1f}T"
+
+
+def fmt_cpu(fig: Optional[Figures]) -> str:
+    if fig is None or fig.state == STOPPED:
+        return "-"
+    if fig.state == STALE:
+        return "stale"
+    if fig.state == PENDING or fig.cpu is None:
+        return "..."
+    return f"{fig.cpu:.1f}"
+
+
+def fmt_mem(fig: Optional[Figures]) -> str:
+    if fig is None or fig.state == STOPPED:
+        return "-"
+    if fig.mem_used is None or fig.mem_limit is None:
+        return "?"
+    text = f"{human_bytes(fig.mem_used)}/{human_bytes(fig.mem_limit)}"
+    return text + "?" if fig.state == STALE else text
+
+
+def fmt_pids(fig: Optional[Figures]) -> str:
+    if fig is None or fig.state == STOPPED:
+        return "-"
+    if fig.pids is None:
+        return "?"
+    return f"{fig.pids}?" if fig.state == STALE else str(fig.pids)
+
+
+COLUMNS = ("KIND", "NAME", "IMAGE", "STATUS", "CPU%", "MEM", "PIDS")
+_RIGHT = {"CPU%", "PIDS"}
+_SHRINK_ORDER = ("STATUS", "IMAGE", "NAME")  # what to squeeze first on a narrow terminal
+_MIN_COL = 4
+
+
+def _cells(row: Row, fig: Optional[Figures]) -> Tuple[str, ...]:
+    return (row.kind, row.name, row.image, row.status, fmt_cpu(fig), fmt_mem(fig), fmt_pids(fig))
+
+
+def _fit(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    return text[: max(width - 1, 0)] + "~"
+
+
+def layout(rows: List[Row], figures: Dict[str, Figures], width: int) -> List[str]:
+    """Header plus one line per row, every line at most `width` wide (spec req 6)."""
+    table = [COLUMNS] + [_cells(r, figures.get(r.id)) for r in rows]
+    widths = [max(len(line[i]) for line in table) for i in range(len(COLUMNS))]
+    gap = 2
+    over = sum(widths) + gap * (len(COLUMNS) - 1) - width
+    for name in _SHRINK_ORDER:
+        if over <= 0:
+            break
+        i = COLUMNS.index(name)
+        give = min(over, widths[i] - _MIN_COL)
+        if give > 0:
+            widths[i] -= give
+            over -= give
+    lines = []
+    for line in table:
+        parts = []
+        for i, cell in enumerate(line):
+            cell = _fit(cell, widths[i])
+            parts.append(cell.rjust(widths[i]) if COLUMNS[i] in _RIGHT else cell.ljust(widths[i]))
+        lines.append((" " * gap).join(parts).rstrip()[:width])
+    return lines
+
+
+# --------------------------------------------------------------------------- entry point
+
+# The gap between the two readings `--once` takes so its CPU% is a real delta, not "...".
+ONCE_GAP = 0.5
+
+
+def once(mon: Monitor, width: int, stdout, stderr, sleep=time.sleep) -> int:
+    for attempt in (1, 2):
+        mon.tick()
+        if mon.error:
+            # Failed is not "found nothing": the two must never look alike (sdlc verify rules).
+            print(f"zoo: cannot list containers: {mon.error}", file=stderr)
+            return 1
+        if attempt == 1:
+            if not mon.rows:
+                print("No primates.", file=stdout)
+                return 0
+            sleep(ONCE_GAP)
+    for line in layout(mon.rows, mon.figures, width):
+        print(line, file=stdout)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="zoo",
+        description="An interactive manager for primates: the containers primate and "
+        "primate-session start.",
+    )
+    p.add_argument("--once", action="store_true",
+                   help=f"print one frame and exit (two readings {ONCE_GAP:.1f}s apart, so CPU%% is real)")
+    p.add_argument("-i", "--interval", type=float, default=2.0, metavar="SECONDS",
+                   help="seconds between refreshes (default 2)")
+    p.add_argument("--width", type=int, default=None, metavar="COLS",
+                   help="frame width for --once (default: the terminal's)")
+    p.add_argument("--version", action="version", version=f"zoo {__version__}")
+    return p
+
+
+def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[Transport] = None,
+         sleep=time.sleep) -> int:
+    stdout = sys.stdout if stdout is None else stdout
+    stderr = sys.stderr if stderr is None else stderr
+    args = build_parser().parse_args(argv)
+    try:
+        transport = transport or unix_transport(socket_path(environ))
+    except DockerError as exc:
+        print(f"zoo: {exc}", file=stderr)
+        return 1
+    mon = Monitor(Docker(transport))
+    if args.once:
+        width = args.width or shutil.get_terminal_size(fallback=(120, 24)).columns
+        return once(mon, width, stdout, stderr, sleep=sleep)
+    print("zoo: the interactive view is not built yet (U0 of feat/zoo-py); use --once", file=stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
