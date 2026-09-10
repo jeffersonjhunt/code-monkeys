@@ -865,7 +865,10 @@ class SocketPathTest(unittest.TestCase):
 class OnceTest(unittest.TestCase):
     def run_main(self, argv, fake):
         out, err = io.StringIO(), io.StringIO()
-        rc = zoo.main(argv, stdout=out, stderr=err, environ={}, transport=fake, sleep=lambda s: None)
+        # exec_fn is a no-op: --once must never auto-wrap, and if a regression made it, the suite
+        # should fail here rather than replace the test runner with a real tmux.
+        rc = zoo.main(argv, stdout=out, stderr=err, environ={}, transport=fake, sleep=lambda s: None,
+                      exec_fn=lambda *a: None)
         return rc, out.getvalue(), err.getvalue()
 
     def test_once_prints_a_frame_with_real_cpu(self):
@@ -890,7 +893,8 @@ class OnceTest(unittest.TestCase):
 
     def test_no_socket_is_reported_not_traced(self):
         out, err = io.StringIO(), io.StringIO()
-        rc = zoo.main(["--once"], stdout=out, stderr=err, environ={"DOCKER_HOST": "unix:///nonexistent/zoo.sock"})
+        rc = zoo.main(["--once"], stdout=out, stderr=err, environ={"DOCKER_HOST": "unix:///nonexistent/zoo.sock"},
+                      exec_fn=lambda *a: None)
         self.assertEqual((rc, out.getvalue()), (1, ""))
         self.assertIn("zoo: cannot list containers", err.getvalue())
 
@@ -905,6 +909,8 @@ class InteractiveRefusalTest(unittest.TestCase):
     refusals that must happen before curses is touched (spec req 28: TERM set and unset)."""
 
     def run_main(self, environ):
+        # TMUX set: these test the refusals that happen after auto-wrap, so they must not wrap.
+        environ = {"TMUX": "/tmp/tmux-1000/default,1,0", **environ}
         out, err = io.StringIO(), io.StringIO()
         rc = zoo.main([], stdin=io.StringIO(), stdout=out, stderr=err, environ=environ,
                       transport=FakeDaemon())
@@ -919,6 +925,63 @@ class InteractiveRefusalTest(unittest.TestCase):
         rc, out, err = self.run_main({"TERM": "xterm-256color"})
         self.assertEqual((rc, out), (1, ""))
         self.assertIn("needs a terminal", err)
+
+
+class AutoWrapTest(unittest.TestCase):
+    """main()'s auto-wrap: an interactive run outside tmux re-execs itself inside a tmux session.
+    exec_fn is stubbed so the process is not actually replaced."""
+
+    class FakeExec:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, file, argv):
+            self.calls.append((file, argv))
+
+    def run_main(self, argv, environ, stdin_tty=False):
+        ex = self.FakeExec()
+
+        class _Stdin(io.StringIO):
+            def isatty(self_inner):
+                return stdin_tty
+        out, err = io.StringIO(), io.StringIO()
+        rc = zoo.main(argv, stdin=_Stdin(), stdout=out, stderr=err, environ=environ,
+                      transport=FakeDaemon(), sleep=lambda s: None, exec_fn=ex, prog="/opt/zoo")
+        return rc, out.getvalue(), err.getvalue(), ex
+
+    def test_interactive_outside_tmux_reexecs_into_tmux(self):
+        rc, out, err, ex = self.run_main([], {"ZOO_TMUX": "/x/tmux"})
+        self.assertEqual(len(ex.calls), 1)
+        file, argv = ex.calls[0]
+        self.assertEqual(file, "/x/tmux")
+        self.assertEqual(argv[:6], ["/x/tmux", "new-session", "-A", "-s", "zoo", "-n"])
+        self.assertIn("--in-tmux", argv[-1])
+        self.assertIn("/opt/zoo", argv[-1])   # re-execs THIS zoo (prog), not a bare name
+
+    def test_the_users_args_ride_into_the_reexec(self):
+        rc, out, err, ex = self.run_main(["-i", "5"], {"ZOO_TMUX": "/x/tmux"})
+        self.assertIn("-i 5", ex.calls[0][1][-1])
+
+    def test_already_in_tmux_does_not_wrap(self):
+        rc, out, err, ex = self.run_main([], {"ZOO_TMUX": "/x/tmux", "TMUX": "/tmp/t,1,0", "TERM": "xterm"})
+        self.assertEqual(ex.calls, [])
+        self.assertIn("needs a terminal", err)   # fell through to interactive (non-tty stdin)
+
+    def test_the_in_tmux_flag_does_not_wrap(self):
+        rc, out, err, ex = self.run_main(["--in-tmux"], {"ZOO_TMUX": "/x/tmux", "TERM": "xterm"})
+        self.assertEqual(ex.calls, [])
+        self.assertIn("needs a terminal", err)
+
+    def test_once_does_not_wrap(self):
+        rc, out, err, ex = self.run_main(["--once", "--width", "80"], {})
+        self.assertEqual(ex.calls, [])
+        self.assertEqual(rc, 0)
+
+    def test_no_tmux_available_is_a_hard_error_not_a_wrap(self):
+        rc, out, err, ex = self.run_main([], {"PATH": "/nonexistent-zoo-dir"})
+        self.assertEqual(rc, 1)
+        self.assertIn("needs tmux", err)
+        self.assertEqual(ex.calls, [])
 
 
 class AgedTest(unittest.TestCase):

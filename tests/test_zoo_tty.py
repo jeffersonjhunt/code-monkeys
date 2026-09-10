@@ -506,6 +506,9 @@ class TtyBase(unittest.TestCase):
             "ZOO_TMUX": str(tmux_stub),
             "ZOO_TMUX_LOG": str(self.tmux_log),
             "ZOO_TMUX_WINS": str(home / "tmux.wins"),
+            # These tests are zoo running as window 0 *inside* tmux, so it must not auto-wrap;
+            # TMUX set is what tells it so. A real-tmux wrap is exercised in test_zoo_live.py.
+            "TMUX": "/tmp/zoo-test-tmux,1,0",
         }
         for key, value in self.extra_env.items():
             env[key] = value.replace("{home}", str(home))

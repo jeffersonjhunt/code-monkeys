@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.2.0-T1"
+__version__ = "0.2.0"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -1241,7 +1241,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[Transport] = None,
-         sleep=time.sleep, stdin=None) -> int:
+         sleep=time.sleep, stdin=None, exec_fn=os.execvp, prog=None) -> int:
     stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
@@ -1250,6 +1250,19 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
     if args.interval < CLI_MIN_INTERVAL:
         print(f"zoo: --interval must be at least {CLI_MIN_INTERVAL}s", file=stderr)
         return 2
+    # Auto-wrap: an interactive run outside tmux re-execs itself as window 0 of a tmux session it
+    # owns, so attach/shell/launch can open sibling windows (T1) with no hand-off. Done before
+    # touching docker — the outer process does nothing but hand off to tmux. --once and a run
+    # already inside tmux (or already re-exec'd, --in-tmux) skip this.
+    if should_wrap(args.once, args.in_tmux, environ):
+        tmux = tmux_path(environ)
+        if not tmux:
+            print("zoo: needs tmux — it runs as a tmux window, and every fleet image ships it. "
+                  "Install tmux, or use --once for a plain frame.", file=stderr)
+            return 1
+        raw = list(argv) if argv is not None else sys.argv[1:]
+        exec_fn(tmux, wrap_argv(tmux, prog or sys.argv[0], raw))
+        return 0   # unreached in production (execvp replaces the process); a test stub returns
     try:
         transport = transport or unix_transport(socket_path(environ))
     except DockerError as exc:
