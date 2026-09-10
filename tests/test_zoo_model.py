@@ -545,6 +545,100 @@ class LaunchPlanTest(unittest.TestCase):
         self.assertFalse(any("unavailable" in l for l in zoo.help_lines(True)))
 
 
+# --------------------------------------------------------------------------- tmux
+
+
+class FakeTmuxRun:
+    """Records every tmux argv and answers list-windows from a scripted window list."""
+
+    def __init__(self, windows=None, fail=None):
+        self.windows = list(windows or [])   # list of (index, name)
+        self.fail = fail or set()            # subcommands whose returncode should be non-zero
+        self.calls = []
+
+    def __call__(self, argv, **kw):
+        # argv[0] is the tmux binary; argv[1] the subcommand.
+        self.calls.append(argv[1:])
+        sub = argv[1] if len(argv) > 1 else ""
+        rc = 1 if sub in self.fail else 0
+        out = ""
+        if sub == "list-windows" and rc == 0:
+            out = "".join(f"{i}\t{n}\n" for i, n in self.windows)
+        return subprocess.CompletedProcess(argv, rc, out, "" if rc == 0 else "boom")
+
+    def subcommands(self):
+        return [c[0] for c in self.calls]
+
+
+class TmuxPathTest(unittest.TestCase):
+    def test_seam_wins_then_path_then_none(self):
+        self.assertEqual(zoo.tmux_path({"ZOO_TMUX": "/x/tmux"}), "/x/tmux")
+        import shutil as _sh
+        real = _sh.which("tmux")
+        got = zoo.tmux_path({"PATH": "/usr/bin:/bin"})
+        # On this box tmux is on PATH; assert it resolves to a real path or None consistently.
+        self.assertEqual(got, real if real and got else got)
+        self.assertIsNone(zoo.tmux_path({"PATH": "/nonexistent-dir-zoo"}))
+
+
+class ShouldWrapTest(unittest.TestCase):
+    def test_wrap_only_an_interactive_run_not_already_in_tmux(self):
+        self.assertTrue(zoo.should_wrap(once=False, in_tmux_flag=False, environ={}))
+        self.assertFalse(zoo.should_wrap(once=True, in_tmux_flag=False, environ={}))     # --once
+        self.assertFalse(zoo.should_wrap(once=False, in_tmux_flag=True, environ={}))     # re-exec
+        self.assertFalse(zoo.should_wrap(once=False, in_tmux_flag=False, environ={"TMUX": "/tmp/tmux-1000/default,1,0"}))
+
+
+class WrapArgvTest(unittest.TestCase):
+    def test_reexecs_zoo_inside_an_attach_or_create_session(self):
+        argv = zoo.wrap_argv("/usr/bin/tmux", "/home/x/.local/bin/zoo", ["-i", "5"])
+        self.assertEqual(argv[:6], ["/usr/bin/tmux", "new-session", "-A", "-s", "zoo", "-n"])
+        inner = argv[-1]
+        self.assertIn("--in-tmux", inner)
+        self.assertIn("-i 5", inner)
+        self.assertTrue(inner.startswith("/home/x/.local/bin/zoo"))
+
+    def test_a_spaced_argv0_is_quoted(self):
+        inner = zoo.wrap_argv("tmux", "/home/my dir/zoo", [])[-1]
+        self.assertIn("'/home/my dir/zoo'", inner)
+
+    def test_the_reexec_argv_parses_with_in_tmux(self):
+        # The inner command must be a valid zoo invocation: --in-tmux is a known (hidden) flag.
+        args = zoo.build_parser().parse_args(["--in-tmux", "-i", "5"])
+        self.assertTrue(args.in_tmux)
+
+
+class TmuxClientTest(unittest.TestCase):
+    def test_open_a_new_window_when_the_name_is_absent(self):
+        fake = FakeTmuxRun(windows=[("0", "zoo")])
+        tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
+        self.assertEqual(tm.open_or_focus("shell-evoc", ["docker", "exec", "-it", "x", "sh"]), "opened")
+        self.assertIn(["new-window", "-t", "zoo", "-n", "shell-evoc", "--", "docker", "exec", "-it", "x", "sh"],
+                      fake.calls)
+        self.assertNotIn("select-window", fake.subcommands())
+
+    def test_focus_an_existing_window_by_index_not_name(self):
+        fake = FakeTmuxRun(windows=[("0", "zoo"), ("3", "shell-evoc")])
+        tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
+        self.assertEqual(tm.open_or_focus("shell-evoc", ["ignored"]), "focused")
+        # By index, and session-qualified — never `-t shell-evoc`, which tmux would fnmatch/misparse.
+        self.assertIn(["select-window", "-t", "zoo:3"], fake.calls)
+        self.assertNotIn("new-window", fake.subcommands())
+
+    def test_windows_empty_when_the_session_is_absent(self):
+        fake = FakeTmuxRun(fail={"list-windows"})
+        tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
+        self.assertEqual(tm.windows(), [])
+        # With no window list, open_or_focus opens rather than raising.
+        self.assertEqual(tm.open_or_focus("n-claude", ["x"]), "opened")
+
+    def test_a_failing_command_raises_tmuxerror(self):
+        fake = FakeTmuxRun(windows=[("0", "zoo")], fail={"new-window"})
+        tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
+        with self.assertRaises(zoo.TmuxError):
+            tm.open_or_focus("shell-evoc", ["x"])
+
+
 # --------------------------------------------------------------------------- samples
 
 

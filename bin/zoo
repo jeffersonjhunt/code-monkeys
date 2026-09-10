@@ -27,6 +27,7 @@ import http.client
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -37,7 +38,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.1.1"
+__version__ = "0.2.0-T0"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -442,6 +443,83 @@ def why_not(key: str, row: Optional[Row], self_id: str, cli: Optional[str]) -> s
     if key == "e":
         return f"{row.name} is not running"
     return "not available here"
+
+
+# --------------------------------------------------------------------------- tmux
+
+
+# zoo runs as window 0 of a tmux session it owns; attach/shell/launch open other windows, so no
+# process ever has to lend zoo its own terminal (that hand-off path, and every bug that lived in
+# it, is gone). Running zoo outside tmux re-execs it inside a fresh session named this.
+ZOO_TMUX_SESSION = "zoo"
+
+
+class TmuxError(Exception):
+    """A tmux command failed."""
+
+
+def tmux_path(environ) -> Optional[str]:
+    """The tmux binary: the ZOO_TMUX seam (tests point it at a stub), else the first on PATH,
+    else None — and None means zoo cannot run, because the whole design assumes tmux (spec §7.5)."""
+    return environ.get("ZOO_TMUX") or shutil.which("tmux", path=environ.get("PATH"))
+
+
+def should_wrap(once: bool, in_tmux_flag: bool, environ) -> bool:
+    """Whether this invocation should re-exec itself inside tmux. Not --once (that is the plain,
+    scriptable, no-tmux path); not a run already re-exec'd (--in-tmux); not one already in tmux."""
+    if once or in_tmux_flag:
+        return False
+    return not environ.get("TMUX")
+
+
+def wrap_argv(tmux: str, argv0: str, args: List[str]) -> List[str]:
+    """The command that re-execs zoo inside its own tmux session as window 0. `new-session -A`
+    attaches to an existing `zoo` session rather than stacking a second one, so a later `zoo`
+    from another terminal re-attaches (the durable-zoo benefit). --in-tmux guards the re-exec
+    against ever wrapping again, belt-and-braces with the TMUX-env check in should_wrap."""
+    inner = shlex.join([argv0, "--in-tmux", *args])
+    return [tmux, "new-session", "-A", "-s", ZOO_TMUX_SESSION, "-n", ZOO_TMUX_SESSION, inner]
+
+
+class Tmux:
+    """A thin wrapper over the tmux CLI for zoo's own session. Injectable runner for tests, like
+    Docker's transport. Windows are addressed by index, never by a name in a target string: tmux
+    target syntax reads `session:window` and fnmatches names, so a name with a colon or glob char
+    would be misparsed — open_or_focus resolves the name to an index itself."""
+
+    def __init__(self, tmux: str, session: str = ZOO_TMUX_SESSION, runner=subprocess.run):
+        self._tmux = tmux
+        self._session = session
+        self._run = runner
+
+    def _cmd(self, *args: str, check: bool = True):
+        r = self._run([self._tmux, *args], capture_output=True, text=True)
+        if check and r.returncode != 0:
+            raise TmuxError(f"tmux {' '.join(args)}: {(r.stderr or '').strip() or r.returncode}")
+        return r
+
+    def windows(self) -> List[Tuple[str, str]]:
+        """(index, name) for every window in zoo's session, in order."""
+        r = self._cmd("list-windows", "-t", self._session, "-F", "#{window_index}\t#{window_name}",
+                      check=False)
+        if r.returncode != 0:
+            return []
+        out = []
+        for line in r.stdout.splitlines():
+            if "\t" in line:
+                idx, name = line.split("\t", 1)
+                out.append((idx, name))
+        return out
+
+    def open_or_focus(self, name: str, argv: List[str]) -> str:
+        """Focus the window called `name` if it exists, else open it running argv. Returns
+        "opened" or "focused" so the caller can say which. Never opens a duplicate."""
+        for idx, wname in self.windows():
+            if wname == name:
+                self._cmd("select-window", "-t", f"{self._session}:{idx}")
+                return "focused"
+        self._cmd("new-window", "-t", self._session, "-n", name, "--", *argv)
+        return "opened"
 
 
 # --------------------------------------------------------------------------- samples
@@ -1172,6 +1250,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="seconds between refreshes (default 2)")
     p.add_argument("--width", type=int, default=None, metavar="COLS",
                    help="frame width for --once (default: the terminal's)")
+    p.add_argument("--in-tmux", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--version", action="version", version=f"zoo {__version__}")
     return p
 
