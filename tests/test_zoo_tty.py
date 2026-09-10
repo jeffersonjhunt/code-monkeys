@@ -976,6 +976,40 @@ class LaunchTtyTest(TtyBase):
         self.sh.expect(PROMPT_RE)
 
 
+CUDA_ZFUNCS_STUB = """
+function _primate_roster() { print -r -- claude; print -r -- cuda-comfy }
+function primate() { print -r -- "primate $*" >> "$HOME/launch.log"; printf 'STUB\\n'; read line }
+function primate-session() { printf 'STUB\\n'; read line }
+"""
+
+
+class PlatformRosterTtyTest(TtyBase):
+    """The picker greys an image this host can't run and refuses it, from ZOO_HOST_CAPS (a seam)."""
+    extra_env = {"ZOO_ZFUNCS": "{home}/zfuncs", "ZOO_HOST_CAPS": "arch=arm64,os=linux,gpu="}
+
+    def prepare_home(self, home):
+        (home / "zfuncs").write_text(CUDA_ZFUNCS_STUB)
+
+    def test_unrunnable_image_is_greyed_with_a_reason_and_refused(self):
+        self.start_zoo()
+        self.sh.wait_screen("n new")
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.wait_screen("cuda-comfy")
+        self.sh.wait_screen("needs an NVIDIA GPU")       # the reason shown on the greyed row
+        self.sh.send("j")                                 # claude is first; move to cuda-comfy
+        self.sh.send("\r")
+        self.sh.wait_screen("cuda-comfy: needs an NVIDIA GPU")   # Enter refused
+        self.assertIn("choose an image", self.sh.screen)         # picker still open
+        self.assertEqual(self.new_windows(), [])                 # nothing launched
+        self.sh.send("k")                                 # back to claude (runnable)
+        self.sh.send("\r")
+        self.wait_tmux("new-window")
+        self.assertIn("-n primate-claude", self.new_windows()[0])
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+
 class NoRosterTtyTest(TtyBase):
     """Inside a primate, or on a host without a checkout: nothing to launch from, so no launch."""
     extra_env = {"ZOO_ZFUNCS": "{home}/zfuncs"}

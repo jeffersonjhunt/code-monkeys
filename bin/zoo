@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.3.0-U1"
+__version__ = "0.3.0-U2"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -409,6 +409,66 @@ def launch_plan(kind: str, zfuncs: str, image: str, name: str, cwd: str) -> Wind
         argv.append(name)
     wname = f"session-{name}" if name else f"session-{image}"
     return Window(wname, tuple(argv), cwd=cwd)
+
+
+# What each image needs beyond a plain host. An entry matches an exact image name, or, when the
+# key ends in "-", any image with that prefix (cuda-vllm, cuda-comfy, ...). This is zoo's source
+# of truth for platform fit; deriving it from the dockerfiles is out of scope.
+IMAGE_REQUIREMENTS = (
+    ("cuda-", {"gpu": "nvidia"}),        # the cuda-* family needs an NVIDIA GPU
+    ("spark-bench", {"arch": "amd64"}),  # SWE-Bench testbed images are x86-only
+)
+
+
+def _norm_arch(machine: str) -> str:
+    m = (machine or "").lower()
+    if m in ("aarch64", "arm64"):
+        return "arm64"
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    return m
+
+
+def nvidia_present() -> bool:
+    return os.path.exists("/dev/nvidia0") or shutil.which("nvidia-smi") is not None
+
+
+def host_capabilities(environ=None, uname=os.uname, gpu_probe=None) -> Dict[str, str]:
+    """{arch, os, gpu} for the host zoo runs on. ZOO_HOST_CAPS ("arch=amd64,os=linux,gpu=nvidia")
+    overrides for tests; otherwise arch/os come from uname and gpu from a probe (an NVIDIA device
+    or nvidia-smi on PATH). Inside a primate this is the container's view, which is correct: a
+    primate on a Mac still cannot run cuda."""
+    environ = os.environ if environ is None else environ
+    override = environ.get("ZOO_HOST_CAPS")
+    if override:
+        caps = {"arch": "", "os": "", "gpu": ""}
+        for kv in override.split(","):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                caps[k.strip()] = v.strip()
+        return caps
+    u = uname()
+    probe = gpu_probe if gpu_probe is not None else nvidia_present
+    return {"arch": _norm_arch(u.machine), "os": u.sysname.lower(), "gpu": "nvidia" if probe() else ""}
+
+
+def _requirements(image: str) -> Dict[str, str]:
+    for key, req in IMAGE_REQUIREMENTS:
+        if image == key or (key.endswith("-") and image.startswith(key)):
+            return req
+    return {}
+
+
+def runnable(image: str, caps: Dict[str, str]) -> Tuple[bool, str]:
+    """(can this host run image, why not). Pure; the picker greys and refuses the False ones."""
+    for cap, need in _requirements(image).items():
+        if caps.get(cap) != need:
+            if cap == "gpu" and need == "nvidia":
+                return (False, "needs an NVIDIA GPU")
+            if cap == "arch":
+                return (False, f"{need} only")
+            return (False, f"needs {cap}={need}")
+    return (True, "")
 
 
 LAUNCH_KEYS = [("n", "new"), ("s", "session")]
@@ -962,6 +1022,7 @@ class View:
         self.dirty = True
         self._style: Dict[str, int] = {}   # token -> curses attr, built in run() once curses is up
         self.host: Optional[Tuple[int, int]] = None   # (cpu count, total mem); fetched once at start
+        self.caps: Dict[str, str] = {}                # host arch/os/gpu; set once at start
 
     def selected(self) -> Optional[Row]:
         rows = self.mon.rows
@@ -1112,6 +1173,10 @@ class View:
             pk["sel"] = min(pk["sel"] + 1, len(self.roster) - 1)
         elif key in (10, 13, curses.KEY_ENTER):
             image = self.roster[pk["sel"]]
+            ok, why = runnable(image, self.caps)
+            if not ok:
+                self.say(f"{image}: {why}", now)   # greyed row: refuse, leave the picker open
+                return None
             self.picker = None
             if pk["kind"] == PRIMATE:
                 self.launch(PRIMATE, image, "")
@@ -1164,7 +1229,13 @@ class View:
         room = max(body - 1, 1)
         offset = max(0, min(pk["sel"] - room + 1, len(self.roster) - room))
         for i, image in enumerate(self.roster[offset: offset + room]):
-            self._put(4 + i, f"  {image}", curses.A_REVERSE if offset + i == pk["sel"] else 0)
+            ok, why = runnable(image, self.caps)
+            label = f"  {image}" if ok else f"  {image}   ({why})"
+            if offset + i == pk["sel"]:
+                attr = curses.A_REVERSE
+            else:
+                attr = 0 if ok else curses.A_DIM
+            self._put(4 + i, label, attr)
 
     def draw_prompt(self, w: int) -> None:
         import curses
@@ -1281,8 +1352,9 @@ class View:
         curses.doupdate()
 
 
-def _run_view(view: "View", host) -> int:
+def _run_view(view: "View", host, caps) -> int:
     view.host = host
+    view.caps = caps
     return view.run()
 
 
@@ -1317,9 +1389,10 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         tpath = tmux_path(environ)
         tmux = Tmux(tpath) if tpath else None   # T2 makes this always present via auto-wrap
         host = host_facts(mon._docker)          # host facts do not change: fetched once here
+        caps = host_capabilities(environ)
         return curses.wrapper(lambda scr: _run_view(
             View(scr, mon, interval, self_id=self_id, cli=cli, term=term,
-                 roster=roster, zfuncs=zfuncs, cwd=os.getcwd(), tmux=tmux), host))
+                 roster=roster, zfuncs=zfuncs, cwd=os.getcwd(), tmux=tmux), host, caps))
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:

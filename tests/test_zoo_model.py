@@ -855,6 +855,42 @@ class HostStatsTest(unittest.TestCase):
         self.assertLessEqual(len(narrow), 44)
 
 
+class PlatformTest(unittest.TestCase):
+    def caps(self, arch, osname, gpu):
+        return {"arch": arch, "os": osname, "gpu": gpu}
+
+    def test_host_capabilities_override_and_detection(self):
+        # Test override (seam) is parsed verbatim.
+        self.assertEqual(zoo.host_capabilities({"ZOO_HOST_CAPS": "arch=amd64,os=linux,gpu=nvidia"}),
+                         {"arch": "amd64", "os": "linux", "gpu": "nvidia"})
+
+        class U:  # fake uname()
+            machine, sysname = "aarch64", "Darwin"
+        caps = zoo.host_capabilities({}, uname=lambda: U(), gpu_probe=lambda: False)
+        self.assertEqual(caps, {"arch": "arm64", "os": "darwin", "gpu": ""})   # aarch64 -> arm64
+
+        class X:
+            machine, sysname = "x86_64", "Linux"
+        caps = zoo.host_capabilities({}, uname=lambda: X(), gpu_probe=lambda: True)
+        self.assertEqual(caps, {"arch": "amd64", "os": "linux", "gpu": "nvidia"})
+
+    def test_runnable_matrix(self):
+        mac = self.caps("arm64", "darwin", "")
+        gpu_box = self.caps("amd64", "linux", "nvidia")
+        arm_linux = self.caps("arm64", "linux", "")
+        # cuda-* need a GPU.
+        self.assertEqual(zoo.runnable("cuda-vllm", mac), (False, "needs an NVIDIA GPU"))
+        self.assertEqual(zoo.runnable("cuda-comfy", gpu_box), (True, ""))
+        # spark-bench is amd64-only.
+        self.assertEqual(zoo.runnable("spark-bench", arm_linux), (False, "amd64 only"))
+        self.assertEqual(zoo.runnable("spark-bench", gpu_box), (True, ""))
+        # everything else runs anywhere.
+        self.assertEqual(zoo.runnable("minion", mac), (True, ""))
+        self.assertEqual(zoo.runnable("claude", arm_linux), (True, ""))
+        # a cuda image on a gpu box but wrong arch still gates on the gpu it declares (no arch req).
+        self.assertEqual(zoo.runnable("cuda-llama-cpp", self.caps("arm64", "linux", "nvidia")), (True, ""))
+
+
 class StyleTokenTest(unittest.TestCase):
     def test_token_by_state_and_selection(self):
         self.assertEqual(zoo.style_token(zoo.Figures(zoo.LIVE), False), "running")
