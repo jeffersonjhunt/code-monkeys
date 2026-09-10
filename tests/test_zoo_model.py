@@ -615,9 +615,23 @@ class TmuxClientTest(unittest.TestCase):
         fake = FakeTmuxRun(windows=[("0", "zoo")])
         tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
         self.assertEqual(tm.open_or_focus("shell-evoc", ["docker", "exec", "-it", "x", "sh"]), "opened")
-        self.assertIn(["new-window", "-t", "zoo:", "-n", "shell-evoc", "--", "docker", "exec", "-it", "x", "sh"],
-                      fake.calls)
+        # The command is wrapped by hold_command (T-F2), so it runs under `sh -c <hold> zoo-window`.
+        self.assertIn(["new-window", "-t", "zoo:", "-n", "shell-evoc", "--",
+                       *zoo.hold_command(["docker", "exec", "-it", "x", "sh"])], fake.calls)
         self.assertNotIn("select-window", fake.subcommands())
+
+    def test_hold_command_holds_only_on_a_non_zero_exit(self):
+        # sh -c SCRIPT name arg... : $0=name, $@=argv, so "$@" runs the real command.
+        cmd = zoo.hold_command(["docker", "exec", "x"])
+        self.assertEqual(cmd[:2], ["sh", "-c"])
+        self.assertEqual(cmd[3:], ["zoo-window", "docker", "exec", "x"])
+        import subprocess as _sp
+        ok = _sp.run(zoo.hold_command(["true"]), stdin=_sp.DEVNULL, capture_output=True, text=True, timeout=5)
+        self.assertEqual((ok.returncode, ok.stdout), (0, ""))        # clean exit: no hold, closes
+        bad = _sp.run(zoo.hold_command(["sh", "-c", "exit 3"]), stdin=_sp.DEVNULL,
+                      capture_output=True, text=True, timeout=5)
+        self.assertEqual(bad.returncode, 3)                          # exit code preserved
+        self.assertIn("press Enter to close", bad.stdout)            # and the window is held
 
     def test_focus_an_existing_window_by_index_not_name(self):
         fake = FakeTmuxRun(windows=[("0", "zoo"), ("3", "shell-evoc")])

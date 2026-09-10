@@ -1014,8 +1014,11 @@ class LongListTtyTest(TtyBase):
 # A roster of one image whose primate/primate-session print a marker and stay up, so a launch
 # window has observable, long-lived content without any docker.
 REAL_ZFUNCS_STUB = """
-function _primate_roster() { print -r -- alpha }
-function primate() { printf 'LAUNCHED-%s\\n' "$1"; exec sleep 300 }
+function _primate_roster() { print -r -- alpha; print -r -- boom }
+function primate() {
+  [ "$1" = boom ] && { print -r -- BOOM-FAILED; return 7 }
+  printf 'LAUNCHED-%s\\n' "$1"; exec sleep 300
+}
 function primate-session() { printf 'LAUNCHEDS-%s-%s\\n' "$1" "${2:-default}"; exec sleep 300 }
 """
 
@@ -1119,6 +1122,31 @@ class RealTmuxTest(unittest.TestCase):
                           "1 primate-alpha")
         names = self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout.split()
         self.assertEqual(names.count("primate-alpha"), 1)   # focused, not duplicated
+
+    def test_a_failing_launch_window_is_held_open_and_closes_on_enter(self):
+        # T-F2: a window whose command exits non-zero must stay, showing the error and a prompt,
+        # instead of vanishing. 'boom' returns 7 from the stub primate().
+        self.sh.send("zoo -i 0.5\r")
+        self.sh.wait_screen("KIND", timeout=25)
+        self.sh.wait_screen("n new", timeout=25)
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("j")                            # move to the second image, boom
+        self.sh.send("\r")
+        # The window opened, its command failed, and hold_command kept it: the pane shows the
+        # failure and the prompt, and the window is still there.
+        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-boom"], "BOOM-FAILED")
+        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-boom"], "press Enter to close")
+        self.assertIn("primate-boom",
+                      self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout)
+        # Enter closes the held window (the read returns), leaving zoo's session behind.
+        self.sh.send("\r")
+        import time as _t
+        deadline = _t.monotonic() + 20
+        while "primate-boom" in self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout:
+            if _t.monotonic() > deadline:
+                self.fail("held window did not close on Enter")
+            self.sh._read(0.2)
 
 
 if __name__ == "__main__":
