@@ -972,6 +972,29 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
+    def test_picker_type_ahead_jumps_and_cycles(self):
+        # roster (ZFUNCS_STUB): codemonkey, claude, minion. Selection is read back through the
+        # window a launch opens, since the picker's highlight is an attribute the model strips.
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        self.sh.send("n"); self.sh.wait_screen("choose an image")
+        self.sh.send("m")                            # -> minion
+        self.sh.send("\r")
+        self.wait_tmux("new-window")
+        self.assertIn("-n primate-minion", self.new_windows()[-1])
+        self.sh.send("n"); self.sh.wait_screen("choose an image")
+        self.sh.send("c")                            # from codemonkey(0): next c -> claude
+        self.sh.send("\r")
+        self.wait_tmux("primate-claude")
+        self.assertIn("-n primate-claude", self.new_windows()[-1])
+        self.sh.send("n"); self.sh.wait_screen("choose an image")
+        self.sh.send("cc")                           # cycle: c->claude, c->codemonkey
+        self.sh.send("\r")
+        self.wait_tmux("primate-codemonkey")
+        self.assertIn("-n primate-codemonkey", self.new_windows()[-1])
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
     def test_esc_cancels_the_picker_and_the_prompt(self):
         self.start_zoo()
         self.sh.wait_screen("n new  s session")

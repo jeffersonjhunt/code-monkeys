@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.3.0-U3"
+__version__ = "0.3.0"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -469,6 +469,21 @@ def runnable(image: str, caps: Dict[str, str]) -> Tuple[bool, str]:
                 return (False, f"{need} only")
             return (False, f"needs {cap}={need}")
     return (True, "")
+
+
+def jump(names: List[str], start: int, ch: str) -> int:
+    """The next index after `start` whose name starts with `ch` (case-insensitive), wrapping; so
+    pressing a letter repeatedly cycles through the matches. `start` if there is no match or the
+    list is empty. Picker type-ahead (the list keeps its single-key actions, so no type-ahead)."""
+    n = len(names)
+    if n == 0:
+        return start
+    ch = ch.lower()
+    for step in range(1, n + 1):
+        i = (start + step) % n
+        if names[i].lower().startswith(ch):
+            return i
+    return start
 
 
 LAUNCH_KEYS = [("n", "new"), ("s", "session")]
@@ -1182,6 +1197,9 @@ class View:
                 self.launch(PRIMATE, image, "")
             else:
                 self.prompt = {"image": image, "text": ""}
+        elif 32 <= key < 127:
+            # type-ahead: a letter jumps to the next matching image (j/k/q above stay nav/cancel).
+            pk["sel"] = jump(self.roster, pk["sel"], chr(key))
         return None
 
     def handle_prompt(self, key: int, now: float) -> None:

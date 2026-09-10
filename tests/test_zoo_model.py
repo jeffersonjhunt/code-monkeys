@@ -891,6 +891,24 @@ class PlatformTest(unittest.TestCase):
         self.assertEqual(zoo.runnable("cuda-llama-cpp", self.caps("arm64", "linux", "nvidia")), (True, ""))
 
 
+class JumpTest(unittest.TestCase):
+    NAMES = ["codemonkey", "claude", "minion", "kiro", "cuda-comfy"]
+
+    def test_jump_next_match_wrapping_and_cycling(self):
+        j = zoo.jump
+        self.assertEqual(j(self.NAMES, 0, "m"), 2)          # minion
+        self.assertEqual(j(self.NAMES, 0, "c"), 1)          # next c after codemonkey -> claude
+        self.assertEqual(j(self.NAMES, 1, "c"), 4)          # ... -> cuda-comfy
+        self.assertEqual(j(self.NAMES, 4, "c"), 0)          # ... wraps -> codemonkey
+        self.assertEqual(j(self.NAMES, 0, "M"), 2)          # case-insensitive query
+        self.assertEqual(j(["Alpha", "beta"], 1, "a"), 0)   # case-insensitive on the NAME too
+        self.assertEqual(j(self.NAMES, 0, "z"), 0)          # no match: stay
+        self.assertEqual(j([], 0, "x"), 0)                  # empty: stay
+
+    def test_single_match_stays_put(self):
+        self.assertEqual(zoo.jump(self.NAMES, 2, "m"), 2)   # minion is the only m
+
+
 class StyleTokenTest(unittest.TestCase):
     def test_token_by_state_and_selection(self):
         self.assertEqual(zoo.style_token(zoo.Figures(zoo.LIVE), False), "running")
