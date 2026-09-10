@@ -956,6 +956,22 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
+    def test_the_picker_is_a_bordered_centered_popup(self):
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        mark = self.sh.pos
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        # Bordered: curses box() switches to the line-drawing charset (ESC ( 0) for the frame.
+        self.assertIn(b"\x1b(0", self.sh.since(mark), "no box border drawn for the picker")
+        # Not inline at column 0: the header sits inside a centered box, so its line is indented.
+        line = next(l for l in self.sh.screen.text() if "choose an image" in l)
+        self.assertGreaterEqual(line.index("Start"), 1, "picker header is not indented (not a popup)")
+        self.sh.send(b"\x1b")
+        self.sh.wait_screen("launch cancelled")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
     def test_esc_cancels_the_picker_and_the_prompt(self):
         self.start_zoo()
         self.sh.wait_screen("n new  s session")

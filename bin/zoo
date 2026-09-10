@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.3.0-U2"
+__version__ = "0.3.0-U3"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -1221,28 +1221,73 @@ class View:
             return
         self.say(f"{verb} {win.name} — ctrl-b w to switch windows, ctrl-b 0 for this list", now)
 
-    def draw_picker(self, body: int, w: int) -> None:
+    # -- popup dialogs (centered boxes floating over the list)
+
+    def _make_popup(self, height: int, width: int):
+        import curses
+        H, W = self.scr.getmaxyx()
+        height = max(3, min(height, H))
+        width = max(12, min(width, W))
+        win = curses.newwin(height, width, max((H - height) // 2, 0), max((W - width) // 2, 0))
+        try:
+            win.erase()
+            win.box()
+        except curses.error:
+            pass
+        return win
+
+    def _popup_put(self, win, row: int, text: str, attr: int = 0) -> None:
+        import curses
+        h, w = win.getmaxyx()
+        if 1 <= row <= h - 2 and w > 4:
+            try:
+                win.addnstr(row, 2, text, w - 4, attr)
+            except curses.error:
+                pass
+
+    def draw_picker(self):
         import curses
         pk = self.picker
         what = "primate" if pk["kind"] == PRIMATE else "session"
-        self._put(3, f"Start a {what}: choose an image (Enter starts, Esc cancels)", curses.A_BOLD)
-        room = max(body - 1, 1)
-        offset = max(0, min(pk["sel"] - room + 1, len(self.roster) - room))
-        for i, image in enumerate(self.roster[offset: offset + room]):
+        header = f"Start a {what}: choose an image (Enter starts, Esc cancels)"
+        entries = []                                       # (image, ok, label)
+        for image in self.roster:
             ok, why = runnable(image, self.caps)
-            label = f"  {image}" if ok else f"  {image}   ({why})"
-            if offset + i == pk["sel"]:
-                attr = curses.A_REVERSE
-            else:
-                attr = 0 if ok else curses.A_DIM
-            self._put(4 + i, label, attr)
+            entries.append((image, ok, image if ok else f"{image}   ({why})"))
+        H, W = self.scr.getmaxyx()
+        room = min(len(entries), max(H - 6, 1))            # rows of the list inside the box
+        sel = pk["sel"]
+        offset = min(sel - room + 1, len(entries) - room) if sel >= room else 0
+        offset = max(offset, 0)
+        content_w = max([len(header)] + [len(l) + 2 for _, _, l in entries])
+        win = self._make_popup(room + 4, content_w + 6)
+        self._popup_put(win, 1, header, curses.A_BOLD)
+        for i, (image, ok, label) in enumerate(entries[offset: offset + room]):
+            idx = offset + i
+            attr = curses.A_REVERSE if idx == sel else (0 if ok else curses.A_DIM)
+            self._popup_put(win, 3 + i, f"  {label}", attr)
+        return win
 
-    def draw_prompt(self, w: int) -> None:
+    def draw_prompt(self):
         import curses
         pr = self.prompt
-        self._put(3, f"Session name for {pr['image']} (Enter for the default "
-                     f"'{pr['image']}-session', Esc cancels):", curses.A_BOLD)
-        self._put(4, f"  {pr['text']}_")
+        header = f"Session name for {pr['image']} (Enter for the default '{pr['image']}-session', Esc cancels):"
+        field = f"  {pr['text']}_"
+        win = self._make_popup(6, max(len(header), len(field), 24) + 6)
+        self._popup_put(win, 1, header, curses.A_BOLD)
+        self._popup_put(win, 3, field)
+        return win
+
+    def draw_confirm(self):
+        import curses
+        H, W = self.scr.getmaxyx()
+        # A volume name like claude-home must never be split at its hyphen.
+        wrapped = textwrap.wrap(self.confirm[1], max(W - 8, 20), break_on_hyphens=False) or [""]
+        win = self._make_popup(len(wrapped) + 4, max(len(l) for l in wrapped) + 6)
+        self._popup_put(win, 1, "Confirm", curses.A_BOLD)
+        for i, line in enumerate(wrapped):
+            self._popup_put(win, 3 + i, line)
+        return win
 
     # -- drawing
 
@@ -1326,15 +1371,6 @@ class View:
         if self.help:
             for i, text in enumerate(help_lines(bool(self.roster))[:body]):
                 self._put(3 + i, text)
-        elif self.picker is not None:
-            self.draw_picker(body, w)
-        elif self.prompt is not None:
-            self.draw_prompt(w)
-        elif self.confirm is not None:
-            # A volume name like claude-home must never be split at its hyphen.
-            wrapped = textwrap.wrap(self.confirm[1], max(w - 2, 10), break_on_hyphens=False)
-            for i, text in enumerate(wrapped[:body]):
-                self._put(3 + i, text, curses.A_BOLD)
         elif n == 0:
             self._put(3, "No primates." if not self.mon.error else "")
         else:
@@ -1349,6 +1385,16 @@ class View:
             self.notice = ""
             self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id, self.cli), bool(self.roster)))
         self.scr.noutrefresh()
+        # Modal dialogs float over the list as centered boxes.
+        popup = None
+        if self.picker is not None:
+            popup = self.draw_picker()
+        elif self.prompt is not None:
+            popup = self.draw_prompt()
+        elif self.confirm is not None:
+            popup = self.draw_confirm()
+        if popup is not None:
+            popup.noutrefresh()
         curses.doupdate()
 
 
