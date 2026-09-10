@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -475,6 +475,31 @@ def should_wrap(once: bool, in_tmux_flag: bool, environ) -> bool:
     if once or in_tmux_flag:
         return False
     return not environ.get("TMUX")
+
+
+def refuse_reason(once: bool, in_tmux_flag: bool, environ) -> str:
+    """Non-empty if zoo must refuse to start. zoo owns its own `zoo` tmux session; run inside a
+    DIFFERENT tmux session it would neither wrap (tmux does not nest cleanly) nor target the right
+    session, so an interactive run already in tmux is refused rather than half-working (review
+    T-F1). The re-exec (--in-tmux) is exempt — it is the one that just created the zoo session —
+    and --once runs anywhere."""
+    if once or in_tmux_flag:
+        return ""
+    if environ.get("TMUX"):
+        return ("already inside tmux. zoo runs in its own 'zoo' session — start it from a shell "
+                "outside tmux, or detach first with ctrl-b d. (zoo --once works anywhere.)")
+    return ""
+
+
+def resolve_prog(prog: str, which=shutil.which) -> str:
+    """An absolute path to re-exec zoo by, so the re-exec works however zoo was invoked (review
+    T-F5): a bare name resolves on PATH, a relative path (./bin/zoo) becomes absolute — otherwise
+    the tmux window, which runs elsewhere, could not find it."""
+    if os.path.isabs(prog):
+        return prog
+    if os.sep in prog or (os.altsep and os.altsep in prog):
+        return os.path.abspath(prog)
+    return which(prog) or prog
 
 
 def wrap_argv(tmux: str, argv0: str, args: List[str]) -> List[str]:
@@ -1257,6 +1282,10 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
     # owns, so attach/shell/launch can open sibling windows (T1) with no hand-off. Done before
     # touching docker — the outer process does nothing but hand off to tmux. --once and a run
     # already inside tmux (or already re-exec'd, --in-tmux) skip this.
+    refuse = refuse_reason(args.once, args.in_tmux, environ)
+    if refuse:
+        print(f"zoo: {refuse}", file=stderr)
+        return 1
     if should_wrap(args.once, args.in_tmux, environ):
         tmux = tmux_path(environ)
         if not tmux:
@@ -1264,7 +1293,7 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
                   "Install tmux, or use --once for a plain frame.", file=stderr)
             return 1
         raw = list(argv) if argv is not None else sys.argv[1:]
-        exec_fn(tmux, wrap_argv(tmux, prog or sys.argv[0], raw))
+        exec_fn(tmux, wrap_argv(tmux, resolve_prog(prog or sys.argv[0]), raw))
         return 0   # unreached in production (execvp replaces the process); a test stub returns
     try:
         transport = transport or unix_transport(socket_path(environ))

@@ -909,10 +909,11 @@ class InteractiveRefusalTest(unittest.TestCase):
     refusals that must happen before curses is touched (spec req 28: TERM set and unset)."""
 
     def run_main(self, environ):
-        # TMUX set: these test the refusals that happen after auto-wrap, so they must not wrap.
+        # These test the refusals AFTER auto-wrap, i.e. the re-exec running as window 0: --in-tmux
+        # (with TMUX set) reaches interactive without wrapping or refusing (T-F1).
         environ = {"TMUX": "/tmp/tmux-1000/default,1,0", **environ}
         out, err = io.StringIO(), io.StringIO()
-        rc = zoo.main([], stdin=io.StringIO(), stdout=out, stderr=err, environ=environ,
+        rc = zoo.main(["--in-tmux"], stdin=io.StringIO(), stdout=out, stderr=err, environ=environ,
                       transport=FakeDaemon())
         return rc, out.getvalue(), err.getvalue()
 
@@ -938,7 +939,7 @@ class AutoWrapTest(unittest.TestCase):
         def __call__(self, file, argv):
             self.calls.append((file, argv))
 
-    def run_main(self, argv, environ, stdin_tty=False):
+    def run_main(self, argv, environ, stdin_tty=False, prog="/opt/zoo"):
         ex = self.FakeExec()
 
         class _Stdin(io.StringIO):
@@ -946,7 +947,7 @@ class AutoWrapTest(unittest.TestCase):
                 return stdin_tty
         out, err = io.StringIO(), io.StringIO()
         rc = zoo.main(argv, stdin=_Stdin(), stdout=out, stderr=err, environ=environ,
-                      transport=FakeDaemon(), sleep=lambda s: None, exec_fn=ex, prog="/opt/zoo")
+                      transport=FakeDaemon(), sleep=lambda s: None, exec_fn=ex, prog=prog)
         return rc, out.getvalue(), err.getvalue(), ex
 
     def test_interactive_outside_tmux_reexecs_into_tmux(self):
@@ -962,15 +963,26 @@ class AutoWrapTest(unittest.TestCase):
         rc, out, err, ex = self.run_main(["-i", "5"], {"ZOO_TMUX": "/x/tmux"})
         self.assertIn("-i 5", ex.calls[0][1][-1])
 
-    def test_already_in_tmux_does_not_wrap(self):
-        rc, out, err, ex = self.run_main([], {"ZOO_TMUX": "/x/tmux", "TMUX": "/tmp/t,1,0", "TERM": "xterm"})
-        self.assertEqual(ex.calls, [])
-        self.assertIn("needs a terminal", err)   # fell through to interactive (non-tty stdin)
+    def test_the_reexec_resolves_a_relative_prog_to_absolute(self):
+        # main() must resolve_prog() the program before the re-exec, or a `./bin/zoo` launch
+        # cannot be found from the new tmux window (T-F5). A relative prog appears absolute here.
+        rc, out, err, ex = self.run_main([], {"ZOO_TMUX": "/x/tmux"}, prog="rel/zoo")
+        import shlex as _shlex
+        first = _shlex.split(ex.calls[0][1][-1])[0]   # argv0 of the re-exec command
+        self.assertTrue(os.path.isabs(first), f"re-exec prog not absolute: {first!r}")
+        self.assertTrue(first.endswith("/rel/zoo"))
 
-    def test_the_in_tmux_flag_does_not_wrap(self):
-        rc, out, err, ex = self.run_main(["--in-tmux"], {"ZOO_TMUX": "/x/tmux", "TERM": "xterm"})
+    def test_already_in_tmux_refuses_rather_than_wrapping_or_running(self):
+        rc, out, err, ex = self.run_main([], {"ZOO_TMUX": "/x/tmux", "TMUX": "/tmp/t,1,0", "TERM": "xterm"})
+        self.assertEqual((rc, ex.calls), (1, []))       # neither wrapped nor ran interactive
+        self.assertIn("already inside tmux", err)
+
+    def test_the_in_tmux_reexec_is_exempt_even_with_tmux_set(self):
+        # The re-exec runs as window 0 with TMUX set; it must NOT refuse or re-wrap, but proceed.
+        rc, out, err, ex = self.run_main(["--in-tmux"], {"ZOO_TMUX": "/x/tmux", "TMUX": "/tmp/t,1,0", "TERM": "xterm"})
         self.assertEqual(ex.calls, [])
-        self.assertIn("needs a terminal", err)
+        self.assertNotIn("already inside tmux", err)
+        self.assertIn("needs a terminal", err)          # fell through to interactive (non-tty stdin)
 
     def test_once_does_not_wrap(self):
         rc, out, err, ex = self.run_main(["--once", "--width", "80"], {})
@@ -982,6 +994,24 @@ class AutoWrapTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("needs tmux", err)
         self.assertEqual(ex.calls, [])
+
+
+class RefuseAndProgTest(unittest.TestCase):
+    def test_refuse_reason(self):
+        # Interactive, inside tmux, not the re-exec: refuse.
+        self.assertIn("already inside tmux", zoo.refuse_reason(False, False, {"TMUX": "x"}))
+        # Outside tmux: wrap, do not refuse.
+        self.assertEqual(zoo.refuse_reason(False, False, {}), "")
+        # The re-exec and --once are exempt even inside tmux.
+        self.assertEqual(zoo.refuse_reason(False, True, {"TMUX": "x"}), "")
+        self.assertEqual(zoo.refuse_reason(True, False, {"TMUX": "x"}), "")
+
+    def test_resolve_prog(self):
+        self.assertEqual(zoo.resolve_prog("/usr/local/bin/zoo"), "/usr/local/bin/zoo")   # absolute kept
+        self.assertEqual(zoo.resolve_prog("zoo", which=lambda n: "/found/zoo"), "/found/zoo")  # bare -> PATH
+        self.assertEqual(zoo.resolve_prog("zoo", which=lambda n: None), "zoo")           # not on PATH: unchanged
+        rel = zoo.resolve_prog("./bin/zoo")
+        self.assertTrue(os.path.isabs(rel) and rel.endswith("/bin/zoo"))                 # relative -> absolute
 
 
 class AgedTest(unittest.TestCase):

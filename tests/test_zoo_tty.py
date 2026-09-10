@@ -532,7 +532,9 @@ class TtyBase(unittest.TestCase):
         self.tmp.cleanup()
 
     def start_zoo(self, interval="0.2"):
-        self.sh.send(f"zoo -i {interval}\r")
+        # --in-tmux: these run with TMUX set (window 0 of the zoo session), which is the re-exec
+        # state; without it zoo would refuse (T-F1). RealTmuxTest covers the real wrap.
+        self.sh.send(f"zoo --in-tmux -i {interval}\r")
         self.sh.expect(SMCUP)
         self.sh.wait_screen("KIND")
 
@@ -611,12 +613,23 @@ class TtyTest(TtyBase):
 
     def test_without_term_zoo_refuses_before_touching_the_screen(self):
         mark = self.sh.pos
-        self.sh.send("env -u TERM zoo\r")
+        self.sh.send("env -u TERM zoo --in-tmux\r")
         self.sh.expect(b"zoo: TERM is not set")
         self.sh.expect(PROMPT_RE)
         out = self.sh.run("echo rc=$?")
         self.assertIn(b"rc=1", out)
         self.assertNotIn(SMCUP, self.sh.since(mark))
+
+    def test_zoo_refuses_to_start_inside_an_existing_tmux_session(self):
+        # TMUX is set for this suite; a plain `zoo` (no --in-tmux) models a user launching from
+        # inside their own tmux. zoo owns its own session, so it refuses rather than half-run (T-F1).
+        mark = self.sh.pos
+        self.sh.send("zoo\r")
+        self.sh.expect(b"already inside tmux")
+        self.sh.expect(PROMPT_RE)
+        out = self.sh.run("echo rc=$?")
+        self.assertIn(b"rc=1", out)
+        self.assertNotIn(SMCUP, self.sh.since(mark))   # never entered the alternate screen
 
     def test_frame_shows_states_and_hides_the_unlabelled(self):
         self.start_zoo()
