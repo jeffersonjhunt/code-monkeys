@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.2.2"
+__version__ = "0.3.0-U0"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -887,6 +887,19 @@ def stats_age(figures: Dict[str, Figures], now: float) -> Optional[float]:
     return max(now - max(times), 0.0) if times else None
 
 
+# The semantic style of a row, mapped to a curses attribute by the view (colour where the terminal
+# has it, plain attributes otherwise). Pure, so the mapping is unit-tested without curses. Colour
+# only decorates states that already read in the text (a stopped row still shows "-"), so it is
+# never the sole signal.
+_STATE_TOKEN = {LIVE: "running", STOPPED: "stopped", STALE: "stale", PENDING: "pending"}
+
+
+def style_token(fig: Optional[Figures], selected: bool) -> str:
+    if selected:
+        return "selected"
+    return _STATE_TOKEN.get(fig.state if fig is not None else STOPPED, "running")
+
+
 class View:
     """The interactive loop. One thread: ticks the monitor when the interval elapses, reads a key
     with a short timeout in between, and redraws only when something changed (spec req 22)."""
@@ -917,6 +930,7 @@ class View:
         self.notice_at = -1e9
         self.last_tick = -1e9
         self.dirty = True
+        self._style: Dict[str, int] = {}   # token -> curses attr, built in run() once curses is up
 
     def selected(self) -> Optional[Row]:
         rows = self.mon.rows
@@ -939,6 +953,7 @@ class View:
             curses.use_default_colors()
         except curses.error:
             pass
+        self._init_style()
         try:
             curses.set_escdelay(25)   # Esc alone should not wait a second to be believed
         except AttributeError:
@@ -1114,24 +1129,50 @@ class View:
         import curses
         pk = self.picker
         what = "primate" if pk["kind"] == PRIMATE else "session"
-        self._put(2, f"Start a {what}: choose an image (Enter starts, Esc cancels)", curses.A_BOLD)
+        self._put(3, f"Start a {what}: choose an image (Enter starts, Esc cancels)", curses.A_BOLD)
         room = max(body - 1, 1)
         offset = max(0, min(pk["sel"] - room + 1, len(self.roster) - room))
         for i, image in enumerate(self.roster[offset: offset + room]):
-            self._put(3 + i, f"  {image}", curses.A_REVERSE if offset + i == pk["sel"] else 0)
+            self._put(4 + i, f"  {image}", curses.A_REVERSE if offset + i == pk["sel"] else 0)
 
     def draw_prompt(self, w: int) -> None:
         import curses
         pr = self.prompt
-        self._put(2, f"Session name for {pr['image']} (Enter for the default "
+        self._put(3, f"Session name for {pr['image']} (Enter for the default "
                      f"'{pr['image']}-session', Esc cancels):", curses.A_BOLD)
-        self._put(3, f"  {pr['text']}_")
+        self._put(4, f"  {pr['text']}_")
 
     # -- drawing
 
+    def _init_style(self) -> None:
+        """Map style tokens to curses attributes once. With colour: running green, stale yellow,
+        pending cyan (stopped stays dim, selected reverse — attributes, not colour). Without
+        colour, everything falls back to attributes, so nothing depends on colour alone."""
+        import curses
+        self._style = {}
+        try:
+            if curses.has_colors():
+                curses.start_color()
+                for i, (tok, col) in enumerate(
+                    (("running", curses.COLOR_GREEN), ("stale", curses.COLOR_YELLOW),
+                     ("pending", curses.COLOR_CYAN)), start=1):
+                    curses.init_pair(i, col, -1)
+                    self._style[tok] = curses.color_pair(i)
+        except curses.error:
+            self._style = {}
+
+    def _row_attr(self, token: str, is_self: bool) -> int:
+        import curses
+        base = {"selected": curses.A_REVERSE, "stopped": curses.A_DIM}.get(token, 0)
+        base = self._style.get(token, base)
+        if is_self and token != "selected":
+            base |= curses.A_BOLD   # the container zoo runs in stands out on top of its state
+        return base
+
     def body_height(self) -> int:
         h, _ = self.scr.getmaxyx()
-        return max(h - 3, 1)   # title, column header, footer
+        # title, column header, a blank spacer, footer.
+        return max(h - 4, 1)
 
     def _clamp(self, n: int) -> None:
         body = self.body_height()
@@ -1166,7 +1207,7 @@ class View:
         rows = self.mon.rows
         n = len(rows)
         self._clamp(n)
-        if h < 4 or w < 12:
+        if h < 5 or w < 12:
             self._put(0, "zoo: terminal too small")
             self.scr.noutrefresh()
             curses.doupdate()
@@ -1177,10 +1218,11 @@ class View:
         if self.mon.error:
             self._put(0, f"daemon unreachable: {self.mon.error}", curses.A_BOLD | curses.A_REVERSE)
         self._put(1, lines[0], curses.A_REVERSE)
+        # Row 2 is left blank: a spacer between the column header and the first primate.
         body = self.body_height()
         if self.help:
             for i, text in enumerate(help_lines(bool(self.roster))[:body]):
-                self._put(2 + i, text)
+                self._put(3 + i, text)
         elif self.picker is not None:
             self.draw_picker(body, w)
         elif self.prompt is not None:
@@ -1189,12 +1231,15 @@ class View:
             # A volume name like claude-home must never be split at its hyphen.
             wrapped = textwrap.wrap(self.confirm[1], max(w - 2, 10), break_on_hyphens=False)
             for i, text in enumerate(wrapped[:body]):
-                self._put(2 + i, text, curses.A_BOLD)
+                self._put(3 + i, text, curses.A_BOLD)
         elif n == 0:
-            self._put(2, "No primates." if not self.mon.error else "")
+            self._put(3, "No primates." if not self.mon.error else "")
         else:
             for i, text in enumerate(lines[1 + self.offset: 1 + self.offset + body]):
-                self._put(2 + i, text, curses.A_REVERSE if self.offset + i == self.sel else 0)
+                row = rows[self.offset + i]
+                selected = self.offset + i == self.sel
+                is_self = bool(self.self_id and row.id == self.self_id)
+                self._put(3 + i, text, self._row_attr(style_token(figures.get(row.id), selected), is_self))
         if self.notice and now - self.notice_at < NOTICE_SECONDS:
             self._put(h - 1, self.notice, curses.A_REVERSE)
         else:

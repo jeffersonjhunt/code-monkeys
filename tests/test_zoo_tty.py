@@ -634,6 +634,12 @@ class TtyTest(TtyBase):
     def test_frame_shows_states_and_hides_the_unlabelled(self):
         self.start_zoo()
         self.sh.wait_screen("evoc")
+        # A blank spacer sits between the column header (KIND ...) and the first primate row.
+        text = self.sh.screen.text()
+        hdr = next(i for i, l in enumerate(text) if l.startswith("KIND"))
+        self.assertEqual(text[hdr + 1].strip(), "", "no blank line after the column header")
+        self.assertTrue(text[hdr + 2].split()[:1] in (["session"], ["primate"]),
+                        "first primate row should follow the spacer")
         self.sh.wait_screen("40.0")   # 100/1000 * 4 cpus: a computed delta, not "..."
         self.sh.wait_screen("Exited (0) 2 days ago")
         self.assertNotIn("sweb-eval-7", self.sh.screen)
@@ -987,24 +993,24 @@ class LongListTtyTest(TtyBase):
 
     def test_selection_scrolls_a_list_taller_than_the_terminal(self):
         self.start_zoo()
-        self.sh.wait_screen("rows 1-21 of 40")
-        self.sh.wait_screen("sess20")
-        self.assertNotIn("sess21", self.sh.screen)
+        self.sh.wait_screen("rows 1-20 of 40")   # body is h-4 now (title, header, spacer, footer)
+        self.sh.wait_screen("sess19")
+        self.assertNotIn("sess20", self.sh.screen)
         self.sh.send("G")
         self.sh.wait_screen("sess39")
-        self.sh.wait_screen("rows 20-40 of 40")
-        self.assertNotIn("sess18", self.sh.screen)
+        self.sh.wait_screen("rows 21-40 of 40")
+        self.assertNotIn("sess19", self.sh.screen)
         self.sh.send("g")
-        self.sh.wait_screen("rows 1-21 of 40")
+        self.sh.wait_screen("rows 1-20 of 40")
         self.sh.wait_screen_gone("sess39")
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
     def test_resize_repaints_at_the_new_size(self):
         self.start_zoo()
-        self.sh.wait_screen("rows 1-21 of 40")
+        self.sh.wait_screen("rows 1-20 of 40")
         self.sh.resize(12, 50)
-        self.sh.wait_screen("rows 1-9 of 40")
+        self.sh.wait_screen("rows 1-8 of 40")
         self.sh.wait_screen_gone("sess20")
         self.assertTrue(all(len(line) <= 50 for line in self.sh.screen.text()))
         self.sh.send("q")

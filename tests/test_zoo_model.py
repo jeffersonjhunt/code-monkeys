@@ -815,6 +815,16 @@ class MonitorTest(unittest.TestCase):
 # --------------------------------------------------------------------------- layout
 
 
+class StyleTokenTest(unittest.TestCase):
+    def test_token_by_state_and_selection(self):
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.LIVE), False), "running")
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.STOPPED), False), "stopped")
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.STALE), False), "stale")
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.PENDING), False), "pending")
+        self.assertEqual(zoo.style_token(None, False), "stopped")          # no figures yet: dim
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.LIVE), True), "selected")  # selection wins
+
+
 class LayoutTest(unittest.TestCase):
     def figures(self):
         return {
