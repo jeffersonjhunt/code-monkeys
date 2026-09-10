@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -511,6 +511,22 @@ def wrap_argv(tmux: str, argv0: str, args: List[str]) -> List[str]:
     return [tmux, "new-session", "-A", "-s", ZOO_TMUX_SESSION, "-n", ZOO_TMUX_SESSION, inner]
 
 
+# Runs the window's real command ("$@"), then holds the window open only if it exited non-zero,
+# so a fast failure (primate refusing $HOME, an unknown image, a docker exec into a container that
+# just died, "pull access denied") stays readable instead of the window vanishing (review T-F2).
+# A clean exit — detaching an attach, exiting a shell — closes the window as before.
+_HOLD_SCRIPT = ('"$@"; __rc=$?; '
+                'if [ "$__rc" -ne 0 ]; then '
+                'printf "\\n[exit %s] press Enter to close this window\\n" "$__rc"; read -r __ignored; '
+                'fi; exit "$__rc"')
+
+
+def hold_command(argv: List[str]) -> List[str]:
+    """Wrap a window's argv so a non-zero exit pauses on 'press Enter' before the window closes
+    (review T-F2). `sh -c SCRIPT name arg...` sets $0=name and $@=argv, so "$@" runs argv."""
+    return ["sh", "-c", _HOLD_SCRIPT, "zoo-window", *argv]
+
+
 class Tmux:
     """A thin wrapper over the tmux CLI for zoo's own session. Injectable runner for tests, like
     Docker's transport. Windows are addressed by index, never by a name in a target string: tmux
@@ -554,7 +570,8 @@ class Tmux:
         # `-t zoo:` (trailing colon) targets the SESSION, appending at the next free index. Plain
         # `-t zoo` is a window target, and auto-wrap names window 0 "zoo" too, so it resolves to
         # index 0 and fails "index 0 in use" — the collision that broke the first real-tmux run.
-        self._cmd("new-window", "-t", f"{self._session}:", *loc, "-n", name, "--", *argv)
+        # hold_command keeps the window open on a non-zero exit so its error is readable (T-F2).
+        self._cmd("new-window", "-t", f"{self._session}:", *loc, "-n", name, "--", *hold_command(argv))
         return "opened"
 
 
