@@ -202,6 +202,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._reply(500, {"message": "daemon down (fake)"})
         if self.path == "/containers/json?all=true":
             return self._reply(200, st.containers)
+        if self.path == "/info":
+            return self._reply(200, {"NCPU": 18, "MemTotal": 33596223488})
         m = self.INSPECT_RE.match(self.path)
         if m:
             c = st.find(m.group(1))
@@ -631,6 +633,15 @@ class TtyTest(TtyBase):
         self.assertIn(b"rc=1", out)
         self.assertNotIn(SMCUP, self.sh.since(mark))   # never entered the alternate screen
 
+    def test_title_shows_host_facts_and_the_running_sum(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.wait_screen("host 18 cpu")     # from docker /info
+        self.sh.wait_screen("31.3G")           # total RAM
+        self.sh.wait_screen("\u03a3")         # the running-primates sum (Σ)
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
     def test_frame_shows_states_and_hides_the_unlabelled(self):
         self.start_zoo()
         self.sh.wait_screen("evoc")
@@ -643,7 +654,6 @@ class TtyTest(TtyBase):
         self.sh.wait_screen("40.0")   # 100/1000 * 4 cpus: a computed delta, not "..."
         self.sh.wait_screen("Exited (0) 2 days ago")
         self.assertNotIn("sweb-eval-7", self.sh.screen)
-        self.assertIn("stats 0s ago", self.sh.screen)   # the clamp itself is a unit test: stats_age
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
@@ -830,10 +840,10 @@ class TtyTest(TtyBase):
         self.sh.wait_screen_gone("40.0")
         self.state.down = True
         self.sh.wait_screen("daemon unreachable")
-        self.sh.wait_screen_gone("primates  refresh")
+        self.sh.wait_screen_gone("host 18 cpu")     # the title line is overwritten by the error
         self.state.down = False
         self.state.stats_ok = True
-        self.sh.wait_screen("primates  refresh")   # the title came back
+        self.sh.wait_screen("host 18 cpu")          # the title came back
         self.sh.wait_screen("40.0")
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)

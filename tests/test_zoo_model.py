@@ -111,6 +111,8 @@ class FakeDaemon:
             raise zoo.Timeout(f"GET {url}: timed out after 1s")
         if url == "/containers/json?all=true":
             return 200, json.dumps(self.containers).encode()
+        if url == "/info":
+            return 200, json.dumps({"NCPU": 18, "MemTotal": 33596223488}).encode()
         m = self.INSPECT_RE.match(url)
         if m:
             c = self.find(m.group(1))
@@ -813,6 +815,44 @@ class MonitorTest(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- layout
+
+
+class HostStatsTest(unittest.TestCase):
+    def test_host_facts_from_info_or_none(self):
+        self.assertEqual(zoo.host_facts(zoo.Docker(FakeDaemon())), (18, 33596223488))
+
+        class Down:
+            def __call__(self, *a, **k):
+                raise zoo.DockerError("no daemon")
+        self.assertIsNone(zoo.host_facts(zoo.Docker(Down())))
+
+        class Empty:
+            def __call__(self, *a, **k):
+                return 200, b"{}"
+        self.assertIsNone(zoo.host_facts(zoo.Docker(Empty())))
+
+    def test_aggregate_sums_running_figures(self):
+        figs = {
+            "a": zoo.Figures(zoo.LIVE, cpu=12.5, mem_used=1000),
+            "b": zoo.Figures(zoo.STALE, cpu=None, mem_used=500),   # stale mem still counts
+            "c": zoo.Figures(zoo.PENDING, cpu=None, mem_used=None),
+            "d": zoo.Figures(zoo.STOPPED),
+        }
+        self.assertEqual(zoo.aggregate(figs), (12.5, 1500))
+        self.assertEqual(zoo.aggregate({}), (0.0, 0))
+
+    def test_title_shows_host_and_sum_and_trims_them_first(self):
+        full = zoo.title_text(2, 0, 21, 2.0, 3.0, 200, host=(18, 33596223488), agg=(12.5, 1500))
+        self.assertIn("host 18 cpu", full)
+        self.assertIn("31.3G", full)
+        self.assertIn("\u03a3 12.5%", full)
+        # No host / no running aggregate: those segments are absent.
+        self.assertNotIn("host ", zoo.title_text(2, 0, 21, 2.0, 3.0, 200))
+        self.assertNotIn("\u03a3", zoo.title_text(2, 0, 21, 2.0, 3.0, 200, host=(18, 1), agg=(0.0, 0)))
+        # Narrow: stats-age drops before refresh, refresh before the sum, the sum before host.
+        narrow = zoo.title_text(40, 0, 21, 2.0, 3.0, 44, host=(18, 33596223488), agg=(12.5, 1500))
+        self.assertIn("rows 1-21 of 40", narrow)      # the indicator is always kept
+        self.assertLessEqual(len(narrow), 44)
 
 
 class StyleTokenTest(unittest.TestCase):

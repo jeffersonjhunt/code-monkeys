@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.3.0-U0"
+__version__ = "0.3.0-U1"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -161,6 +161,10 @@ class Docker:
     def start(self, cid: str) -> None:
         """docker start. 304 (already running) is not an error."""
         self._json("POST", f"/containers/{cid}/start", MUTATE_TIMEOUT)
+
+    def info(self) -> dict:
+        """docker info — host facts (NCPU, MemTotal). Cheap, fetched once at start."""
+        return self._json("GET", "/info") or {}
 
 
 # --------------------------------------------------------------------------- rows
@@ -856,13 +860,20 @@ def aged(figures: Dict[str, Figures], now: float, stale_after: float) -> Dict[st
     return out
 
 
-def title_text(n: int, offset: int, body: int, interval: float, age: Optional[float], width: int) -> str:
-    """The title line. On a narrow terminal the optional parts go first — the row indicator stays,
-    because on a list taller than the screen it is the only thing saying where you are."""
+def title_text(n: int, offset: int, body: int, interval: float, age: Optional[float], width: int,
+               host: Optional[Tuple[int, int]] = None,
+               agg: Optional[Tuple[float, int]] = None) -> str:
+    """The title line. The row indicator is kept; the rest are optional and dropped from the right
+    on a narrow terminal (host facts kept longest, stats-age dropped first)."""
     keep = [f"zoo  {n} primate{'s' if n != 1 else ''}"]
     if n > body:
         keep.append(f"rows {offset + 1}-{min(offset + body, n)} of {n}")
-    optional = [f"refresh {interval:g}s"]
+    optional = []
+    if host is not None:
+        optional.append(f"host {host[0]} cpu · {human_bytes(host[1])}")
+    if agg is not None and (agg[0] or agg[1]):
+        optional.append(f"Σ {agg[0]:.1f}% · {human_bytes(agg[1])}")
+    optional.append(f"refresh {interval:g}s")
     if age is not None:
         optional.append(f"stats {age:.0f}s ago")
     text = "  ".join(keep + optional)
@@ -885,6 +896,25 @@ def follow_selection(rows: List[Row], sel: int, selected_id: str) -> int:
 def stats_age(figures: Dict[str, Figures], now: float) -> Optional[float]:
     times = [f.ok_at for f in figures.values() if f.ok_at is not None]
     return max(now - max(times), 0.0) if times else None
+
+
+def host_facts(docker: "Docker") -> Optional[Tuple[int, int]]:
+    """(cpu count, total memory bytes) from docker info, or None if it cannot be read. Host facts
+    do not change, so the view fetches this once at start."""
+    try:
+        info = docker.info()
+    except DockerError:
+        return None
+    ncpu, mem = int(info.get("NCPU") or 0), int(info.get("MemTotal") or 0)
+    return (ncpu, mem) if (ncpu or mem) else None
+
+
+def aggregate(figures: Dict[str, Figures]) -> Tuple[float, int]:
+    """Summed CPU% and memory of the running primates — a live snapshot for the title. Pending and
+    stale rows contribute whatever numbers they have; stopped rows contribute nothing."""
+    cpu = sum(f.cpu for f in figures.values() if f.cpu is not None)
+    mem = sum(f.mem_used for f in figures.values() if f.mem_used is not None)
+    return (cpu, mem)
 
 
 # The semantic style of a row, mapped to a curses attribute by the view (colour where the terminal
@@ -931,6 +961,7 @@ class View:
         self.last_tick = -1e9
         self.dirty = True
         self._style: Dict[str, int] = {}   # token -> curses attr, built in run() once curses is up
+        self.host: Optional[Tuple[int, int]] = None   # (cpu count, total mem); fetched once at start
 
     def selected(self) -> Optional[Row]:
         rows = self.mon.rows
@@ -1198,7 +1229,8 @@ class View:
 
     def title(self, now: float, n: int, width: int) -> str:
         return title_text(n, self.offset, self.body_height(), self.interval,
-                          stats_age(self.mon.figures, now), width)
+                          stats_age(self.mon.figures, now), width,
+                          host=self.host, agg=aggregate(self.mon.figures))
 
     def draw(self, now: float) -> None:
         import curses
@@ -1249,6 +1281,11 @@ class View:
         curses.doupdate()
 
 
+def _run_view(view: "View", host) -> int:
+    view.host = host
+    return view.run()
+
+
 def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -> int:
     """Own the terminal for the view's lifetime and hand it back exactly as found (spec req 20)."""
     if not environ.get("TERM"):
@@ -1279,8 +1316,10 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         roster = read_roster(zfuncs)
         tpath = tmux_path(environ)
         tmux = Tmux(tpath) if tpath else None   # T2 makes this always present via auto-wrap
-        return curses.wrapper(lambda scr: View(scr, mon, interval, self_id=self_id, cli=cli, term=term,
-                                               roster=roster, zfuncs=zfuncs, cwd=os.getcwd(), tmux=tmux).run())
+        host = host_facts(mon._docker)          # host facts do not change: fetched once here
+        return curses.wrapper(lambda scr: _run_view(
+            View(scr, mon, interval, self_id=self_id, cli=cli, term=term,
+                 roster=roster, zfuncs=zfuncs, cwd=os.getcwd(), tmux=tmux), host))
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:
