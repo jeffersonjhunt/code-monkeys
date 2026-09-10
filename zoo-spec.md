@@ -149,9 +149,34 @@ The API returns bytes and nanoseconds rather than strings like `686MiB / 31.29Gi
   refresh, attributes, colour, timed input and resize, and supports leaving curses to run a
   normal command and re-entering. It does not name special keys — arrows arrive as raw
   escape sequences.
-- tmux is installed on every machine, including the Mac.
+- tmux is installed on every machine, including the Mac. **Correction (2026-09-10): this was
+  false on the `intel-nuc.tworivers` host — tmux was not installed there (only inside the primate
+  images). Since the implementation now requires tmux on the host (see §7.6), tmux is a host
+  prerequisite, not a given; verify it per host.**
 - `~/.zfuncs` is a symlink into the repository, so the checked-out branch is the user's live
   environment. Develop in a git worktree.
+
+### 7.6 The tmux-window model (the shipped implementation)
+
+The requirements above prescribe no architecture. The implementation on `master` chose this one,
+and it is recorded here because it changes the *mechanism* of requirements 12–15 (attach, resume,
+shell, return), not the contract:
+
+- **zoo runs as window 0 of a tmux session it owns.** Launched outside tmux it re-execs itself
+  via `tmux new-session -A -s zoo` (`-A` re-attaches an existing `zoo` session). `--once` is never
+  wrapped — it stays the plain, scriptable frame.
+- **Actions open tmux windows** instead of the process lending its terminal to a child. This
+  removes the single-terminal hand-off entirely (endwin/re-enter, the SIGINT dance, the ctrl-c
+  and ctrl-z edge cases from §6) — the list keeps refreshing while a window runs. Returning is a
+  tmux concern: `ctrl-b w` / `ctrl-b 0`.
+- **tmux is now a hard prerequisite on the host** (no in-terminal fallback — a fallback would be
+  the deleted hand-off). Absent tmux, zoo exits with a message.
+- **Nesting is accepted, not worked around.** A `primate-session` runs tmux inside the container,
+  so attaching nests tmux; the inner prefix becomes `ctrl-b ctrl-b`.
+- **A window is targeted at the session with a trailing colon** (`new-window -t zoo:`): window 0
+  is also named `zoo`, and a bare `-t zoo` resolves to that window (index 0) and fails. This was
+  invisible to a stubbed tmux and only a real server caught it — hence a real-tmux test alongside
+  the stubbed ones.
 
 ---
 

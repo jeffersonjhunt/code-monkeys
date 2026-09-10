@@ -172,34 +172,45 @@ is still killable by `<image>`, via a suffix-only fallback, but will not appear 
 #### zoo — the interactive view
 
 `zoo` is `top(1)` for primates: every container `primate` or `primate-session` started, running
-or stopped, with live CPU, memory and process counts, and the actions above under single keys.
+or stopped, with live CPU, memory and process counts, and the actions below under single keys.
+
+**zoo runs inside tmux.** Started from a plain terminal it re-execs itself as window 0 of a tmux
+session named `zoo` (run it again from anywhere and you re-attach that session). Its actions then
+open **new tmux windows** rather than taking over the terminal, so the list keeps refreshing while
+you work. **tmux is therefore a prerequisite on the host** — it is in every primate image already,
+but a bare host needs `apt-get install tmux` (or the platform equivalent); without it `zoo` exits
+with a message. `zoo --once` is the exception: a plain one-frame dump for scripts, never wrapped.
 
 ```bash
-zoo                 # the view; ? lists the keys, q quits
-zoo --once          # one plain frame, for scripts and a quick look
+zoo                 # the view (auto-wraps into tmux); ? lists the keys, q quits
+zoo --once          # one plain frame, for scripts and a quick look (no tmux needed)
 zoo -i 5            # refresh every 5 s (default 2; + and - adjust it live)
 ```
 
 | key | does |
 |---|---|
-| `a` | attach to the selected session's tmux; a stopped session is started first |
-| `e` | open a **new** shell in the selected running container (not its original terminal) |
+| `a` | attach to the selected session's tmux in a **new window**; a stopped session is started first |
+| `e` | open a **new shell** in the selected running container, in a new window (not its original terminal) |
 | `x` | remove the selected container, after a confirm that says what dies and that `<image>-home` survives |
-| `n` / `s` | start a primate / a session from the image roster (a session may be named) |
+| `n` / `s` | start a primate / a session from the image roster (a session may be named), in a new window |
 
-Detaching (`ctrl-b d`) or exiting a shell returns to zoo. Containers are identified by the
-`primate.*` labels only, so nothing else on the daemon is listed or reachable; the row zoo itself
-runs in is marked `(here)` and cannot be its own target; and every action re-checks the selected
-container's id at the moment it acts, so a session recreated under the same name while a prompt
-waited is refused rather than hit. `n`/`s` appear only where a roster exists — a host checkout —
-so inside a primate zoo lists, attaches, opens shells and kills, but does not launch.
+`ctrl-b w` switches between windows, `ctrl-b 0` returns to the list. Attaching to a
+`primate-session` nests tmux (it runs its own tmux inside the container), so **inside a session
+the prefix is doubled: `ctrl-b ctrl-b`**. Containers are identified by the `primate.*` labels only,
+so nothing else on the daemon is listed or reachable; the row zoo itself runs in is marked
+`(here)` and cannot be its own target; and every action re-checks the selected container's id at
+the moment it acts, so a session recreated under the same name while a prompt waited is refused
+rather than hit. `n`/`s` appear only where a roster exists — a host checkout — so inside a primate
+zoo lists, attaches, opens shells and kills, but does not launch.
 
 It is one python3 script (`bin/zoo`, standard library only), linked into `~/.local/bin` by `setup`
 and copied into each home volume by `primates/upgrade-home.sh`. Launch and attach go through the
 zsh functions in `zfuncs`, so there is still one owner of the workspace mount, the `$HOME`
 refusal, the socket gid and the first-run sync. Requirements and measurements: `zoo-spec.md`.
 Tests: `python3 -m unittest discover -s tests -p 'test_zoo*.py'` (hermetic; the pty suite drives
-zoo from an interactive zsh against a fake daemon and creates no containers).
+zoo from an interactive zsh against a fake daemon and a stub tmux, and one case against a real
+isolated tmux; it creates no containers). The opt-in live suite (`ZOO_LIVE=1`) needs tmux, zsh
+and docker and exercises a real container.
 
 ### Docker-out-of-Docker
 

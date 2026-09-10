@@ -25,6 +25,7 @@ import shutil
 import signal
 import socketserver
 import struct
+import subprocess
 import sys
 import tempfile
 import termios
@@ -75,6 +76,33 @@ case "$1" in
   *) exit 0 ;;
 esac
 """
+
+# Stands in for tmux via the ZOO_TMUX seam so the pty suite never touches a real server. It logs
+# every argv to ZOO_TMUX_LOG and keeps opened window names in ZOO_TMUX_WINS, so list-windows
+# reflects new-window and open_or_focus's focus-vs-open logic is exercised. It does NOT run the
+# window's command (that is what a real tmux does; T3 covers it end to end) — here we assert that
+# zoo issues the right tmux commands. Window 0 is always "zoo".
+TMUX_STUB = r'''#!/bin/sh
+printf '%s\n' "$*" >> "$ZOO_TMUX_LOG"
+case "$1" in
+  list-windows)
+    printf '0\tzoo\n'
+    if [ -f "$ZOO_TMUX_WINS" ]; then
+      i=1
+      while IFS= read -r n; do printf '%s\t%s\n' "$i" "$n"; i=$((i + 1)); done < "$ZOO_TMUX_WINS"
+    fi
+    ;;
+  new-window)
+    take=0; name=""
+    for a in "$@"; do
+      [ "$take" = 1 ] && { name="$a"; take=0; }
+      [ "$a" = "-n" ] && take=1
+    done
+    printf '%s\n' "$name" >> "$ZOO_TMUX_WINS"
+    ;;
+esac
+exit 0
+'''
 PROMPT_RE = re.compile(rb"(?:^|[\r\n])@Z@ ")
 JOB_NOTICE_RE = re.compile(rb"\[\d+\]\s*[-+]?\s*(?:done|terminated|suspended|running|exit)")
 
@@ -461,9 +489,12 @@ class TtyBase(unittest.TestCase):
         (home / "bin").mkdir()
         os.symlink(ZOO, home / "bin" / "zoo")
         stub = home / "bin" / "docker"
-        stub.write_text(DOCKER_STUB)
+        stub.write_text(DOCKER_STUB)   # only so `docker` is on PATH (cli truthy); its argv is now run by tmux
         stub.chmod(0o755)
-        self.docker_log = home / "docker.log"
+        tmux_stub = home / "bin" / "tmux"
+        tmux_stub.write_text(TMUX_STUB)
+        tmux_stub.chmod(0o755)
+        self.tmux_log = home / "tmux.log"
         sock = home / "d.sock"
         self.state = DaemonState(self.fixture())
         self.daemon = FakeDaemon(str(sock), self.state)
@@ -473,6 +504,12 @@ class TtyBase(unittest.TestCase):
             "HOME": str(home),
             "PATH": f"{home / 'bin'}:{pathlib.Path(sys.executable).parent}:/usr/bin:/bin",
             "DOCKER_HOST": f"unix://{sock}",
+            "ZOO_TMUX": str(tmux_stub),
+            "ZOO_TMUX_LOG": str(self.tmux_log),
+            "ZOO_TMUX_WINS": str(home / "tmux.wins"),
+            # These tests are zoo running as window 0 *inside* tmux, so it must not auto-wrap;
+            # TMUX set is what tells it so. A real-tmux wrap is exercised in test_zoo_live.py.
+            "TMUX": "/tmp/zoo-test-tmux,1,0",
         }
         for key, value in self.extra_env.items():
             env[key] = value.replace("{home}", str(home))
@@ -488,12 +525,6 @@ class TtyBase(unittest.TestCase):
     def prepare_home(self, home):
         """Hook for fixtures that must exist before the shell starts (a zfuncs stub, mountinfo)."""
 
-    def launches(self):
-        try:
-            return (pathlib.Path(self.tmp.name) / "launch.log").read_text().splitlines()
-        except FileNotFoundError:
-            return []
-
     def tearDown(self):
         self.sh.close()
         self.daemon.shutdown()
@@ -501,7 +532,9 @@ class TtyBase(unittest.TestCase):
         self.tmp.cleanup()
 
     def start_zoo(self, interval="0.2"):
-        self.sh.send(f"zoo -i {interval}\r")
+        # --in-tmux: these run with TMUX set (window 0 of the zoo session), which is the re-exec
+        # state; without it zoo would refuse (T-F1). RealTmuxTest covers the real wrap.
+        self.sh.send(f"zoo --in-tmux -i {interval}\r")
         self.sh.expect(SMCUP)
         self.sh.wait_screen("KIND")
 
@@ -523,11 +556,22 @@ class TtyBase(unittest.TestCase):
                 raise AssertionError(f"no DELETE for {id_[:12]}; requests: {self.state.requests[-6:]}")
             self.sh._read(0.1)
 
-    def docker_calls(self):
+    def tmux_calls(self):
         try:
-            return [line.split() for line in self.docker_log.read_text().splitlines()]
+            return self.tmux_log.read_text().splitlines()
         except FileNotFoundError:
             return []
+
+    def new_windows(self):
+        """The argv lines for each `tmux new-window` zoo issued, in order."""
+        return [c for c in self.tmux_calls() if c.startswith("new-window ")]
+
+    def wait_tmux(self, needle, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while not any(needle in c for c in self.tmux_calls()):
+            if time.monotonic() > deadline:
+                raise AssertionError(f"{needle!r} never sent to tmux; calls: {self.tmux_calls()}")
+            self.sh._read(0.1)
 
     def suspend(self, tries=5):
         """Send ctrl-z and wait for the shell's stop notice, resending if the byte did not land.
@@ -546,13 +590,6 @@ class TtyBase(unittest.TestCase):
                     return
                 self.sh._read(0.1)
         raise AssertionError("ctrl-z never suspended the job after %d tries" % tries)
-
-    def wait_docker_call(self, first_word, timeout=10.0):
-        deadline = time.monotonic() + timeout
-        while not any(call and call[0] == first_word for call in self.docker_calls()):
-            if time.monotonic() > deadline:
-                raise AssertionError(f"docker {first_word} was never run; calls: {self.docker_calls()}")
-            self.sh._read(0.1)
 
 
 class TtyTest(TtyBase):
@@ -576,12 +613,23 @@ class TtyTest(TtyBase):
 
     def test_without_term_zoo_refuses_before_touching_the_screen(self):
         mark = self.sh.pos
-        self.sh.send("env -u TERM zoo\r")
+        self.sh.send("env -u TERM zoo --in-tmux\r")
         self.sh.expect(b"zoo: TERM is not set")
         self.sh.expect(PROMPT_RE)
         out = self.sh.run("echo rc=$?")
         self.assertIn(b"rc=1", out)
         self.assertNotIn(SMCUP, self.sh.since(mark))
+
+    def test_zoo_refuses_to_start_inside_an_existing_tmux_session(self):
+        # TMUX is set for this suite; a plain `zoo` (no --in-tmux) models a user launching from
+        # inside their own tmux. zoo owns its own session, so it refuses rather than half-run (T-F1).
+        mark = self.sh.pos
+        self.sh.send("zoo\r")
+        self.sh.expect(b"already inside tmux")
+        self.sh.expect(PROMPT_RE)
+        out = self.sh.run("echo rc=$?")
+        self.assertIn(b"rc=1", out)
+        self.assertNotIn(SMCUP, self.sh.since(mark))   # never entered the alternate screen
 
     def test_frame_shows_states_and_hides_the_unlabelled(self):
         self.start_zoo()
@@ -655,99 +703,54 @@ class TtyTest(TtyBase):
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
-    def test_attach_hands_the_terminal_to_tmux_and_comes_back(self):
+    def test_attach_opens_a_tmux_window_and_zoo_keeps_its_own(self):
         before = self.sh.stty()
         self.start_zoo()
         self.sh.wait_screen("evoc")
         self.sh.send("j")                        # evoc
         self.sh.wait_screen("a attach  e shell  x kill")
-        mark = self.sh.pos
         self.sh.send("a")
-        self.sh.expect(b"attaching to session evoc")
-        self.sh.expect(b"STUB-CHILD-RUNNING")
-        self.assertIn(RMCUP, self.sh.since(mark))   # left the alternate screen for the child
-        self.sh.send("hi\r")
-        self.sh.expect(b"STUB-CHILD-GOT-hi")
-        mark = self.sh.pos
-        self.sh.wait_screen("attach evoc ended (exit 0); back in zoo")
-        self.assertIn(SMCUP, self.sh.since(mark))   # and re-entered it afterwards
-        self.sh.wait_screen("KIND")
-        self.assertEqual(self.docker_calls(), [["exec", "-it", "-e", "TERM=xterm-256color", cid("aa"),
-                                                "tmux", "new-session", "-A", "-s", "main"]])
+        self.sh.wait_screen("opened attach-evoc")   # notice on zoo's own screen: no hand-off
+        self.assertIn("KIND", self.sh.screen)       # zoo never left its list
+        self.wait_tmux("new-window")
+        nw = self.new_windows()[0]
+        self.assertIn("-n attach-evoc", nw)
+        self.assertIn(cid("aa"), nw)                # by the 64-char id
+        self.assertIn("tmux new-session -A -s main", nw)
+        # A second press focuses the one window, it does not open a duplicate.
+        self.sh.send("a")
+        self.sh.wait_screen("focused attach-evoc")
+        self.assertEqual(len(self.new_windows()), 1)
+        self.assertTrue(any(c.startswith("select-window ") for c in self.tmux_calls()))
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
-        self.assertEqual(self.sh.stty(), before)
+        self.assertEqual(self.sh.stty(), before)     # zoo owned the terminal throughout
 
-    def test_resume_starts_a_stopped_session_then_attaches(self):
+    def test_resume_starts_a_stopped_session_then_opens_its_window(self):
         self.start_zoo()
         self.sh.wait_screen("a resume  x kill")   # build, stopped, is selected first
         self.sh.send("a")
-        self.sh.expect(b"started stopped session build")
+        self.sh.wait_screen("opened attach-build")
         self.assertEqual(self.state.starts(), [f"/containers/{cid('cc')}/start"])
-        self.sh.expect(b"STUB-CHILD-RUNNING")
-        self.sh.send("\r")
-        self.sh.wait_screen("resume build ended (exit 0); back in zoo")
+        nw = self.new_windows()[0]
+        self.assertIn("-n attach-build", nw)
+        self.assertIn(cid("cc"), nw)
         self.sh.wait_screen("Up 1 second")         # the row now shows the started container
-        self.wait_docker_call("exec")
-        self.assertEqual(self.docker_calls()[0][4:], [cid("cc"), "tmux", "new-session", "-A", "-s", "main"])
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
-    def test_shell_is_presented_as_a_new_shell(self):
+    def test_shell_opens_a_window_with_a_new_shell(self):
         self.start_zoo()
         self.sh.wait_screen("evoc")
         self.sh.send("j")
         self.sh.wait_screen("e shell")
         self.sh.send("e")
-        self.sh.expect(b"opening a new shell in session evoc")
-        self.sh.expect(b"not its original terminal")
-        self.sh.expect(b"STUB-CHILD-RUNNING")
-        self.sh.send("\r")
-        self.sh.wait_screen("shell evoc ended (exit 0); back in zoo")
-        calls = self.docker_calls()
-        self.assertEqual(calls[0][:6], ["exec", "-it", "-e", "TERM=xterm-256color", cid("aa"), "sh"])
-        self.assertIn("zsh", " ".join(calls[0]))
+        self.sh.wait_screen("opened shell-evoc")
+        nw = self.new_windows()[0]
+        self.assertIn("-n shell-evoc", nw)
+        self.assertIn(f"exec -it -e TERM=xterm-256color {cid('aa')} sh -c", nw)
+        self.assertIn("exec zsh", nw)
         self.assertEqual(self.state.starts(), [])
-        self.sh.send("q")
-        self.sh.expect(PROMPT_RE)
-
-    def test_ctrl_c_in_the_child_does_not_take_zoo_down(self):
-        before = self.sh.stty()
-        self.start_zoo()
-        self.sh.wait_screen("evoc")
-        self.sh.send("j")
-        self.sh.wait_screen("e shell")
-        self.sh.send("e")
-        self.sh.expect(b"STUB-CHILD-RUNNING")
-        self.sh.send(b"\x03")
-        self.sh.expect(b"press Enter to return to zoo")   # the child died of the interrupt: non-zero
-        self.assertNotIn("[exit 0]", self.sh.screen)
-        self.sh.send("\r")
-        self.sh.wait_screen("shell evoc ended (exit")
-        self.assertNotIn("(exit 0)", self.sh.screen)
-        self.sh.wait_screen("KIND")
-        self.sh.send("q")                                # zoo is still here to quit
-        self.sh.expect(PROMPT_RE)
-        out = self.sh.run("echo rc=$?")
-        self.assertIn(b"rc=0", out)
-        self.assertEqual(self.sh.stty(), before)
-
-    def test_a_failed_child_is_readable_before_zoo_returns(self):
-        self.start_zoo()
-        self.sh.wait_screen("evoc")
-        self.sh.send("j")
-        self.sh.wait_screen("e shell")
-        self.sh.send("e")
-        self.sh.expect(b"STUB-CHILD-RUNNING")
-        self.sh.send("fail\r")
-        self.sh.expect(b"STUB-CHILD-FAILING")
-        self.sh.expect(b"[exit 3] press Enter to return to zoo")
-        self.sh.settle(0.5)
-        self.assertIn("STUB-CHILD-FAILING", self.sh.screen)   # still readable: curses has not re-entered
-        self.assertNotIn("KIND", self.sh.screen)
-        self.sh.send("\r")
-        self.sh.wait_screen("shell evoc ended (exit 3); back in zoo")
-        self.sh.wait_screen("KIND")
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
@@ -808,7 +811,7 @@ class TtyTest(TtyBase):
         self.sh.wait_screen("a resume  x kill")   # build is stopped: no shell
         self.sh.send("e")
         self.sh.wait_screen("build is not running")
-        self.assertEqual(self.docker_calls(), [])
+        self.assertEqual(self.new_windows(), [])
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
@@ -848,7 +851,7 @@ class InsideAContainerTtyTest(TtyBase):
         self.assertEqual(self.state.deletes(), [])
         self.sh.send("a")
         self.sh.wait_screen("scratch is the container zoo is running in")
-        self.assertEqual(self.docker_calls(), [])
+        self.assertEqual(self.new_windows(), [])
         self.sh.send("k")                        # evoc, one up: still killable
         self.sh.wait_screen("x kill")
         self.sh.send("x")
@@ -866,7 +869,7 @@ class LaunchTtyTest(TtyBase):
     def prepare_home(self, home):
         (home / "zfuncs").write_text(ZFUNCS_STUB)
 
-    def test_n_picks_an_image_and_starts_a_primate(self):
+    def test_n_picks_an_image_and_opens_a_primate_window(self):
         before = self.sh.stty()
         self.start_zoo()
         self.sh.wait_screen("n new  s session")
@@ -876,18 +879,17 @@ class LaunchTtyTest(TtyBase):
             self.sh.wait_screen(image)
         self.sh.send("j")
         self.sh.send("\r")
-        self.sh.expect(b"starting primate claude")
-        self.sh.expect(b"STUB-PRIMATE-claude")
-        self.sh.send("\r")
-        self.sh.expect(b"STUB-PRIMATE-EXIT")
-        self.sh.wait_screen("primate claude ended (exit 0); back in zoo")
-        self.sh.wait_screen("KIND")
-        self.assertEqual(self.launches(), ["primate claude"])
+        self.sh.wait_screen("opened primate-claude")
+        self.sh.wait_screen("KIND")                 # zoo stays on its list
+        nw = self.new_windows()[0]
+        self.assertIn("-n primate-claude", nw)
+        self.assertIn("primate claude", nw)         # the zsh-function call the window runs
+        self.assertIn(" -c ", nw)                   # started in zoo's cwd (workspace = $(pwd))
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
         self.assertEqual(self.sh.stty(), before)
 
-    def test_s_asks_for_a_name_then_starts_a_session(self):
+    def test_s_asks_for_a_name_then_opens_a_session_window(self):
         self.start_zoo()
         self.sh.wait_screen("n new  s session")
         self.sh.send("s")
@@ -898,11 +900,10 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("scratchx\x7f")            # a typo, backspaced
         self.sh.wait_screen("  scratch_")
         self.sh.send("\r")
-        self.sh.expect(b"starting session claude named scratch")
-        self.sh.expect(b"STUB-SESSION-claude-scratch")
-        self.sh.send("\r")
-        self.sh.wait_screen("session claude (scratch) ended (exit 0); back in zoo")
-        self.assertEqual(self.launches(), ["primate-session claude scratch"])
+        self.sh.wait_screen("opened session-scratch")
+        nw = self.new_windows()[0]
+        self.assertIn("-n session-scratch", nw)
+        self.assertIn("primate-session claude scratch", nw)
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
@@ -918,7 +919,7 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("\x7f\x7f\x7f-x\r")
         self.sh.wait_screen("start with a letter or digit")
         self.assertIn("Session name for codemonkey", self.sh.screen)   # the prompt is still open
-        self.assertEqual(self.launches(), [])
+        self.assertEqual(self.new_windows(), [])
         self.sh.send(b"\x1b")
         self.sh.wait_screen("launch cancelled")
         self.sh.send("q")
@@ -932,10 +933,10 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("\r")                       # codemonkey, the first
         self.sh.wait_screen("Session name for codemonkey")
         self.sh.send("\r")
-        self.sh.expect(b"STUB-SESSION-codemonkey-default")
-        self.sh.send("\r")
-        self.sh.wait_screen("session codemonkey ended (exit 0); back in zoo")
-        self.assertEqual(self.launches(), ["primate-session codemonkey"])
+        self.sh.wait_screen("opened session-codemonkey")
+        nw = self.new_windows()[0]
+        self.assertIn("-n session-codemonkey", nw)
+        self.assertTrue(nw.rstrip().endswith("primate-session codemonkey"))   # no name passed
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
@@ -954,7 +955,7 @@ class LaunchTtyTest(TtyBase):
         self.sh.send(b"\x1b")
         self.sh.wait_screen("launch cancelled")
         self.sh.wait_screen_gone("Session name")
-        self.assertEqual(self.launches(), [])
+        self.assertEqual(self.new_windows(), [])
         self.sh.send("q")                          # and Esc did not quit zoo either time
         self.sh.expect(PROMPT_RE)
 
@@ -976,7 +977,7 @@ class NoRosterTtyTest(TtyBase):
         self.sh.wait_screen("n / s             unavailable")
         self.sh.send("x")
         self.sh.wait_screen_gone("unavailable")
-        self.assertEqual(self.launches(), [])
+        self.assertEqual(self.new_windows(), [])
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
@@ -1008,6 +1009,116 @@ class LongListTtyTest(TtyBase):
         self.assertTrue(all(len(line) <= 50 for line in self.sh.screen.text()))
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
+
+
+# A roster of one image whose primate/primate-session print a marker and stay up, so a launch
+# window has observable, long-lived content without any docker.
+REAL_ZFUNCS_STUB = """
+function _primate_roster() { print -r -- alpha }
+function primate() { printf 'LAUNCHED-%s\\n' "$1"; exec sleep 300 }
+function primate-session() { printf 'LAUNCHEDS-%s-%s\\n' "$1" "${2:-default}"; exec sleep 300 }
+"""
+
+
+@unittest.skipUnless(shutil.which("tmux") and shutil.which("zsh"),
+                     "SKIPPED: needs tmux and zsh for the real-tmux end-to-end test")
+class RealTmuxTest(unittest.TestCase):
+    """The genuine article: zoo auto-wraps into a REAL tmux server (isolated by TMUX_TMPDIR so it
+    never touches the developer's), opens a REAL window whose command actually runs, and ctrl-b 0
+    returns to a list that is still refreshing. The stub tmux suites prove zoo issues the right
+    commands; this proves those commands do what zoo expects against real tmux. No docker: the
+    list comes from the fake daemon and the launch runs a stub zfuncs, so it is hermetic."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        home = pathlib.Path(self.tmp.name)
+        (home / "bin").mkdir()
+        os.symlink(ZOO, home / "bin" / "zoo")
+        (home / "zfuncs").write_text(REAL_ZFUNCS_STUB)
+        docker = home / "bin" / "docker"      # only so cli is truthy (actions offered)
+        docker.write_text(DOCKER_STUB)
+        docker.chmod(0o755)
+        sock = home / "d.sock"
+        self.state = DaemonState(fixture_small())
+        self.daemon = FakeDaemon(str(sock), self.state)
+        threading.Thread(target=self.daemon.serve_forever, daemon=True).start()
+        self.tmuxbin = shutil.which("tmux")
+        tmpdir = home / "tmxtmp"
+        tmpdir.mkdir()
+        self.tmux_sock = str(tmpdir / f"tmux-{os.getuid()}" / "default")
+        env = {
+            "TERM": "xterm-256color",
+            "HOME": str(home),
+            "PATH": f"{home / 'bin'}:{pathlib.Path(sys.executable).parent}:/usr/bin:/bin",
+            "DOCKER_HOST": f"unix://{sock}",
+            "ZOO_ZFUNCS": str(home / "zfuncs"),
+            "TMUX_TMPDIR": str(tmpdir),   # zoo's `tmux new-session` lands on an isolated server
+            # TMUX deliberately unset: this is the one suite that lets zoo auto-wrap for real.
+        }
+        self.sh = Shell(env, rows=24, cols=100)
+        self.sh.send(f"PROMPT='{PROMPT}'\r")
+        self.sh.expect(PROMPT_RE)
+
+    def tearDown(self):
+        self.tmux("kill-server")   # detaches the pty client and reaps the isolated server
+        self.sh.close()
+        self.daemon.shutdown()
+        self.daemon.server_close()
+        self.tmp.cleanup()
+
+    def tmux(self, *args, timeout=10):
+        return subprocess.run([self.tmuxbin, "-S", self.tmux_sock, *args],
+                              capture_output=True, text=True, timeout=timeout)
+
+    def wait_tmux_ok(self, args, needle, timeout=20):
+        deadline = time.monotonic() + timeout
+        while True:
+            r = self.tmux(*args)
+            if r.returncode == 0 and needle in r.stdout:
+                return r.stdout
+            if time.monotonic() > deadline:
+                raise AssertionError(f"tmux {args} never showed {needle!r}: rc={r.returncode} "
+                                     f"out={r.stdout!r} err={r.stderr!r}")
+            self.sh._read(0.2)
+
+    def active(self):
+        """(active?, name) for zoo's windows, from the real server — the source of truth for
+        which window has focus, rather than guessing from the pty screen mid-switch."""
+        r = self.tmux("list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}")
+        return r.stdout
+
+    def test_autowrap_opens_a_real_window_and_ctrl_b_0_returns_to_a_live_list(self):
+        self.sh.send("zoo -i 0.5\r")
+        # Auto-wrap: a real tmux server comes up and the inner zoo renders window 0.
+        self.sh.wait_screen("KIND", timeout=25)
+        self.sh.wait_screen("evoc", timeout=25)      # list populated from the fake daemon
+        self.sh.wait_screen("n new", timeout=25)     # roster present -> launch offered
+        self.wait_tmux_ok(["list-sessions"], "zoo")  # the session zoo created, for real
+
+        # Launch a primate: a real second window opens, becomes active, and its command runs.
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("\r")                           # the one image, alpha
+        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+                          "1 primate-alpha")         # opened AND focused (the whole point)
+        pane = self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-alpha"], "LAUNCHED-alpha")
+        self.assertIn("LAUNCHED-alpha", pane)        # the zsh-function window really ran
+
+        # ctrl-b 0 returns to zoo's window, which never stopped refreshing.
+        self.sh.send(b"\x020")
+        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+                          "1 zoo")
+        self.sh.wait_screen("KIND", timeout=25)
+        self.sh.wait_screen("stats", timeout=25)     # the title's live age: zoo kept ticking
+
+        # A second launch of the same image focuses the one window, not a duplicate.
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("\r")
+        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+                          "1 primate-alpha")
+        names = self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout.split()
+        self.assertEqual(names.count("primate-alpha"), 1)   # focused, not duplicated
 
 
 if __name__ == "__main__":

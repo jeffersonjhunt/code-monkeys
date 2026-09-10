@@ -405,20 +405,20 @@ class AttachAndShellTest(unittest.TestCase):
     def starts(self):
         return [u for m, u in self.fake.requests if m == "POST"]
 
-    def test_attach_to_a_running_session_execs_tmux_by_id(self):
-        banner, argv = zoo.attach(self.docker, self.rows[SESSION_OLD], "", "/bin/docker", "screen-256color")
-        self.assertEqual(argv, ["/bin/docker", "exec", "-it", "-e", "TERM=screen-256color", SESSION_OLD,
-                                "tmux", "new-session", "-A", "-s", "main"])
-        self.assertIn("attaching to session evoc", banner)
-        self.assertIn("ctrl-b d", banner)
+    def test_attach_is_a_window_running_tmux_by_id(self):
+        win = zoo.attach(self.docker, self.rows[SESSION_OLD], "", "/bin/docker", "screen-256color")
+        self.assertEqual(win.name, "attach-evoc")
+        self.assertEqual(list(win.argv), ["/bin/docker", "exec", "-it", "-e", "TERM=screen-256color",
+                                          SESSION_OLD, "tmux", "new-session", "-A", "-s", "main"])
+        self.assertIsNone(win.cwd)         # attach needs no host directory
         self.assertEqual(self.starts(), [])
 
     def test_attach_to_a_stopped_session_starts_it_first(self):
-        banner, argv = zoo.attach(self.docker, self.rows[SESSION_STOPPED], "", "docker", "xterm")
+        win = zoo.attach(self.docker, self.rows[SESSION_STOPPED], "", "docker", "xterm")
         self.assertEqual(self.starts(), [f"/containers/{SESSION_STOPPED}/start"])
         self.assertEqual(self.fake.find(SESSION_STOPPED)["State"], "running")
-        self.assertIn("started stopped session build", banner)
-        self.assertEqual(argv[5:], [SESSION_STOPPED, "tmux", "new-session", "-A", "-s", "main"])
+        self.assertEqual(win.name, "attach-build")
+        self.assertEqual(list(win.argv)[5:], [SESSION_STOPPED, "tmux", "new-session", "-A", "-s", "main"])
 
     def test_attach_refuses_a_foreground_primate(self):
         with self.assertRaises(zoo.Refusal) as ctx:
@@ -434,12 +434,13 @@ class AttachAndShellTest(unittest.TestCase):
         with self.assertRaises(zoo.Refusal):
             zoo.attach(self.docker, self.rows[SESSION_NEW], SESSION_NEW, "docker", "xterm")
 
-    def test_shell_is_a_new_shell_and_says_so(self):
-        banner, argv = zoo.shell(self.docker, self.rows[FOREGROUND], "", "docker", "xterm")
-        self.assertEqual(argv[:6], ["docker", "exec", "-it", "-e", "TERM=xterm", FOREGROUND])
-        self.assertIn("exec zsh", argv[-1])
-        self.assertIn("exec sh", argv[-1])
-        self.assertIn("not its original terminal", banner)
+    def test_shell_is_a_window_with_a_new_shell(self):
+        win = zoo.shell(self.docker, self.rows[FOREGROUND], "", "docker", "xterm")
+        self.assertEqual(win.name, "shell-wonderful_kirch")
+        self.assertEqual(list(win.argv)[:6], ["docker", "exec", "-it", "-e", "TERM=xterm", FOREGROUND])
+        self.assertIn("exec zsh", win.argv[-1])
+        self.assertIn("exec sh", win.argv[-1])
+        self.assertIsNone(win.cwd)
 
     def test_shell_refuses_a_stopped_container(self):
         with self.assertRaises(zoo.Refusal) as ctx:
@@ -523,19 +524,20 @@ class RosterTest(unittest.TestCase):
 
 
 class LaunchPlanTest(unittest.TestCase):
-    def test_primate_runs_the_zsh_function_by_sourcing_zfuncs(self):
-        banner, argv = zoo.launch_plan(zoo.PRIMATE, "/h/.zfuncs", "claude", "", "/work/proj")
-        self.assertEqual(argv, ["zsh", "-c", zoo.ZFUNCS_SNIPPET, "zoo-launch", "/h/.zfuncs", "primate", "claude"])
-        self.assertIn("starting primate claude", banner)
-        self.assertIn("/work/proj", banner)
+    def test_primate_is_a_window_that_sources_zfuncs_and_carries_cwd(self):
+        win = zoo.launch_plan(zoo.PRIMATE, "/h/.zfuncs", "claude", "", "/work/proj")
+        self.assertEqual(win.name, "primate-claude")
+        self.assertEqual(list(win.argv), ["zsh", "-c", zoo.ZFUNCS_SNIPPET, "zoo-launch", "/h/.zfuncs", "primate", "claude"])
+        self.assertEqual(win.cwd, "/work/proj")   # primate() mounts $(pwd); the window must start there
 
-    def test_session_passes_the_name_only_when_given(self):
-        _, argv = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "scratch", "/w")
-        self.assertEqual(argv[5:], ["primate-session", "claude", "scratch"])
-        banner, argv = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "", "/w")
-        self.assertEqual(argv[5:], ["primate-session", "claude"])
-        self.assertIn("ctrl-b d", banner)
-        self.assertNotIn("named", banner)
+    def test_session_window_name_and_argv_track_the_name(self):
+        win = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "scratch", "/w")
+        self.assertEqual(win.name, "session-scratch")
+        self.assertEqual(list(win.argv)[5:], ["primate-session", "claude", "scratch"])
+        self.assertEqual(win.cwd, "/w")
+        win = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "", "/w")
+        self.assertEqual(win.name, "session-claude")   # no name given: window named for the image
+        self.assertEqual(list(win.argv)[5:], ["primate-session", "claude"])
 
     def test_footer_and_help_offer_launch_only_with_a_roster(self):
         self.assertIn("n new  s session", zoo.footer_text([("x", "kill")], roster=True))
@@ -543,6 +545,100 @@ class LaunchPlanTest(unittest.TestCase):
         self.assertTrue(any("start a primate" in l for l in zoo.help_lines(True)))
         self.assertTrue(any("unavailable" in l for l in zoo.help_lines(False)))
         self.assertFalse(any("unavailable" in l for l in zoo.help_lines(True)))
+
+
+# --------------------------------------------------------------------------- tmux
+
+
+class FakeTmuxRun:
+    """Records every tmux argv and answers list-windows from a scripted window list."""
+
+    def __init__(self, windows=None, fail=None):
+        self.windows = list(windows or [])   # list of (index, name)
+        self.fail = fail or set()            # subcommands whose returncode should be non-zero
+        self.calls = []
+
+    def __call__(self, argv, **kw):
+        # argv[0] is the tmux binary; argv[1] the subcommand.
+        self.calls.append(argv[1:])
+        sub = argv[1] if len(argv) > 1 else ""
+        rc = 1 if sub in self.fail else 0
+        out = ""
+        if sub == "list-windows" and rc == 0:
+            out = "".join(f"{i}\t{n}\n" for i, n in self.windows)
+        return subprocess.CompletedProcess(argv, rc, out, "" if rc == 0 else "boom")
+
+    def subcommands(self):
+        return [c[0] for c in self.calls]
+
+
+class TmuxPathTest(unittest.TestCase):
+    def test_seam_wins_then_path_then_none(self):
+        self.assertEqual(zoo.tmux_path({"ZOO_TMUX": "/x/tmux"}), "/x/tmux")
+        import shutil as _sh
+        real = _sh.which("tmux")
+        got = zoo.tmux_path({"PATH": "/usr/bin:/bin"})
+        # On this box tmux is on PATH; assert it resolves to a real path or None consistently.
+        self.assertEqual(got, real if real and got else got)
+        self.assertIsNone(zoo.tmux_path({"PATH": "/nonexistent-dir-zoo"}))
+
+
+class ShouldWrapTest(unittest.TestCase):
+    def test_wrap_only_an_interactive_run_not_already_in_tmux(self):
+        self.assertTrue(zoo.should_wrap(once=False, in_tmux_flag=False, environ={}))
+        self.assertFalse(zoo.should_wrap(once=True, in_tmux_flag=False, environ={}))     # --once
+        self.assertFalse(zoo.should_wrap(once=False, in_tmux_flag=True, environ={}))     # re-exec
+        self.assertFalse(zoo.should_wrap(once=False, in_tmux_flag=False, environ={"TMUX": "/tmp/tmux-1000/default,1,0"}))
+
+
+class WrapArgvTest(unittest.TestCase):
+    def test_reexecs_zoo_inside_an_attach_or_create_session(self):
+        argv = zoo.wrap_argv("/usr/bin/tmux", "/home/x/.local/bin/zoo", ["-i", "5"])
+        self.assertEqual(argv[:6], ["/usr/bin/tmux", "new-session", "-A", "-s", "zoo", "-n"])
+        inner = argv[-1]
+        self.assertIn("--in-tmux", inner)
+        self.assertIn("-i 5", inner)
+        self.assertTrue(inner.startswith("/home/x/.local/bin/zoo"))
+
+    def test_a_spaced_argv0_is_quoted(self):
+        inner = zoo.wrap_argv("tmux", "/home/my dir/zoo", [])[-1]
+        self.assertIn("'/home/my dir/zoo'", inner)
+
+    def test_the_reexec_argv_parses_with_in_tmux(self):
+        # The inner command must be a valid zoo invocation: --in-tmux is a known (hidden) flag.
+        args = zoo.build_parser().parse_args(["--in-tmux", "-i", "5"])
+        self.assertTrue(args.in_tmux)
+
+
+class TmuxClientTest(unittest.TestCase):
+    def test_open_a_new_window_when_the_name_is_absent(self):
+        fake = FakeTmuxRun(windows=[("0", "zoo")])
+        tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
+        self.assertEqual(tm.open_or_focus("shell-evoc", ["docker", "exec", "-it", "x", "sh"]), "opened")
+        self.assertIn(["new-window", "-t", "zoo:", "-n", "shell-evoc", "--", "docker", "exec", "-it", "x", "sh"],
+                      fake.calls)
+        self.assertNotIn("select-window", fake.subcommands())
+
+    def test_focus_an_existing_window_by_index_not_name(self):
+        fake = FakeTmuxRun(windows=[("0", "zoo"), ("3", "shell-evoc")])
+        tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
+        self.assertEqual(tm.open_or_focus("shell-evoc", ["ignored"]), "focused")
+        # By index, and session-qualified — never `-t shell-evoc`, which tmux would fnmatch/misparse.
+        self.assertIn(["select-window", "-t", "zoo:3"], fake.calls)
+        self.assertNotIn("new-window", fake.subcommands())
+
+    def test_windows_empty_when_the_session_is_absent(self):
+        fake = FakeTmuxRun(fail={"list-windows"})
+        tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
+        self.assertEqual(tm.windows(), [])
+        # With no window list, open_or_focus opens rather than raising.
+        self.assertEqual(tm.open_or_focus("n-claude", ["x"]), "opened")
+
+    def test_a_failing_command_raises_tmuxerror(self):
+        fake = FakeTmuxRun(windows=[("0", "zoo")], fail={"new-window"})
+        tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
+        with self.assertRaises(zoo.TmuxError):
+            tm.open_or_focus("shell-evoc", ["x"])
 
 
 # --------------------------------------------------------------------------- samples
@@ -769,7 +865,10 @@ class SocketPathTest(unittest.TestCase):
 class OnceTest(unittest.TestCase):
     def run_main(self, argv, fake):
         out, err = io.StringIO(), io.StringIO()
-        rc = zoo.main(argv, stdout=out, stderr=err, environ={}, transport=fake, sleep=lambda s: None)
+        # exec_fn is a no-op: --once must never auto-wrap, and if a regression made it, the suite
+        # should fail here rather than replace the test runner with a real tmux.
+        rc = zoo.main(argv, stdout=out, stderr=err, environ={}, transport=fake, sleep=lambda s: None,
+                      exec_fn=lambda *a: None)
         return rc, out.getvalue(), err.getvalue()
 
     def test_once_prints_a_frame_with_real_cpu(self):
@@ -794,7 +893,8 @@ class OnceTest(unittest.TestCase):
 
     def test_no_socket_is_reported_not_traced(self):
         out, err = io.StringIO(), io.StringIO()
-        rc = zoo.main(["--once"], stdout=out, stderr=err, environ={"DOCKER_HOST": "unix:///nonexistent/zoo.sock"})
+        rc = zoo.main(["--once"], stdout=out, stderr=err, environ={"DOCKER_HOST": "unix:///nonexistent/zoo.sock"},
+                      exec_fn=lambda *a: None)
         self.assertEqual((rc, out.getvalue()), (1, ""))
         self.assertIn("zoo: cannot list containers", err.getvalue())
 
@@ -809,8 +909,11 @@ class InteractiveRefusalTest(unittest.TestCase):
     refusals that must happen before curses is touched (spec req 28: TERM set and unset)."""
 
     def run_main(self, environ):
+        # These test the refusals AFTER auto-wrap, i.e. the re-exec running as window 0: --in-tmux
+        # (with TMUX set) reaches interactive without wrapping or refusing (T-F1).
+        environ = {"TMUX": "/tmp/tmux-1000/default,1,0", **environ}
         out, err = io.StringIO(), io.StringIO()
-        rc = zoo.main([], stdin=io.StringIO(), stdout=out, stderr=err, environ=environ,
+        rc = zoo.main(["--in-tmux"], stdin=io.StringIO(), stdout=out, stderr=err, environ=environ,
                       transport=FakeDaemon())
         return rc, out.getvalue(), err.getvalue()
 
@@ -823,6 +926,92 @@ class InteractiveRefusalTest(unittest.TestCase):
         rc, out, err = self.run_main({"TERM": "xterm-256color"})
         self.assertEqual((rc, out), (1, ""))
         self.assertIn("needs a terminal", err)
+
+
+class AutoWrapTest(unittest.TestCase):
+    """main()'s auto-wrap: an interactive run outside tmux re-execs itself inside a tmux session.
+    exec_fn is stubbed so the process is not actually replaced."""
+
+    class FakeExec:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, file, argv):
+            self.calls.append((file, argv))
+
+    def run_main(self, argv, environ, stdin_tty=False, prog="/opt/zoo"):
+        ex = self.FakeExec()
+
+        class _Stdin(io.StringIO):
+            def isatty(self_inner):
+                return stdin_tty
+        out, err = io.StringIO(), io.StringIO()
+        rc = zoo.main(argv, stdin=_Stdin(), stdout=out, stderr=err, environ=environ,
+                      transport=FakeDaemon(), sleep=lambda s: None, exec_fn=ex, prog=prog)
+        return rc, out.getvalue(), err.getvalue(), ex
+
+    def test_interactive_outside_tmux_reexecs_into_tmux(self):
+        rc, out, err, ex = self.run_main([], {"ZOO_TMUX": "/x/tmux"})
+        self.assertEqual(len(ex.calls), 1)
+        file, argv = ex.calls[0]
+        self.assertEqual(file, "/x/tmux")
+        self.assertEqual(argv[:6], ["/x/tmux", "new-session", "-A", "-s", "zoo", "-n"])
+        self.assertIn("--in-tmux", argv[-1])
+        self.assertIn("/opt/zoo", argv[-1])   # re-execs THIS zoo (prog), not a bare name
+
+    def test_the_users_args_ride_into_the_reexec(self):
+        rc, out, err, ex = self.run_main(["-i", "5"], {"ZOO_TMUX": "/x/tmux"})
+        self.assertIn("-i 5", ex.calls[0][1][-1])
+
+    def test_the_reexec_resolves_a_relative_prog_to_absolute(self):
+        # main() must resolve_prog() the program before the re-exec, or a `./bin/zoo` launch
+        # cannot be found from the new tmux window (T-F5). A relative prog appears absolute here.
+        rc, out, err, ex = self.run_main([], {"ZOO_TMUX": "/x/tmux"}, prog="rel/zoo")
+        import shlex as _shlex
+        first = _shlex.split(ex.calls[0][1][-1])[0]   # argv0 of the re-exec command
+        self.assertTrue(os.path.isabs(first), f"re-exec prog not absolute: {first!r}")
+        self.assertTrue(first.endswith("/rel/zoo"))
+
+    def test_already_in_tmux_refuses_rather_than_wrapping_or_running(self):
+        rc, out, err, ex = self.run_main([], {"ZOO_TMUX": "/x/tmux", "TMUX": "/tmp/t,1,0", "TERM": "xterm"})
+        self.assertEqual((rc, ex.calls), (1, []))       # neither wrapped nor ran interactive
+        self.assertIn("already inside tmux", err)
+
+    def test_the_in_tmux_reexec_is_exempt_even_with_tmux_set(self):
+        # The re-exec runs as window 0 with TMUX set; it must NOT refuse or re-wrap, but proceed.
+        rc, out, err, ex = self.run_main(["--in-tmux"], {"ZOO_TMUX": "/x/tmux", "TMUX": "/tmp/t,1,0", "TERM": "xterm"})
+        self.assertEqual(ex.calls, [])
+        self.assertNotIn("already inside tmux", err)
+        self.assertIn("needs a terminal", err)          # fell through to interactive (non-tty stdin)
+
+    def test_once_does_not_wrap(self):
+        rc, out, err, ex = self.run_main(["--once", "--width", "80"], {})
+        self.assertEqual(ex.calls, [])
+        self.assertEqual(rc, 0)
+
+    def test_no_tmux_available_is_a_hard_error_not_a_wrap(self):
+        rc, out, err, ex = self.run_main([], {"PATH": "/nonexistent-zoo-dir"})
+        self.assertEqual(rc, 1)
+        self.assertIn("needs tmux", err)
+        self.assertEqual(ex.calls, [])
+
+
+class RefuseAndProgTest(unittest.TestCase):
+    def test_refuse_reason(self):
+        # Interactive, inside tmux, not the re-exec: refuse.
+        self.assertIn("already inside tmux", zoo.refuse_reason(False, False, {"TMUX": "x"}))
+        # Outside tmux: wrap, do not refuse.
+        self.assertEqual(zoo.refuse_reason(False, False, {}), "")
+        # The re-exec and --once are exempt even inside tmux.
+        self.assertEqual(zoo.refuse_reason(False, True, {"TMUX": "x"}), "")
+        self.assertEqual(zoo.refuse_reason(True, False, {"TMUX": "x"}), "")
+
+    def test_resolve_prog(self):
+        self.assertEqual(zoo.resolve_prog("/usr/local/bin/zoo"), "/usr/local/bin/zoo")   # absolute kept
+        self.assertEqual(zoo.resolve_prog("zoo", which=lambda n: "/found/zoo"), "/found/zoo")  # bare -> PATH
+        self.assertEqual(zoo.resolve_prog("zoo", which=lambda n: None), "zoo")           # not on PATH: unchanged
+        rel = zoo.resolve_prog("./bin/zoo")
+        self.assertTrue(os.path.isabs(rel) and rel.endswith("/bin/zoo"))                 # relative -> absolute
 
 
 class AgedTest(unittest.TestCase):
