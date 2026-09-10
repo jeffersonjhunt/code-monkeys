@@ -173,6 +173,9 @@ is still killable by `<image>`, via a suffix-only fallback, but will not appear 
 
 `zoo` is `top(1)` for primates: every container `primate` or `primate-session` started, running
 or stopped, with live CPU, memory and process counts, and the actions below under single keys.
+Rows are coloured by state (running green, stale yellow, pending cyan; stopped dim), and the
+title carries host facts and a running total: `host 18 cpu · 31.3G` from the daemon and
+`Σ 12.4% · 4.2G` summed over the primates. A no-colour terminal degrades to plain attributes.
 
 **zoo runs inside tmux.** Started from a plain terminal it re-execs itself as window 0 of a tmux
 session named `zoo` (run it again from anywhere and you re-attach that session). Its actions then
@@ -194,7 +197,11 @@ zoo -i 5            # refresh every 5 s (default 2; + and - adjust it live)
 | `x` | remove the selected container, after a confirm that says what dies and that `<image>-home` survives |
 | `n` / `s` | start a primate / a session from the image roster (a session may be named), in a new window |
 
-`ctrl-b w` switches between windows, `ctrl-b 0` returns to the list. Attaching to a
+The picker, the session-name prompt and the kill confirm are **centered popup boxes** over the
+list. In the picker a letter is **type-ahead** — it jumps to the next image whose name starts with
+it, repeats cycle — and an image this host cannot run (cuda-* without an NVIDIA GPU, `spark-bench`
+off amd64) is **greyed with the reason and cannot be started**. `ctrl-b w` switches between
+windows, `ctrl-b 0` returns to the list. Attaching to a
 `primate-session` nests tmux (it runs its own tmux inside the container), so **inside a session
 the prefix is doubled: `ctrl-b ctrl-b`**. Containers are identified by the `primate.*` labels only,
 so nothing else on the daemon is listed or reachable; the row zoo itself runs in is marked
