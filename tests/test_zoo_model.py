@@ -405,20 +405,20 @@ class AttachAndShellTest(unittest.TestCase):
     def starts(self):
         return [u for m, u in self.fake.requests if m == "POST"]
 
-    def test_attach_to_a_running_session_execs_tmux_by_id(self):
-        banner, argv = zoo.attach(self.docker, self.rows[SESSION_OLD], "", "/bin/docker", "screen-256color")
-        self.assertEqual(argv, ["/bin/docker", "exec", "-it", "-e", "TERM=screen-256color", SESSION_OLD,
-                                "tmux", "new-session", "-A", "-s", "main"])
-        self.assertIn("attaching to session evoc", banner)
-        self.assertIn("ctrl-b d", banner)
+    def test_attach_is_a_window_running_tmux_by_id(self):
+        win = zoo.attach(self.docker, self.rows[SESSION_OLD], "", "/bin/docker", "screen-256color")
+        self.assertEqual(win.name, "attach-evoc")
+        self.assertEqual(list(win.argv), ["/bin/docker", "exec", "-it", "-e", "TERM=screen-256color",
+                                          SESSION_OLD, "tmux", "new-session", "-A", "-s", "main"])
+        self.assertIsNone(win.cwd)         # attach needs no host directory
         self.assertEqual(self.starts(), [])
 
     def test_attach_to_a_stopped_session_starts_it_first(self):
-        banner, argv = zoo.attach(self.docker, self.rows[SESSION_STOPPED], "", "docker", "xterm")
+        win = zoo.attach(self.docker, self.rows[SESSION_STOPPED], "", "docker", "xterm")
         self.assertEqual(self.starts(), [f"/containers/{SESSION_STOPPED}/start"])
         self.assertEqual(self.fake.find(SESSION_STOPPED)["State"], "running")
-        self.assertIn("started stopped session build", banner)
-        self.assertEqual(argv[5:], [SESSION_STOPPED, "tmux", "new-session", "-A", "-s", "main"])
+        self.assertEqual(win.name, "attach-build")
+        self.assertEqual(list(win.argv)[5:], [SESSION_STOPPED, "tmux", "new-session", "-A", "-s", "main"])
 
     def test_attach_refuses_a_foreground_primate(self):
         with self.assertRaises(zoo.Refusal) as ctx:
@@ -434,12 +434,13 @@ class AttachAndShellTest(unittest.TestCase):
         with self.assertRaises(zoo.Refusal):
             zoo.attach(self.docker, self.rows[SESSION_NEW], SESSION_NEW, "docker", "xterm")
 
-    def test_shell_is_a_new_shell_and_says_so(self):
-        banner, argv = zoo.shell(self.docker, self.rows[FOREGROUND], "", "docker", "xterm")
-        self.assertEqual(argv[:6], ["docker", "exec", "-it", "-e", "TERM=xterm", FOREGROUND])
-        self.assertIn("exec zsh", argv[-1])
-        self.assertIn("exec sh", argv[-1])
-        self.assertIn("not its original terminal", banner)
+    def test_shell_is_a_window_with_a_new_shell(self):
+        win = zoo.shell(self.docker, self.rows[FOREGROUND], "", "docker", "xterm")
+        self.assertEqual(win.name, "shell-wonderful_kirch")
+        self.assertEqual(list(win.argv)[:6], ["docker", "exec", "-it", "-e", "TERM=xterm", FOREGROUND])
+        self.assertIn("exec zsh", win.argv[-1])
+        self.assertIn("exec sh", win.argv[-1])
+        self.assertIsNone(win.cwd)
 
     def test_shell_refuses_a_stopped_container(self):
         with self.assertRaises(zoo.Refusal) as ctx:
@@ -523,19 +524,20 @@ class RosterTest(unittest.TestCase):
 
 
 class LaunchPlanTest(unittest.TestCase):
-    def test_primate_runs_the_zsh_function_by_sourcing_zfuncs(self):
-        banner, argv = zoo.launch_plan(zoo.PRIMATE, "/h/.zfuncs", "claude", "", "/work/proj")
-        self.assertEqual(argv, ["zsh", "-c", zoo.ZFUNCS_SNIPPET, "zoo-launch", "/h/.zfuncs", "primate", "claude"])
-        self.assertIn("starting primate claude", banner)
-        self.assertIn("/work/proj", banner)
+    def test_primate_is_a_window_that_sources_zfuncs_and_carries_cwd(self):
+        win = zoo.launch_plan(zoo.PRIMATE, "/h/.zfuncs", "claude", "", "/work/proj")
+        self.assertEqual(win.name, "primate-claude")
+        self.assertEqual(list(win.argv), ["zsh", "-c", zoo.ZFUNCS_SNIPPET, "zoo-launch", "/h/.zfuncs", "primate", "claude"])
+        self.assertEqual(win.cwd, "/work/proj")   # primate() mounts $(pwd); the window must start there
 
-    def test_session_passes_the_name_only_when_given(self):
-        _, argv = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "scratch", "/w")
-        self.assertEqual(argv[5:], ["primate-session", "claude", "scratch"])
-        banner, argv = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "", "/w")
-        self.assertEqual(argv[5:], ["primate-session", "claude"])
-        self.assertIn("ctrl-b d", banner)
-        self.assertNotIn("named", banner)
+    def test_session_window_name_and_argv_track_the_name(self):
+        win = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "scratch", "/w")
+        self.assertEqual(win.name, "session-scratch")
+        self.assertEqual(list(win.argv)[5:], ["primate-session", "claude", "scratch"])
+        self.assertEqual(win.cwd, "/w")
+        win = zoo.launch_plan(zoo.SESSION, "/h/.zfuncs", "claude", "", "/w")
+        self.assertEqual(win.name, "session-claude")   # no name given: window named for the image
+        self.assertEqual(list(win.argv)[5:], ["primate-session", "claude"])
 
     def test_footer_and_help_offer_launch_only_with_a_roster(self):
         self.assertIn("n new  s session", zoo.footer_text([("x", "kill")], roster=True))

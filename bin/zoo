@@ -29,7 +29,6 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -38,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.2.0-T0"
+__version__ = "0.2.0-T1"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -326,29 +325,37 @@ def exec_argv(cli: str, cid: str, term: str, *cmd: str) -> List[str]:
     return [cli, "exec", "-it", "-e", f"TERM={term}", cid, *cmd]
 
 
-def attach(docker: Docker, row: Row, self_id: str, cli: str, term: str) -> Tuple[str, List[str]]:
-    """Attach to a session's tmux, starting the container first if it is stopped (spec 12, 13).
-    Returns the banner to print at the hand-off and the command to hand the terminal to."""
+@dataclass(frozen=True)
+class Window:
+    """A tmux window an action wants opened: its name (shown in tmux's window list, so kept
+    readable and colon-free), the argv it runs, and the host directory to start it in (only a
+    launch needs one — see Tmux.open_or_focus)."""
+    name: str
+    argv: Tuple[str, ...]
+    cwd: Optional[str] = None
+
+
+def attach(docker: Docker, row: Row, self_id: str, cli: str, term: str) -> Window:
+    """A window attached to a session's tmux, starting the container first if it is stopped
+    (spec 12, 13). Detaching the inner tmux (ctrl-b ctrl-b d) closes the window; ctrl-b 0 returns
+    to the list without detaching."""
     fresh = verify_target(docker, row, self_id)
     if fresh.kind != SESSION:
         raise Refusal(f"{fresh.name} is a foreground primate: it has no tmux to attach to (e opens a shell)")
-    if fresh.running:
-        banner = f"attaching to session {fresh.name} (tmux {TMUX_SESSION}). Detach with ctrl-b d to return to zoo."
-    else:
+    if not fresh.running:
         docker.start(fresh.id)
-        banner = (f"started stopped session {fresh.name}; attaching (tmux {TMUX_SESSION}). "
-                  "Detach with ctrl-b d to return to zoo.")
-    return banner, exec_argv(cli, fresh.id, term, "tmux", "new-session", "-A", "-s", TMUX_SESSION)
+    argv = exec_argv(cli, fresh.id, term, "tmux", "new-session", "-A", "-s", TMUX_SESSION)
+    return Window(f"attach-{fresh.name}", tuple(argv))
 
 
-def shell(docker: Docker, row: Row, self_id: str, cli: str, term: str) -> Tuple[str, List[str]]:
-    """A new shell in a running container — not its original terminal, and said so (spec 14)."""
+def shell(docker: Docker, row: Row, self_id: str, cli: str, term: str) -> Window:
+    """A window with a new shell in a running container — not its original terminal (spec 14).
+    Exiting the shell closes the window."""
     fresh = verify_target(docker, row, self_id)
     if not fresh.running:
         raise Refusal(f"{fresh.name} is not running")
-    banner = (f"opening a new shell in {fresh.kind} {fresh.name}. This is not its original terminal; "
-              "exit returns to zoo.")
-    return banner, exec_argv(cli, fresh.id, term, *SHELL_CMD)
+    argv = exec_argv(cli, fresh.id, term, *SHELL_CMD)
+    return Window(f"shell-{fresh.name}", tuple(argv))
 
 
 # --------------------------------------------------------------------------- launching
@@ -387,19 +394,17 @@ def read_roster(zfuncs: str, runner=subprocess.run) -> List[str]:
     return [line.strip() for line in result.stdout.splitlines() if _IMAGE_NAME_RE.match(line.strip())]
 
 
-def launch_plan(kind: str, zfuncs: str, image: str, name: str, cwd: str) -> Tuple[str, List[str]]:
-    """The banner and the command for `n` (a primate) or `s` (a session)."""
+def launch_plan(kind: str, zfuncs: str, image: str, name: str, cwd: str) -> Window:
+    """A window that starts a primate or session through the zsh functions (spec §7.2). cwd is
+    zoo's directory, carried to the window because primate() mounts $(pwd) as the workspace."""
     if kind == PRIMATE:
-        banner = f"starting primate {image} (workspace: {cwd}). Exit its shell to return to zoo."
         argv = ["zsh", "-c", ZFUNCS_SNIPPET, "zoo-launch", zfuncs, "primate", image]
-    else:
-        named = f" named {name}" if name else ""
-        banner = (f"starting session {image}{named} (workspace: {cwd}). "
-                  "Detach with ctrl-b d to return to zoo.")
-        argv = ["zsh", "-c", ZFUNCS_SNIPPET, "zoo-launch", zfuncs, "primate-session", image]
-        if name:
-            argv.append(name)
-    return banner, argv
+        return Window(f"primate-{image}", tuple(argv), cwd=cwd)
+    argv = ["zsh", "-c", ZFUNCS_SNIPPET, "zoo-launch", zfuncs, "primate-session", image]
+    if name:
+        argv.append(name)
+    wname = f"session-{name}" if name else f"session-{image}"
+    return Window(wname, tuple(argv), cwd=cwd)
 
 
 LAUNCH_KEYS = [("n", "new"), ("s", "session")]
@@ -511,14 +516,17 @@ class Tmux:
                 out.append((idx, name))
         return out
 
-    def open_or_focus(self, name: str, argv: List[str]) -> str:
+    def open_or_focus(self, name: str, argv: List[str], cwd: Optional[str] = None) -> str:
         """Focus the window called `name` if it exists, else open it running argv. Returns
-        "opened" or "focused" so the caller can say which. Never opens a duplicate."""
+        "opened" or "focused" so the caller can say which. Never opens a duplicate. `cwd` sets
+        the window's start directory — a launch needs it, because primate() mounts $(pwd) as the
+        workspace, and a tmux window otherwise inherits the server's directory, not zoo's."""
         for idx, wname in self.windows():
             if wname == name:
                 self._cmd("select-window", "-t", f"{self._session}:{idx}")
                 return "focused"
-        self._cmd("new-window", "-t", self._session, "-n", name, "--", *argv)
+        loc = ["-c", cwd] if cwd else []
+        self._cmd("new-window", "-t", self._session, *loc, "-n", name, "--", *argv)
         return "opened"
 
 
@@ -756,13 +764,16 @@ HELP_LINES = (
     "  up/down, j/k      select a row",
     "  g / G             first / last row",
     "  PgUp / PgDn       page up / down",
-    "  a                 attach to the session's tmux (resumes a stopped one)",
-    "  e                 open a new shell in the running container",
+    "  a                 attach to the session's tmux in a new window (resumes a stopped one)",
+    "  e                 open a new shell in the running container, in a new window",
     "  x                 remove the selected container (asks first)",
     "  + / -             refresh slower / faster",
     "  r                 refresh now",
     "  ?                 this help",
     "  q, ctrl-c         quit (Esc cancels a picker, prompt or confirm)",
+    "",
+    "  ctrl-b w          switch tmux windows;  ctrl-b 0  returns to this list",
+    "  inside a session the tmux prefix is doubled: ctrl-b ctrl-b",
     "",
     "  any key closes this help",
 )
@@ -837,7 +848,8 @@ class View:
 
     def __init__(self, scr, mon: Monitor, interval: float, clock: Callable[[], float] = time.monotonic,
                  self_id: str = "", cli: Optional[str] = None, term: str = "xterm",
-                 roster: Optional[List[str]] = None, zfuncs: str = "", cwd: str = ""):
+                 roster: Optional[List[str]] = None, zfuncs: str = "", cwd: str = "",
+                 tmux: Optional["Tmux"] = None):
         self.scr = scr
         self.mon = mon
         self.interval = interval
@@ -848,6 +860,7 @@ class View:
         self.roster = roster or []
         self.zfuncs = zfuncs
         self.cwd = cwd
+        self.tmux = tmux
         self.picker: Optional[dict] = None    # {"kind", "sel"} while choosing an image
         self.prompt: Optional[dict] = None    # {"image", "text"} while naming a session
         self.sel = 0
@@ -958,16 +971,14 @@ class View:
             else:
                 try:
                     plan = attach if k == "a" else shell
-                    banner, argv = plan(self.mon._docker, row, self.self_id, self.cli, self.term)
+                    win = plan(self.mon._docker, row, self.self_id, self.cli, self.term)
                 except Refusal as exc:
                     self.say(f"refused: {exc}", now)
                     return None
                 except DockerError as exc:
                     self.say(f"failed: {exc}", now)
                     return None
-                rc, err = self.handoff(banner, argv)
-                self.say(err or f"{offered[k]} {row.name} ended (exit {rc}); back in zoo", self.clock())
-                self.tick(self.clock())
+                self.open_window(win)
             return None
         moved = True
         if key in (curses.KEY_UP, ord("k")):
@@ -1037,11 +1048,22 @@ class View:
         return None
 
     def launch(self, kind: str, image: str, name: str) -> None:
-        banner, argv = launch_plan(kind, self.zfuncs, image, name, self.cwd)
-        rc, err = self.handoff(banner, argv)
-        what = f"{kind} {image}" + (f" ({name})" if name else "")
-        self.say(err or f"{what} ended (exit {rc}); back in zoo", self.clock())
-        self.tick(self.clock())
+        self.open_window(launch_plan(kind, self.zfuncs, image, name, self.cwd))
+
+    def open_window(self, win: Window) -> None:
+        """Open (or focus) the window an action asked for. Nothing to hand over: zoo keeps its own
+        window and goes on refreshing; tmux carries the child. ctrl-b w switches, ctrl-b 0 is the
+        list. This is the whole of what used to be the hand-off."""
+        now = self.clock()
+        if self.tmux is None:
+            self.say("not running under tmux, so no window can be opened (run zoo without --in-tmux)", now)
+            return
+        try:
+            verb = self.tmux.open_or_focus(win.name, list(win.argv), cwd=win.cwd)
+        except TmuxError as exc:
+            self.say(f"failed: {exc}", now)
+            return
+        self.say(f"{verb} {win.name} — ctrl-b w to switch windows, ctrl-b 0 for this list", now)
 
     def draw_picker(self, body: int, w: int) -> None:
         import curses
@@ -1059,45 +1081,6 @@ class View:
         self._put(2, f"Session name for {pr['image']} (Enter for the default "
                      f"'{pr['image']}-session', Esc cancels):", curses.A_BOLD)
         self._put(3, f"  {pr['text']}_")
-
-    # -- handing the terminal to a child
-
-    def handoff(self, banner: str, argv: List[str]) -> Tuple[int, str]:
-        """Leave curses, print why, run the child on the terminal, come back (spec 12-15, §2.5).
-
-        Exactly one process owns the terminal at a time: endwin() hands it back to shell mode
-        before the child starts, and the refresh() afterwards re-enters curses, restoring its
-        own tty modes wholesale — so a child that died in raw mode cannot leave zoo unreadable.
-        SIGINT is ignored meanwhile, as a shell does for its foreground job: ctrl-c is the
-        child's to handle, and never takes zoo down with it.
-        """
-        import curses
-        curses.endwin()
-        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        rc, err = -1, ""
-        try:
-            sys.stdout.write(banner + "\n")
-            sys.stdout.flush()
-            try:
-                rc = subprocess.call(argv, preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
-            except OSError as exc:
-                err = f"could not run {argv[0]}: {exc}"
-            if rc != 0 or err:
-                # Whatever the child said on its way out — a refusal, a docker error — is on the
-                # main screen right now and would be hidden the instant curses re-enters (review F2).
-                sys.stdout.write((err + "\n" if err else "") + f"[exit {rc}] press Enter to return to zoo\n")
-                sys.stdout.flush()
-                try:
-                    sys.stdin.readline()
-                except OSError:
-                    pass
-            return rc, err
-        finally:
-            signal.signal(signal.SIGINT, previous)
-            # The first refresh after endwin() re-enters curses and repaints the whole screen;
-            # a clearok() here was proven redundant by mutation (the suite stayed green without it).
-            self.scr.refresh()
-            self.dirty = True
 
     # -- drawing
 
@@ -1204,8 +1187,10 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         term = environ.get("TERM") or "xterm"
         zfuncs = zfuncs_path(environ)
         roster = read_roster(zfuncs)
+        tpath = tmux_path(environ)
+        tmux = Tmux(tpath) if tpath else None   # T2 makes this always present via auto-wrap
         return curses.wrapper(lambda scr: View(scr, mon, interval, self_id=self_id, cli=cli, term=term,
-                                               roster=roster, zfuncs=zfuncs, cwd=os.getcwd()).run())
+                                               roster=roster, zfuncs=zfuncs, cwd=os.getcwd(), tmux=tmux).run())
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:
