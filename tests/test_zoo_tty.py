@@ -25,6 +25,7 @@ import shutil
 import signal
 import socketserver
 import struct
+import subprocess
 import sys
 import tempfile
 import termios
@@ -995,6 +996,116 @@ class LongListTtyTest(TtyBase):
         self.assertTrue(all(len(line) <= 50 for line in self.sh.screen.text()))
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
+
+
+# A roster of one image whose primate/primate-session print a marker and stay up, so a launch
+# window has observable, long-lived content without any docker.
+REAL_ZFUNCS_STUB = """
+function _primate_roster() { print -r -- alpha }
+function primate() { printf 'LAUNCHED-%s\\n' "$1"; exec sleep 300 }
+function primate-session() { printf 'LAUNCHEDS-%s-%s\\n' "$1" "${2:-default}"; exec sleep 300 }
+"""
+
+
+@unittest.skipUnless(shutil.which("tmux") and shutil.which("zsh"),
+                     "SKIPPED: needs tmux and zsh for the real-tmux end-to-end test")
+class RealTmuxTest(unittest.TestCase):
+    """The genuine article: zoo auto-wraps into a REAL tmux server (isolated by TMUX_TMPDIR so it
+    never touches the developer's), opens a REAL window whose command actually runs, and ctrl-b 0
+    returns to a list that is still refreshing. The stub tmux suites prove zoo issues the right
+    commands; this proves those commands do what zoo expects against real tmux. No docker: the
+    list comes from the fake daemon and the launch runs a stub zfuncs, so it is hermetic."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        home = pathlib.Path(self.tmp.name)
+        (home / "bin").mkdir()
+        os.symlink(ZOO, home / "bin" / "zoo")
+        (home / "zfuncs").write_text(REAL_ZFUNCS_STUB)
+        docker = home / "bin" / "docker"      # only so cli is truthy (actions offered)
+        docker.write_text(DOCKER_STUB)
+        docker.chmod(0o755)
+        sock = home / "d.sock"
+        self.state = DaemonState(fixture_small())
+        self.daemon = FakeDaemon(str(sock), self.state)
+        threading.Thread(target=self.daemon.serve_forever, daemon=True).start()
+        self.tmuxbin = shutil.which("tmux")
+        tmpdir = home / "tmxtmp"
+        tmpdir.mkdir()
+        self.tmux_sock = str(tmpdir / f"tmux-{os.getuid()}" / "default")
+        env = {
+            "TERM": "xterm-256color",
+            "HOME": str(home),
+            "PATH": f"{home / 'bin'}:{pathlib.Path(sys.executable).parent}:/usr/bin:/bin",
+            "DOCKER_HOST": f"unix://{sock}",
+            "ZOO_ZFUNCS": str(home / "zfuncs"),
+            "TMUX_TMPDIR": str(tmpdir),   # zoo's `tmux new-session` lands on an isolated server
+            # TMUX deliberately unset: this is the one suite that lets zoo auto-wrap for real.
+        }
+        self.sh = Shell(env, rows=24, cols=100)
+        self.sh.send(f"PROMPT='{PROMPT}'\r")
+        self.sh.expect(PROMPT_RE)
+
+    def tearDown(self):
+        self.tmux("kill-server")   # detaches the pty client and reaps the isolated server
+        self.sh.close()
+        self.daemon.shutdown()
+        self.daemon.server_close()
+        self.tmp.cleanup()
+
+    def tmux(self, *args, timeout=10):
+        return subprocess.run([self.tmuxbin, "-S", self.tmux_sock, *args],
+                              capture_output=True, text=True, timeout=timeout)
+
+    def wait_tmux_ok(self, args, needle, timeout=20):
+        deadline = time.monotonic() + timeout
+        while True:
+            r = self.tmux(*args)
+            if r.returncode == 0 and needle in r.stdout:
+                return r.stdout
+            if time.monotonic() > deadline:
+                raise AssertionError(f"tmux {args} never showed {needle!r}: rc={r.returncode} "
+                                     f"out={r.stdout!r} err={r.stderr!r}")
+            self.sh._read(0.2)
+
+    def active(self):
+        """(active?, name) for zoo's windows, from the real server — the source of truth for
+        which window has focus, rather than guessing from the pty screen mid-switch."""
+        r = self.tmux("list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}")
+        return r.stdout
+
+    def test_autowrap_opens_a_real_window_and_ctrl_b_0_returns_to_a_live_list(self):
+        self.sh.send("zoo -i 0.5\r")
+        # Auto-wrap: a real tmux server comes up and the inner zoo renders window 0.
+        self.sh.wait_screen("KIND", timeout=25)
+        self.sh.wait_screen("evoc", timeout=25)      # list populated from the fake daemon
+        self.sh.wait_screen("n new", timeout=25)     # roster present -> launch offered
+        self.wait_tmux_ok(["list-sessions"], "zoo")  # the session zoo created, for real
+
+        # Launch a primate: a real second window opens, becomes active, and its command runs.
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("\r")                           # the one image, alpha
+        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+                          "1 primate-alpha")         # opened AND focused (the whole point)
+        pane = self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-alpha"], "LAUNCHED-alpha")
+        self.assertIn("LAUNCHED-alpha", pane)        # the zsh-function window really ran
+
+        # ctrl-b 0 returns to zoo's window, which never stopped refreshing.
+        self.sh.send(b"\x020")
+        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+                          "1 zoo")
+        self.sh.wait_screen("KIND", timeout=25)
+        self.sh.wait_screen("stats", timeout=25)     # the title's live age: zoo kept ticking
+
+        # A second launch of the same image focuses the one window, not a duplicate.
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("\r")
+        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+                          "1 primate-alpha")
+        names = self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout.split()
+        self.assertEqual(names.count("primate-alpha"), 1)   # focused, not duplicated
 
 
 if __name__ == "__main__":

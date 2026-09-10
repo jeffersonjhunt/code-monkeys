@@ -526,7 +526,10 @@ class Tmux:
                 self._cmd("select-window", "-t", f"{self._session}:{idx}")
                 return "focused"
         loc = ["-c", cwd] if cwd else []
-        self._cmd("new-window", "-t", self._session, *loc, "-n", name, "--", *argv)
+        # `-t zoo:` (trailing colon) targets the SESSION, appending at the next free index. Plain
+        # `-t zoo` is a window target, and auto-wrap names window 0 "zoo" too, so it resolves to
+        # index 0 and fails "index 0 in use" — the collision that broke the first real-tmux run.
+        self._cmd("new-window", "-t", f"{self._session}:", *loc, "-n", name, "--", *argv)
         return "opened"
 
 

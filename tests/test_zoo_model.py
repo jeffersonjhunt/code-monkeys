@@ -615,7 +615,7 @@ class TmuxClientTest(unittest.TestCase):
         fake = FakeTmuxRun(windows=[("0", "zoo")])
         tm = zoo.Tmux("/usr/bin/tmux", runner=fake)
         self.assertEqual(tm.open_or_focus("shell-evoc", ["docker", "exec", "-it", "x", "sh"]), "opened")
-        self.assertIn(["new-window", "-t", "zoo", "-n", "shell-evoc", "--", "docker", "exec", "-it", "x", "sh"],
+        self.assertIn(["new-window", "-t", "zoo:", "-n", "shell-evoc", "--", "docker", "exec", "-it", "x", "sh"],
                       fake.calls)
         self.assertNotIn("select-window", fake.subcommands())
 
