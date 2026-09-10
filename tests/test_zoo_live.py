@@ -21,6 +21,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -73,13 +74,12 @@ class LiveSessionTest(unittest.TestCase):
         sh("docker", "rm", "-f", NAME)
 
     def setUp(self):
-        self.tmp = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / f"zoo-live-{os.getpid()}-{self.id().split('.')[-1]}"
-        (self.tmp / "bin").mkdir(parents=True, exist_ok=True)
-        link = self.tmp / "bin" / "zoo"
-        if not link.exists():
-            link.symlink_to(ZOO)
+        self._tmpdir = tempfile.TemporaryDirectory(prefix="zoo-live-")   # auto-removed in tearDown
+        self.tmp = pathlib.Path(self._tmpdir.name)
+        (self.tmp / "bin").mkdir()
+        (self.tmp / "bin" / "zoo").symlink_to(ZOO)
         self.tmux_tmpdir = self.tmp / "tmxtmp"
-        self.tmux_tmpdir.mkdir(exist_ok=True)
+        self.tmux_tmpdir.mkdir()
         self.tmux_sock = str(self.tmux_tmpdir / f"tmux-{os.getuid()}" / "default")
         env = dict(os.environ)
         env["TERM"] = "xterm-256color"
@@ -94,8 +94,7 @@ class LiveSessionTest(unittest.TestCase):
     def tearDown(self):
         self.outer("kill-server")   # detaches the pty client and reaps zoo's isolated tmux
         self.sh.close()
-        import shutil as _sh
-        _sh.rmtree(self.tmp, ignore_errors=True)   # leave no temp dir behind on the host
+        self._tmpdir.cleanup()      # TemporaryDirectory: cleanup cannot be forgotten
 
     def outer(self, *args, timeout=10):
         return subprocess.run([shutil.which("tmux"), "-S", self.tmux_sock, *args],
