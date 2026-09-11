@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.4.0-P0"
+__version__ = "0.4.0-P1"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -594,6 +594,32 @@ def wrap_argv(tmux: str, argv0: str, args: List[str], session: str) -> List[str]
     return [tmux, "new-session", "-s", session, "-n", ZOO_TMUX_SESSION, inner]
 
 
+def detach_on_quit(window_count: int) -> bool:
+    """Whether `q` should detach the client before exiting. With only the list window, exiting
+    closes the sole window, the session ends, and the client lands back on the shell — no detach
+    needed. With other windows (an attach, a shell, a launched primate), exiting would close the
+    list window and leave the client on one of those; detaching first returns the terminal to the
+    shell while the session and those windows keep running (a launched primate outlives the quit)."""
+    return window_count > 1
+
+
+def stale_sessions(list_output: str, self_name: str) -> List[str]:
+    """zoo control sessions safe to reap on startup: prefix zoo-, no attached client, exactly one
+    window (just the list — nothing launched), and not this instance. Input is `list-sessions
+    -F '#{session_name} #{session_attached} #{session_windows}'`."""
+    out = []
+    for line in list_output.splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        name, attached, windows = parts
+        if name == self_name or not name.startswith(ZOO_SESSION_PREFIX):
+            continue
+        if attached == "0" and windows == "1":
+            out.append(name)
+    return out
+
+
 def current_session(tmux: str, runner=subprocess.run) -> str:
     """The tmux session zoo is running in (it is window 0 of its own session, so this is exact).
     The Tmux client targets this, so actions stay in this terminal. Falls back to the constant
@@ -669,6 +695,21 @@ class Tmux:
         # hold_command keeps the window open on a non-zero exit so its error is readable (T-F2).
         self._cmd("new-window", "-t", f"{self._session}:", *loc, "-n", name, "--", *hold_command(argv))
         return "opened"
+
+    def detach(self) -> None:
+        """Detach this session's client — back to the shell, session and its windows left alive."""
+        self._cmd("detach-client", "-s", self._session, check=False)
+
+    def reap(self) -> None:
+        """Kill stale zoo control sessions (detached, only the list window) left by past launches
+        that disconnected instead of quitting. Never touches this session or a session with
+        launched windows."""
+        r = self._cmd("list-sessions", "-F", "#{session_name} #{session_attached} #{session_windows}",
+                      check=False)
+        if r.returncode != 0:
+            return
+        for name in stale_sessions(r.stdout, self._session):
+            self._cmd("kill-session", "-t", name, check=False)
 
 
 # --------------------------------------------------------------------------- samples
@@ -1060,6 +1101,14 @@ class View:
         rows = self.mon.rows
         return rows[self.sel] if 0 <= self.sel < len(rows) else None
 
+    def _quit(self) -> str:
+        """Quit always returns to the shell. With other windows open, detach the client first so
+        the terminal lands on the shell rather than on one of those windows when the list window
+        closes; the session and those windows (a launched primate) keep running, detached."""
+        if self.tmux is not None and detach_on_quit(len(self.tmux.windows())):
+            self.tmux.detach()
+        return "quit"
+
     def say(self, text: str, now: float) -> None:
         self.notice = text
         self.notice_at = now
@@ -1137,7 +1186,7 @@ class View:
             return None
         n = len(self.mon.rows)
         if key == ord("q"):
-            return "quit"
+            return self._quit()
         if key == 27:
             return None   # a bare Esc, or the head of a sequence ncurses does not know: not a quit (review F5)
         if key in (ord("n"), ord("s")):
@@ -1500,6 +1549,8 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         tpath = tmux_path(environ)
         # This instance's own session (unique per launch), so actions stay in this terminal.
         tmux = Tmux(tpath, session=current_session(tpath)) if tpath else None
+        if tmux is not None:
+            tmux.reap()   # clear stale empty sessions left by past launches that disconnected
         host = host_facts(mon._docker)          # host facts do not change: fetched once here
         caps = host_capabilities(environ)
         return curses.wrapper(lambda scr: _run_view(

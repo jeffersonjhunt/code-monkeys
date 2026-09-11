@@ -605,6 +605,25 @@ class TtyTest(TtyBase):
         self.sh.expect(PROMPT_RE)
         self.assert_terminal_returned(mark, before, 0)
 
+    def test_quit_from_the_list_alone_does_not_detach(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+        self.assertNotIn("detach-client", " ".join(self.tmux_calls()))   # sole window: plain exit
+
+    def test_quit_with_an_open_window_detaches_first_then_exits(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send("j")                       # evoc (a session)
+        self.sh.wait_screen("a attach")
+        self.sh.send("a")                       # opens an attach window
+        self.wait_tmux("new-window")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)               # still returns to the shell
+        self.assertTrue(any(c.startswith("detach-client") for c in self.tmux_calls()),
+                        "quit with an open window should detach the client first")
+
     def test_ctrl_c_quits_and_restores_the_terminal(self):
         before = self.sh.stty()
         self.start_zoo()

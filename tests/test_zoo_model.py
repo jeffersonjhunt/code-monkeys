@@ -955,6 +955,53 @@ class FirstMatchTest(unittest.TestCase):
         self.assertEqual(fm([], "x"), -1)
 
 
+class QuitAndReapTest(unittest.TestCase):
+    def test_detach_on_quit_only_with_other_windows(self):
+        self.assertFalse(zoo.detach_on_quit(1))   # only the list: exit cleanly
+        self.assertFalse(zoo.detach_on_quit(0))
+        self.assertTrue(zoo.detach_on_quit(2))    # other windows: detach first
+        self.assertTrue(zoo.detach_on_quit(5))
+
+    def test_stale_sessions_picks_detached_empty_zoo_sessions_only(self):
+        out = ("zoo-100 0 1\n"      # detached, only the list -> stale
+               "zoo-200 1 1\n"      # attached -> not stale
+               "zoo-300 0 3\n"      # has launched windows -> not stale
+               "zoo-me 0 1\n"       # this instance -> never
+               "work 0 1\n")        # not a zoo session -> not stale
+        self.assertEqual(zoo.stale_sessions(out, "zoo-me"), ["zoo-100"])
+        self.assertEqual(zoo.stale_sessions("", "zoo-me"), [])
+
+    def test_tmux_reap_kills_exactly_the_stale_ones(self):
+        calls = []
+        def runner(argv, **kw):
+            import subprocess as _sp
+            calls.append(argv[1:])
+            if argv[1] == "list-sessions":
+                return _sp.CompletedProcess(argv, 0, "zoo-1 0 1\nzoo-2 1 1\nzoo-me 0 1\n", "")
+            return _sp.CompletedProcess(argv, 0, "", "")
+        zoo.Tmux("/usr/bin/tmux", session="zoo-me", runner=runner).reap()
+        kills = [c for c in calls if c and c[0] == "kill-session"]
+        self.assertEqual(kills, [["kill-session", "-t", "zoo-1"]])   # not zoo-2 (attached), not self
+
+    def test_view_quit_detaches_only_with_other_windows(self):
+        class FakeTmux:
+            def __init__(self, wins):
+                self._wins = wins
+                self.detached = False
+            def windows(self):
+                return self._wins
+            def detach(self):
+                self.detached = True
+        one = FakeTmux([("0", "zoo")])
+        v = zoo.View(scr=None, mon=zoo.Monitor(zoo.Docker(FakeDaemon())), interval=1.0, clock=lambda: 0.0, tmux=one)
+        self.assertEqual(v._quit(), "quit")
+        self.assertFalse(one.detached)                 # only the list: no detach
+        many = FakeTmux([("0", "zoo"), ("1", "attach-evoc")])
+        v2 = zoo.View(scr=None, mon=zoo.Monitor(zoo.Docker(FakeDaemon())), interval=1.0, clock=lambda: 0.0, tmux=many)
+        self.assertEqual(v2._quit(), "quit")
+        self.assertTrue(many.detached)                 # other windows: detached first
+
+
 class StyleTokenTest(unittest.TestCase):
     def test_token_by_state_and_selection(self):
         self.assertEqual(zoo.style_token(zoo.Figures(zoo.LIVE), False), "running")
