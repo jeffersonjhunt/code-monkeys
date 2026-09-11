@@ -594,16 +594,20 @@ class ShouldWrapTest(unittest.TestCase):
 
 
 class WrapArgvTest(unittest.TestCase):
-    def test_reexecs_zoo_inside_an_attach_or_create_session(self):
-        argv = zoo.wrap_argv("/usr/bin/tmux", "/home/x/.local/bin/zoo", ["-i", "5"])
-        self.assertEqual(argv[:6], ["/usr/bin/tmux", "new-session", "-A", "-s", "zoo", "-n"])
+    def test_reexecs_zoo_into_its_own_unique_session(self):
+        argv = zoo.wrap_argv("/usr/bin/tmux", "/home/x/.local/bin/zoo", ["-i", "5"], "zoo-4242")
+        self.assertEqual(argv[:5], ["/usr/bin/tmux", "new-session", "-s", "zoo-4242", "-n"])
+        self.assertNotIn("-A", argv)                 # no attach-or-create: each launch is its own
         inner = argv[-1]
         self.assertIn("--in-tmux", inner)
         self.assertIn("-i 5", inner)
-        self.assertTrue(inner.startswith("/home/x/.local/bin/zoo"))
+
+    def test_new_session_name_is_unique_and_prefixed(self):
+        self.assertEqual(zoo.new_session_name(pid=4242), "zoo-4242")
+        self.assertTrue(zoo.new_session_name().startswith("zoo-"))
 
     def test_a_spaced_argv0_is_quoted(self):
-        inner = zoo.wrap_argv("tmux", "/home/my dir/zoo", [])[-1]
+        inner = zoo.wrap_argv("tmux", "/home/my dir/zoo", [], "zoo-1")[-1]
         self.assertIn("'/home/my dir/zoo'", inner)
 
     def test_the_reexec_argv_parses_with_in_tmux(self):
@@ -634,6 +638,26 @@ class TmuxClientTest(unittest.TestCase):
                       capture_output=True, text=True, timeout=5)
         self.assertEqual(bad.returncode, 3)                          # exit code preserved
         self.assertIn("press Enter to close", bad.stdout)            # and the window is held
+
+    def test_client_targets_its_own_session(self):
+        fake = FakeTmuxRun(windows=[("0", "zoo")])
+        tm = zoo.Tmux("/usr/bin/tmux", session="zoo-99", runner=fake)
+        tm.open_or_focus("shell-x", ["docker", "exec", "y", "sh"])
+        nw = next(c for c in fake.calls if c and c[0] == "new-window")
+        self.assertIn("zoo-99:", nw)                  # this instance's session, not the constant
+        self.assertNotIn("zoo:", " ".join(nw))
+
+    def test_current_session_from_display_message(self):
+        def runner(argv, **kw):
+            import subprocess as _sp
+            if "display-message" in argv:
+                return _sp.CompletedProcess(argv, 0, "zoo-4242\n", "")
+            return _sp.CompletedProcess(argv, 1, "", "no")
+        self.assertEqual(zoo.current_session("/usr/bin/tmux", runner=runner), "zoo-4242")
+
+        def broken(argv, **kw):
+            raise OSError("no tmux")
+        self.assertEqual(zoo.current_session("/usr/bin/tmux", runner=broken), "zoo")   # fallback
 
     def test_focus_an_existing_window_by_index_not_name(self):
         fake = FakeTmuxRun(windows=[("0", "zoo"), ("3", "shell-evoc")])
@@ -1095,7 +1119,9 @@ class AutoWrapTest(unittest.TestCase):
         self.assertEqual(len(ex.calls), 1)
         file, argv = ex.calls[0]
         self.assertEqual(file, "/x/tmux")
-        self.assertEqual(argv[:6], ["/x/tmux", "new-session", "-A", "-s", "zoo", "-n"])
+        self.assertEqual(argv[:3], ["/x/tmux", "new-session", "-s"])
+        self.assertTrue(argv[3].startswith("zoo-"))   # a unique per-launch session, not shared "zoo"
+        self.assertNotIn("-A", argv)
         self.assertIn("--in-tmux", argv[-1])
         self.assertIn("/opt/zoo", argv[-1])   # re-execs THIS zoo (prog), not a bare name
 

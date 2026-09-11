@@ -85,6 +85,7 @@ esac
 TMUX_STUB = r'''#!/bin/sh
 printf '%s\n' "$*" >> "$ZOO_TMUX_LOG"
 case "$1" in
+  display-message) printf 'zoo-stub\n' ;;
   list-windows)
     printf '0\tzoo\n'
     if [ -f "$ZOO_TMUX_WINS" ]; then
@@ -1154,6 +1155,7 @@ class RealTmuxTest(unittest.TestCase):
             "PATH": f"{home / 'bin'}:{pathlib.Path(sys.executable).parent}:/usr/bin:/bin",
             "DOCKER_HOST": f"unix://{sock}",
             "ZOO_ZFUNCS": str(home / "zfuncs"),
+            "ZOO_SESSION": "zoo-rt",      # deterministic session name for this single instance
             "TMUX_TMPDIR": str(tmpdir),   # zoo's `tmux new-session` lands on an isolated server
             # TMUX deliberately unset: this is the one suite that lets zoo auto-wrap for real.
         }
@@ -1186,7 +1188,7 @@ class RealTmuxTest(unittest.TestCase):
     def active(self):
         """(active?, name) for zoo's windows, from the real server — the source of truth for
         which window has focus, rather than guessing from the pty screen mid-switch."""
-        r = self.tmux("list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}")
+        r = self.tmux("list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}")
         return r.stdout
 
     def test_autowrap_opens_a_real_window_and_ctrl_b_0_returns_to_a_live_list(self):
@@ -1195,20 +1197,20 @@ class RealTmuxTest(unittest.TestCase):
         self.sh.wait_screen("KIND", timeout=25)
         self.sh.wait_screen("evoc", timeout=25)      # list populated from the fake daemon
         self.sh.wait_screen("n new", timeout=25)     # roster present -> launch offered
-        self.wait_tmux_ok(["list-sessions"], "zoo")  # the session zoo created, for real
+        self.wait_tmux_ok(["list-sessions"], "zoo-rt")  # the session zoo created, for real
 
         # Launch a primate: a real second window opens, becomes active, and its command runs.
         self.sh.send("n")
         self.sh.wait_screen("choose an image")
         self.sh.send("\r")                           # the one image, alpha
-        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+        self.wait_tmux_ok(["list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}"],
                           "1 primate-alpha")         # opened AND focused (the whole point)
-        pane = self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-alpha"], "LAUNCHED-alpha")
+        pane = self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo-rt:primate-alpha"], "LAUNCHED-alpha")
         self.assertIn("LAUNCHED-alpha", pane)        # the zsh-function window really ran
 
         # ctrl-b 0 returns to zoo's window, which never stopped refreshing.
         self.sh.send(b"\x020")
-        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+        self.wait_tmux_ok(["list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}"],
                           "1 zoo")
         self.sh.wait_screen("KIND", timeout=25)
         self.sh.wait_screen("stats", timeout=25)     # the title's live age: zoo kept ticking
@@ -1217,9 +1219,9 @@ class RealTmuxTest(unittest.TestCase):
         self.sh.send("n")
         self.sh.wait_screen("choose an image")
         self.sh.send("\r")
-        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+        self.wait_tmux_ok(["list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}"],
                           "1 primate-alpha")
-        names = self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout.split()
+        names = self.tmux("list-windows", "-t", "zoo-rt", "-F", "#{window_name}").stdout.split()
         self.assertEqual(names.count("primate-alpha"), 1)   # focused, not duplicated
 
     def test_a_failing_launch_window_is_held_open_and_closes_on_enter(self):
@@ -1234,15 +1236,15 @@ class RealTmuxTest(unittest.TestCase):
         self.sh.send("\r")
         # The window opened, its command failed, and hold_command kept it: the pane shows the
         # failure and the prompt, and the window is still there.
-        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-boom"], "BOOM-FAILED")
-        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-boom"], "press Enter to close")
+        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo-rt:primate-boom"], "BOOM-FAILED")
+        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo-rt:primate-boom"], "press Enter to close")
         self.assertIn("primate-boom",
-                      self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout)
+                      self.tmux("list-windows", "-t", "zoo-rt", "-F", "#{window_name}").stdout)
         # Enter closes the held window (the read returns), leaving zoo's session behind.
         self.sh.send("\r")
         import time as _t
         deadline = _t.monotonic() + 20
-        while "primate-boom" in self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout:
+        while "primate-boom" in self.tmux("list-windows", "-t", "zoo-rt", "-F", "#{window_name}").stdout:
             if _t.monotonic() > deadline:
                 self.fail("held window did not close on Enter")
             self.sh._read(0.2)

@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.3.3"
+__version__ = "0.4.0-P0"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -531,7 +531,8 @@ def why_not(key: str, row: Optional[Row], self_id: str, cli: Optional[str]) -> s
 # zoo runs as window 0 of a tmux session it owns; attach/shell/launch open other windows, so no
 # process ever has to lend zoo its own terminal (that hand-off path, and every bug that lived in
 # it, is gone). Running zoo outside tmux re-execs it inside a fresh session named this.
-ZOO_TMUX_SESSION = "zoo"
+ZOO_TMUX_SESSION = "zoo"          # window-0 name and the fallback session name
+ZOO_SESSION_PREFIX = "zoo-"       # each launch gets its own session: zoo-<pid>
 
 
 class TmuxError(Exception):
@@ -577,13 +578,33 @@ def resolve_prog(prog: str, which=shutil.which) -> str:
     return which(prog) or prog
 
 
-def wrap_argv(tmux: str, argv0: str, args: List[str]) -> List[str]:
-    """The command that re-execs zoo inside its own tmux session as window 0. `new-session -A`
-    attaches to an existing `zoo` session rather than stacking a second one, so a later `zoo`
-    from another terminal re-attaches (the durable-zoo benefit). --in-tmux guards the re-exec
-    against ever wrapping again, belt-and-braces with the TMUX-env check in should_wrap."""
+def new_session_name(pid: Optional[int] = None, environ=None) -> str:
+    """A session name unique to this launch, so each terminal's zoo is its own instance rather
+    than re-attaching a shared one. One process per launch, so the pid distinguishes concurrent
+    instances; a stale name from a dead pid is reaped on startup. ZOO_SESSION pins it for tests."""
+    environ = os.environ if environ is None else environ
+    return environ.get("ZOO_SESSION") or f"{ZOO_SESSION_PREFIX}{os.getpid() if pid is None else pid}"
+
+
+def wrap_argv(tmux: str, argv0: str, args: List[str], session: str) -> List[str]:
+    """Re-exec zoo as window 0 of its OWN tmux session (no -A): each launch is an independent
+    instance with its own list process, so terminals do not mirror one another. --in-tmux guards
+    the re-exec against ever wrapping again."""
     inner = shlex.join([argv0, "--in-tmux", *args])
-    return [tmux, "new-session", "-A", "-s", ZOO_TMUX_SESSION, "-n", ZOO_TMUX_SESSION, inner]
+    return [tmux, "new-session", "-s", session, "-n", ZOO_TMUX_SESSION, inner]
+
+
+def current_session(tmux: str, runner=subprocess.run) -> str:
+    """The tmux session zoo is running in (it is window 0 of its own session, so this is exact).
+    The Tmux client targets this, so actions stay in this terminal. Falls back to the constant
+    name if tmux cannot answer (should not happen inside the wrap)."""
+    try:
+        r = runner([tmux, "display-message", "-p", "#{session_name}"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ZOO_TMUX_SESSION
 
 
 # Runs the window's real command ("$@"), then holds the window open only if it exited non-zero,
@@ -1477,7 +1498,8 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         zfuncs = zfuncs_path(environ)
         roster = read_roster(zfuncs)
         tpath = tmux_path(environ)
-        tmux = Tmux(tpath) if tpath else None   # T2 makes this always present via auto-wrap
+        # This instance's own session (unique per launch), so actions stay in this terminal.
+        tmux = Tmux(tpath, session=current_session(tpath)) if tpath else None
         host = host_facts(mon._docker)          # host facts do not change: fetched once here
         caps = host_capabilities(environ)
         return curses.wrapper(lambda scr: _run_view(
@@ -1557,7 +1579,7 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
                   "Install tmux, or use --once for a plain frame.", file=stderr)
             return 1
         raw = list(argv) if argv is not None else sys.argv[1:]
-        exec_fn(tmux, wrap_argv(tmux, resolve_prog(prog or sys.argv[0]), raw))
+        exec_fn(tmux, wrap_argv(tmux, resolve_prog(prog or sys.argv[0]), raw, new_session_name(environ=environ)))
         return 0   # unreached in production (execvp replaces the process); a test stub returns
     try:
         transport = transport or unix_transport(socket_path(environ))
