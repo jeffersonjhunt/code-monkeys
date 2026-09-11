@@ -111,6 +111,8 @@ class FakeDaemon:
             raise zoo.Timeout(f"GET {url}: timed out after 1s")
         if url == "/containers/json?all=true":
             return 200, json.dumps(self.containers).encode()
+        if url == "/info":
+            return 200, json.dumps({"NCPU": 18, "MemTotal": 33596223488}).encode()
         m = self.INSPECT_RE.match(url)
         if m:
             c = self.find(m.group(1))
@@ -813,6 +815,130 @@ class MonitorTest(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- layout
+
+
+class HostStatsTest(unittest.TestCase):
+    def test_host_facts_from_info_or_none(self):
+        self.assertEqual(zoo.host_facts(zoo.Docker(FakeDaemon())), (18, 33596223488))
+
+        class Down:
+            def __call__(self, *a, **k):
+                raise zoo.DockerError("no daemon")
+        self.assertIsNone(zoo.host_facts(zoo.Docker(Down())))
+
+        class Empty:
+            def __call__(self, *a, **k):
+                return 200, b"{}"
+        self.assertIsNone(zoo.host_facts(zoo.Docker(Empty())))
+
+    def test_aggregate_sums_running_figures(self):
+        figs = {
+            "a": zoo.Figures(zoo.LIVE, cpu=12.5, mem_used=1000),
+            "b": zoo.Figures(zoo.STALE, cpu=None, mem_used=500),   # stale mem still counts
+            "c": zoo.Figures(zoo.PENDING, cpu=None, mem_used=None),
+            "d": zoo.Figures(zoo.STOPPED),
+        }
+        self.assertEqual(zoo.aggregate(figs), (12.5, 1500))
+        self.assertEqual(zoo.aggregate({}), (0.0, 0))
+
+    def test_title_shows_host_and_sum_and_trims_them_first(self):
+        full = zoo.title_text(2, 0, 21, 2.0, 3.0, 200, host=(18, 33596223488), agg=(12.5, 1500))
+        self.assertIn("host 18 cpu", full)
+        self.assertIn("31.3G", full)
+        self.assertIn("\u03a3 12.5%", full)
+        # No host / no running aggregate: those segments are absent.
+        self.assertNotIn("host ", zoo.title_text(2, 0, 21, 2.0, 3.0, 200))
+        self.assertNotIn("\u03a3", zoo.title_text(2, 0, 21, 2.0, 3.0, 200, host=(18, 1), agg=(0.0, 0)))
+        # Narrow: stats-age drops before refresh, refresh before the sum, the sum before host.
+        narrow = zoo.title_text(40, 0, 21, 2.0, 3.0, 44, host=(18, 33596223488), agg=(12.5, 1500))
+        self.assertIn("rows 1-21 of 40", narrow)      # the indicator is always kept
+        self.assertLessEqual(len(narrow), 44)
+
+
+class PlatformTest(unittest.TestCase):
+    def caps(self, arch, osname, gpu):
+        return {"arch": arch, "os": osname, "gpu": gpu}
+
+    def test_host_capabilities_override_and_detection(self):
+        # Test override (seam) is parsed verbatim.
+        self.assertEqual(zoo.host_capabilities({"ZOO_HOST_CAPS": "arch=amd64,os=linux,gpu=nvidia"}),
+                         {"arch": "amd64", "os": "linux", "gpu": "nvidia"})
+
+        class U:  # fake uname()
+            machine, sysname = "aarch64", "Darwin"
+        caps = zoo.host_capabilities({}, uname=lambda: U(), gpu_probe=lambda: False)
+        self.assertEqual(caps, {"arch": "arm64", "os": "darwin", "gpu": ""})   # aarch64 -> arm64
+
+        class X:
+            machine, sysname = "x86_64", "Linux"
+        caps = zoo.host_capabilities({}, uname=lambda: X(), gpu_probe=lambda: True)
+        self.assertEqual(caps, {"arch": "amd64", "os": "linux", "gpu": "nvidia"})
+
+    def test_runnable_matrix(self):
+        mac = self.caps("arm64", "darwin", "")
+        gpu_box = self.caps("amd64", "linux", "nvidia")
+        arm_linux = self.caps("arm64", "linux", "")
+        # cuda-* need a GPU.
+        self.assertEqual(zoo.runnable("cuda-vllm", mac), (False, "needs an NVIDIA GPU"))
+        self.assertEqual(zoo.runnable("cuda-comfy", gpu_box), (True, ""))
+        # spark-bench is amd64-only.
+        self.assertEqual(zoo.runnable("spark-bench", arm_linux), (False, "amd64 only"))
+        self.assertEqual(zoo.runnable("spark-bench", gpu_box), (True, ""))
+        # everything else runs anywhere.
+        self.assertEqual(zoo.runnable("minion", mac), (True, ""))
+        self.assertEqual(zoo.runnable("claude", arm_linux), (True, ""))
+        # a cuda image on a gpu box but wrong arch still gates on the gpu it declares (no arch req).
+        self.assertEqual(zoo.runnable("cuda-llama-cpp", self.caps("arm64", "linux", "nvidia")), (True, ""))
+
+
+class HostRetryTest(unittest.TestCase):
+    def test_host_facts_are_retried_until_info_answers(self):
+        class Flaky:
+            def __init__(self):
+                self.info_ok = False
+            def __call__(self, method, url, timeout=None):
+                if url == "/info":
+                    if not self.info_ok:
+                        raise zoo.DockerError("info unavailable")
+                    return 200, __import__("json").dumps({"NCPU": 4, "MemTotal": 8000000000}).encode()
+                if url == "/containers/json?all=true":
+                    return 200, b"[]"
+                return 404, b"{}"
+        flaky = Flaky()
+        view = zoo.View(scr=None, mon=zoo.Monitor(zoo.Docker(flaky)), interval=1.0, clock=lambda: 0.0)
+        view.host = zoo.host_facts(view.mon._docker)   # start: /info fails -> None (as interactive() would)
+        self.assertIsNone(view.host)
+        view.tick(1.0)                                  # still failing
+        self.assertIsNone(view.host)
+        flaky.info_ok = True
+        view.tick(2.0)                                  # now /info answers: host facts appear
+        self.assertEqual(view.host, (4, 8000000000))
+
+
+class FirstMatchTest(unittest.TestCase):
+    NAMES = ["codemonkey", "claude", "minion", "kiro", "cuda-comfy"]
+
+    def test_prefix_match_first_or_minus_one(self):
+        fm = zoo.first_match
+        self.assertEqual(fm(self.NAMES, "k"), 3)      # kiro (not the 'k' inside codemonkey)
+        self.assertEqual(fm(self.NAMES, "cu"), 4)     # cuda-comfy
+        self.assertEqual(fm(self.NAMES, "co"), 0)     # codemonkey
+        self.assertEqual(fm(self.NAMES, "cl"), 1)     # claude
+        self.assertEqual(fm(self.NAMES, "m"), 2)      # minion
+        self.assertEqual(fm(self.NAMES, "K"), 3)      # case-insensitive
+        self.assertEqual(fm(self.NAMES, ""), 0)       # empty: the first
+        self.assertEqual(fm(self.NAMES, "z"), -1)     # no match
+        self.assertEqual(fm([], "x"), -1)
+
+
+class StyleTokenTest(unittest.TestCase):
+    def test_token_by_state_and_selection(self):
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.LIVE), False), "running")
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.STOPPED), False), "stopped")
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.STALE), False), "stale")
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.PENDING), False), "pending")
+        self.assertEqual(zoo.style_token(None, False), "stopped")          # no figures yet: dim
+        self.assertEqual(zoo.style_token(zoo.Figures(zoo.LIVE), True), "selected")  # selection wins
 
 
 class LayoutTest(unittest.TestCase):

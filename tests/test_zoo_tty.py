@@ -202,6 +202,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._reply(500, {"message": "daemon down (fake)"})
         if self.path == "/containers/json?all=true":
             return self._reply(200, st.containers)
+        if self.path == "/info":
+            return self._reply(200, {"NCPU": 18, "MemTotal": 33596223488})
         m = self.INSPECT_RE.match(self.path)
         if m:
             c = st.find(m.group(1))
@@ -631,13 +633,27 @@ class TtyTest(TtyBase):
         self.assertIn(b"rc=1", out)
         self.assertNotIn(SMCUP, self.sh.since(mark))   # never entered the alternate screen
 
+    def test_title_shows_host_facts_and_the_running_sum(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.wait_screen("host 18 cpu")     # from docker /info
+        self.sh.wait_screen("31.3G")           # total RAM
+        self.sh.wait_screen("\u03a3")         # the running-primates sum (Σ)
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
     def test_frame_shows_states_and_hides_the_unlabelled(self):
         self.start_zoo()
         self.sh.wait_screen("evoc")
+        # A blank spacer sits between the column header (KIND ...) and the first primate row.
+        text = self.sh.screen.text()
+        hdr = next(i for i, l in enumerate(text) if l.startswith("KIND"))
+        self.assertEqual(text[hdr + 1].strip(), "", "no blank line after the column header")
+        self.assertTrue(text[hdr + 2].split()[:1] in (["session"], ["primate"]),
+                        "first primate row should follow the spacer")
         self.sh.wait_screen("40.0")   # 100/1000 * 4 cpus: a computed delta, not "..."
         self.sh.wait_screen("Exited (0) 2 days ago")
         self.assertNotIn("sweb-eval-7", self.sh.screen)
-        self.assertIn("stats 0s ago", self.sh.screen)   # the clamp itself is a unit test: stats_age
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
@@ -824,10 +840,10 @@ class TtyTest(TtyBase):
         self.sh.wait_screen_gone("40.0")
         self.state.down = True
         self.sh.wait_screen("daemon unreachable")
-        self.sh.wait_screen_gone("primates  refresh")
+        self.sh.wait_screen_gone("host 18 cpu")     # the title line is overwritten by the error
         self.state.down = False
         self.state.stats_ok = True
-        self.sh.wait_screen("primates  refresh")   # the title came back
+        self.sh.wait_screen("host 18 cpu")          # the title came back
         self.sh.wait_screen("40.0")
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
@@ -897,6 +913,7 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("j")
         self.sh.send("\r")
         self.sh.wait_screen("Session name for claude")
+        self.assertNotIn("choose an image", self.sh.screen)   # picker box fully replaced, no bleed
         self.sh.send("scratchx\x7f")            # a typo, backspaced
         self.sh.wait_screen("  scratch_")
         self.sh.send("\r")
@@ -940,6 +957,54 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
+    def test_the_picker_is_a_bordered_centered_popup(self):
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        mark = self.sh.pos
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        # Bordered: curses box() switches to the line-drawing charset (ESC ( 0) for the frame.
+        self.assertIn(b"\x1b(0", self.sh.since(mark), "no box border drawn for the picker")
+        # Not inline at column 0: the header sits inside a centered box, so its line is indented.
+        line = next(l for l in self.sh.screen.text() if "choose an image" in l)
+        self.assertGreaterEqual(line.index("Start"), 1, "picker header is not indented (not a popup)")
+        self.sh.send(b"\x1b")
+        self.sh.wait_screen("launch cancelled")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_picker_slash_search_jumps_and_launches(self):
+        # roster (ZFUNCS_STUB): codemonkey, claude, minion. / opens a search; typing narrows.
+        # Selection is read back through the window a launch opens (the highlight is an attribute).
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        self.sh.send("n"); self.sh.wait_screen("choose an image")
+        self.sh.send("/")
+        self.sh.wait_screen("/  (type to search")       # search line shown
+        self.sh.send("min")
+        self.sh.wait_screen("/min")
+        self.sh.send("\r")                              # Enter launches the match
+        self.wait_tmux("new-window")
+        self.assertIn("-n primate-minion", self.new_windows()[-1])
+        # A letter that is nav in the list (c has no bare meaning here) works inside search:
+        self.sh.send("n"); self.sh.wait_screen("choose an image")
+        self.sh.send("/cl")                             # -> claude
+        self.sh.wait_screen("/cl")
+        self.sh.send("\r")
+        self.wait_tmux("primate-claude")
+        self.assertIn("-n primate-claude", self.new_windows()[-1])
+        # Esc leaves search but keeps the selection; Enter then launches it.
+        self.sh.send("n"); self.sh.wait_screen("choose an image")
+        self.sh.send("/co")                             # -> codemonkey
+        self.sh.wait_screen("/co")
+        self.sh.send(b"\x1b")                           # Esc: back to nav, selection stays on codemonkey
+        self.sh.wait_screen("( / to search")            # header back to the non-search form
+        self.sh.send("\r")
+        self.wait_tmux("primate-codemonkey")
+        self.assertIn("-n primate-codemonkey", self.new_windows()[-1])
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
     def test_esc_cancels_the_picker_and_the_prompt(self):
         self.start_zoo()
         self.sh.wait_screen("n new  s session")
@@ -957,6 +1022,40 @@ class LaunchTtyTest(TtyBase):
         self.sh.wait_screen_gone("Session name")
         self.assertEqual(self.new_windows(), [])
         self.sh.send("q")                          # and Esc did not quit zoo either time
+        self.sh.expect(PROMPT_RE)
+
+
+CUDA_ZFUNCS_STUB = """
+function _primate_roster() { print -r -- claude; print -r -- cuda-comfy }
+function primate() { print -r -- "primate $*" >> "$HOME/launch.log"; printf 'STUB\\n'; read line }
+function primate-session() { printf 'STUB\\n'; read line }
+"""
+
+
+class PlatformRosterTtyTest(TtyBase):
+    """The picker greys an image this host can't run and refuses it, from ZOO_HOST_CAPS (a seam)."""
+    extra_env = {"ZOO_ZFUNCS": "{home}/zfuncs", "ZOO_HOST_CAPS": "arch=arm64,os=linux,gpu="}
+
+    def prepare_home(self, home):
+        (home / "zfuncs").write_text(CUDA_ZFUNCS_STUB)
+
+    def test_unrunnable_image_is_greyed_with_a_reason_and_refused(self):
+        self.start_zoo()
+        self.sh.wait_screen("n new")
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.wait_screen("cuda-comfy")
+        self.sh.wait_screen("needs an NVIDIA GPU")       # the reason shown on the greyed row
+        self.sh.send("j")                                 # claude is first; move to cuda-comfy
+        self.sh.send("\r")
+        self.sh.wait_screen("cuda-comfy: needs an NVIDIA GPU")   # Enter refused
+        self.assertIn("choose an image", self.sh.screen)         # picker still open
+        self.assertEqual(self.new_windows(), [])                 # nothing launched
+        self.sh.send("k")                                 # back to claude (runnable)
+        self.sh.send("\r")
+        self.wait_tmux("new-window")
+        self.assertIn("-n primate-claude", self.new_windows()[0])
+        self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
 
@@ -987,24 +1086,24 @@ class LongListTtyTest(TtyBase):
 
     def test_selection_scrolls_a_list_taller_than_the_terminal(self):
         self.start_zoo()
-        self.sh.wait_screen("rows 1-21 of 40")
-        self.sh.wait_screen("sess20")
-        self.assertNotIn("sess21", self.sh.screen)
+        self.sh.wait_screen("rows 1-20 of 40")   # body is h-4 now (title, header, spacer, footer)
+        self.sh.wait_screen("sess19")
+        self.assertNotIn("sess20", self.sh.screen)
         self.sh.send("G")
         self.sh.wait_screen("sess39")
-        self.sh.wait_screen("rows 20-40 of 40")
-        self.assertNotIn("sess18", self.sh.screen)
+        self.sh.wait_screen("rows 21-40 of 40")
+        self.assertNotIn("sess19", self.sh.screen)
         self.sh.send("g")
-        self.sh.wait_screen("rows 1-21 of 40")
+        self.sh.wait_screen("rows 1-20 of 40")
         self.sh.wait_screen_gone("sess39")
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
     def test_resize_repaints_at_the_new_size(self):
         self.start_zoo()
-        self.sh.wait_screen("rows 1-21 of 40")
+        self.sh.wait_screen("rows 1-20 of 40")
         self.sh.resize(12, 50)
-        self.sh.wait_screen("rows 1-9 of 40")
+        self.sh.wait_screen("rows 1-8 of 40")
         self.sh.wait_screen_gone("sess20")
         self.assertTrue(all(len(line) <= 50 for line in self.sh.screen.text()))
         self.sh.send("q")

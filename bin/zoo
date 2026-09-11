@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.2.2"
+__version__ = "0.3.3"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -161,6 +161,10 @@ class Docker:
     def start(self, cid: str) -> None:
         """docker start. 304 (already running) is not an error."""
         self._json("POST", f"/containers/{cid}/start", MUTATE_TIMEOUT)
+
+    def info(self) -> dict:
+        """docker info — host facts (NCPU, MemTotal). Cheap, fetched once at start."""
+        return self._json("GET", "/info") or {}
 
 
 # --------------------------------------------------------------------------- rows
@@ -405,6 +409,77 @@ def launch_plan(kind: str, zfuncs: str, image: str, name: str, cwd: str) -> Wind
         argv.append(name)
     wname = f"session-{name}" if name else f"session-{image}"
     return Window(wname, tuple(argv), cwd=cwd)
+
+
+# What each image needs beyond a plain host. An entry matches an exact image name, or, when the
+# key ends in "-", any image with that prefix (cuda-vllm, cuda-comfy, ...). This is zoo's source
+# of truth for platform fit; deriving it from the dockerfiles is out of scope.
+IMAGE_REQUIREMENTS = (
+    ("cuda-", {"gpu": "nvidia"}),        # the cuda-* family needs an NVIDIA GPU
+    ("spark-bench", {"arch": "amd64"}),  # SWE-Bench testbed images are x86-only
+)
+
+
+def _norm_arch(machine: str) -> str:
+    m = (machine or "").lower()
+    if m in ("aarch64", "arm64"):
+        return "arm64"
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    return m
+
+
+def nvidia_present() -> bool:
+    return os.path.exists("/dev/nvidia0") or shutil.which("nvidia-smi") is not None
+
+
+def host_capabilities(environ=None, uname=os.uname, gpu_probe=None) -> Dict[str, str]:
+    """{arch, os, gpu} for the host zoo runs on. ZOO_HOST_CAPS ("arch=amd64,os=linux,gpu=nvidia")
+    overrides for tests; otherwise arch/os come from uname and gpu from a probe (an NVIDIA device
+    or nvidia-smi on PATH). Inside a primate this is the container's view, which is correct: a
+    primate on a Mac still cannot run cuda."""
+    environ = os.environ if environ is None else environ
+    override = environ.get("ZOO_HOST_CAPS")
+    if override:
+        caps = {"arch": "", "os": "", "gpu": ""}
+        for kv in override.split(","):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                caps[k.strip()] = v.strip()
+        return caps
+    u = uname()
+    probe = gpu_probe if gpu_probe is not None else nvidia_present
+    return {"arch": _norm_arch(u.machine), "os": u.sysname.lower(), "gpu": "nvidia" if probe() else ""}
+
+
+def _requirements(image: str) -> Dict[str, str]:
+    for key, req in IMAGE_REQUIREMENTS:
+        if image == key or (key.endswith("-") and image.startswith(key)):
+            return req
+    return {}
+
+
+def runnable(image: str, caps: Dict[str, str]) -> Tuple[bool, str]:
+    """(can this host run image, why not). Pure; the picker greys and refuses the False ones."""
+    for cap, need in _requirements(image).items():
+        if caps.get(cap) != need:
+            if cap == "gpu" and need == "nvidia":
+                return (False, "needs an NVIDIA GPU")
+            if cap == "arch":
+                return (False, f"{need} only")
+            return (False, f"needs {cap}={need}")
+    return (True, "")
+
+
+def first_match(names: List[str], query: str) -> int:
+    """Index of the first name that starts with `query` (case-insensitive), or -1. Backs the
+    picker's vim-style `/` search: `/k` finds kiro, `/cu` cuda-*. Prefix, not substring, so a
+    query reads as "names beginning with…"; every letter is usable (j/k/q stay nav in the list)."""
+    q = query.lower()
+    for i, name in enumerate(names):
+        if name.lower().startswith(q):
+            return i
+    return -1
 
 
 LAUNCH_KEYS = [("n", "new"), ("s", "session")]
@@ -856,13 +931,20 @@ def aged(figures: Dict[str, Figures], now: float, stale_after: float) -> Dict[st
     return out
 
 
-def title_text(n: int, offset: int, body: int, interval: float, age: Optional[float], width: int) -> str:
-    """The title line. On a narrow terminal the optional parts go first — the row indicator stays,
-    because on a list taller than the screen it is the only thing saying where you are."""
+def title_text(n: int, offset: int, body: int, interval: float, age: Optional[float], width: int,
+               host: Optional[Tuple[int, int]] = None,
+               agg: Optional[Tuple[float, int]] = None) -> str:
+    """The title line. The row indicator is kept; the rest are optional and dropped from the right
+    on a narrow terminal (host facts kept longest, stats-age dropped first)."""
     keep = [f"zoo  {n} primate{'s' if n != 1 else ''}"]
     if n > body:
         keep.append(f"rows {offset + 1}-{min(offset + body, n)} of {n}")
-    optional = [f"refresh {interval:g}s"]
+    optional = []
+    if host is not None:
+        optional.append(f"host {host[0]} cpu · {human_bytes(host[1])}")
+    if agg is not None and (agg[0] or agg[1]):
+        optional.append(f"Σ {agg[0]:.1f}% · {human_bytes(agg[1])}")
+    optional.append(f"refresh {interval:g}s")
     if age is not None:
         optional.append(f"stats {age:.0f}s ago")
     text = "  ".join(keep + optional)
@@ -885,6 +967,38 @@ def follow_selection(rows: List[Row], sel: int, selected_id: str) -> int:
 def stats_age(figures: Dict[str, Figures], now: float) -> Optional[float]:
     times = [f.ok_at for f in figures.values() if f.ok_at is not None]
     return max(now - max(times), 0.0) if times else None
+
+
+def host_facts(docker: "Docker") -> Optional[Tuple[int, int]]:
+    """(cpu count, total memory bytes) from docker info, or None if it cannot be read. Host facts
+    do not change, so the view fetches this once at start."""
+    try:
+        info = docker.info()
+    except DockerError:
+        return None
+    ncpu, mem = int(info.get("NCPU") or 0), int(info.get("MemTotal") or 0)
+    return (ncpu, mem) if (ncpu or mem) else None
+
+
+def aggregate(figures: Dict[str, Figures]) -> Tuple[float, int]:
+    """Summed CPU% and memory of the running primates — a live snapshot for the title. Pending and
+    stale rows contribute whatever numbers they have; stopped rows contribute nothing."""
+    cpu = sum(f.cpu for f in figures.values() if f.cpu is not None)
+    mem = sum(f.mem_used for f in figures.values() if f.mem_used is not None)
+    return (cpu, mem)
+
+
+# The semantic style of a row, mapped to a curses attribute by the view (colour where the terminal
+# has it, plain attributes otherwise). Pure, so the mapping is unit-tested without curses. Colour
+# only decorates states that already read in the text (a stopped row still shows "-"), so it is
+# never the sole signal.
+_STATE_TOKEN = {LIVE: "running", STOPPED: "stopped", STALE: "stale", PENDING: "pending"}
+
+
+def style_token(fig: Optional[Figures], selected: bool) -> str:
+    if selected:
+        return "selected"
+    return _STATE_TOKEN.get(fig.state if fig is not None else STOPPED, "running")
 
 
 class View:
@@ -917,6 +1031,9 @@ class View:
         self.notice_at = -1e9
         self.last_tick = -1e9
         self.dirty = True
+        self._style: Dict[str, int] = {}   # token -> curses attr, built in run() once curses is up
+        self.host: Optional[Tuple[int, int]] = None   # (cpu count, total mem); fetched once at start
+        self.caps: Dict[str, str] = {}                # host arch/os/gpu; set once at start
 
     def selected(self) -> Optional[Row]:
         rows = self.mon.rows
@@ -939,6 +1056,7 @@ class View:
             curses.use_default_colors()
         except curses.error:
             pass
+        self._init_style()
         try:
             curses.set_escdelay(25)   # Esc alone should not wait a second to be believed
         except AttributeError:
@@ -964,6 +1082,8 @@ class View:
 
     def tick(self, now: float) -> None:
         self.mon.tick()
+        if self.host is None:
+            self.host = host_facts(self.mon._docker)   # retry until the daemon answers /info (review U-F2)
         self.last_tick = now
         self.dirty = True
 
@@ -1057,6 +1177,19 @@ class View:
     def handle_picker(self, key: int, now: float) -> None:
         import curses
         pk = self.picker
+        if pk.get("query") is not None:            # vim-style / search: every letter is a query char
+            if key == 27:                          # Esc: leave search, back to nav (selection stays)
+                pk["query"] = None
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                pk["query"] = pk["query"][:-1]
+                self._picker_search()
+            elif key in (10, 13, curses.KEY_ENTER):
+                pk["query"] = None
+                self._picker_enter(now)
+            elif 32 <= key < 127:
+                pk["query"] += chr(key)
+                self._picker_search()
+            return None
         if key in (27, ord("q")):
             self.picker = None
             self.say("launch cancelled", now)
@@ -1064,14 +1197,30 @@ class View:
             pk["sel"] = max(pk["sel"] - 1, 0)
         elif key in (curses.KEY_DOWN, ord("j")):
             pk["sel"] = min(pk["sel"] + 1, len(self.roster) - 1)
+        elif key == ord("/"):
+            pk["query"] = ""                       # open the search; type to narrow, Esc to leave
         elif key in (10, 13, curses.KEY_ENTER):
-            image = self.roster[pk["sel"]]
-            self.picker = None
-            if pk["kind"] == PRIMATE:
-                self.launch(PRIMATE, image, "")
-            else:
-                self.prompt = {"image": image, "text": ""}
+            self._picker_enter(now)
         return None
+
+    def _picker_search(self) -> None:
+        idx = first_match(self.roster, self.picker["query"])
+        if idx >= 0:
+            self.picker["sel"] = idx
+
+    def _picker_enter(self, now: float) -> None:
+        pk = self.picker
+        image = self.roster[pk["sel"]]
+        ok, why = runnable(image, self.caps)
+        if not ok:
+            self.say(f"{image}: {why}", now)       # greyed row: refuse, leave the picker open
+            return
+        kind = pk["kind"]
+        self.picker = None
+        if kind == PRIMATE:
+            self.launch(PRIMATE, image, "")
+        else:
+            self.prompt = {"image": image, "text": ""}
 
     def handle_prompt(self, key: int, now: float) -> None:
         import curses
@@ -1110,28 +1259,114 @@ class View:
             return
         self.say(f"{verb} {win.name} — ctrl-b w to switch windows, ctrl-b 0 for this list", now)
 
-    def draw_picker(self, body: int, w: int) -> None:
+    # -- popup dialogs (centered boxes floating over the list)
+
+    def _put_at(self, y: int, x: int, text: str, attr: int = 0) -> None:
+        import curses
+        h, w = self.scr.getmaxyx()
+        if 0 <= y < h and 0 <= x < w:
+            try:
+                self.scr.addnstr(y, x, text, max(w - x - 1, 0), attr)
+            except curses.error:
+                pass
+
+    def _popup(self, lines) -> None:
+        """Draw a centered bordered box of (text, attr) lines directly on stdscr. Drawing on the
+        main screen (not a separate window) means erase() clears it every frame, so a box can
+        never bleed through when the next one is a different size — the bug a wider search header
+        exposed in the newwin-per-frame version."""
+        import curses
+        H, W = self.scr.getmaxyx()
+        inner = max((len(t) for t, _ in lines), default=0)
+        width = min(max(inner + 4, 14), W)
+        height = min(len(lines) + 2, H)
+        top = max((H - height) // 2, 0)
+        left = max((W - width) // 2, 0)
+        try:
+            for x in range(left + 1, left + width - 1):
+                self.scr.addch(top, x, curses.ACS_HLINE)
+                self.scr.addch(top + height - 1, x, curses.ACS_HLINE)
+            for y in range(top + 1, top + height - 1):
+                self.scr.addch(y, left, curses.ACS_VLINE)
+                self.scr.addch(y, left + width - 1, curses.ACS_VLINE)
+            self.scr.addch(top, left, curses.ACS_ULCORNER)
+            self.scr.addch(top, left + width - 1, curses.ACS_URCORNER)
+            self.scr.addch(top + height - 1, left, curses.ACS_LLCORNER)
+            self.scr.addch(top + height - 1, left + width - 1, curses.ACS_LRCORNER)
+        except curses.error:
+            pass   # the bottom-right cell always errors on addch; the border is otherwise drawn
+        for i, (text, attr) in enumerate(lines[: height - 2]):
+            self._put_at(top + 1 + i, left + 2, text[: width - 4], attr)
+
+    def draw_picker(self):
         import curses
         pk = self.picker
         what = "primate" if pk["kind"] == PRIMATE else "session"
-        self._put(2, f"Start a {what}: choose an image (Enter starts, Esc cancels)", curses.A_BOLD)
-        room = max(body - 1, 1)
-        offset = max(0, min(pk["sel"] - room + 1, len(self.roster) - room))
-        for i, image in enumerate(self.roster[offset: offset + room]):
-            self._put(3 + i, f"  {image}", curses.A_REVERSE if offset + i == pk["sel"] else 0)
+        if pk.get("query") is not None:
+            header = f"Start a {what}: /{pk['query']}  (type to search, Enter starts, Esc back)"
+        else:
+            header = f"Start a {what}: choose an image ( / to search, Enter starts, Esc cancels)"
+        entries = []                                       # (image, ok, label)
+        for image in self.roster:
+            ok, why = runnable(image, self.caps)
+            entries.append((image, ok, image if ok else f"{image}   ({why})"))
+        H, W = self.scr.getmaxyx()
+        room = min(len(entries), max(H - 6, 1))            # rows of the list inside the box
+        sel = pk["sel"]
+        offset = min(sel - room + 1, len(entries) - room) if sel >= room else 0
+        offset = max(offset, 0)
+        lines = [(header, curses.A_BOLD), ("", 0)]
+        for i, (image, ok, label) in enumerate(entries[offset: offset + room]):
+            idx = offset + i
+            attr = curses.A_REVERSE if idx == sel else (0 if ok else curses.A_DIM)
+            lines.append((f"  {label}", attr))
+        self._popup(lines)
 
-    def draw_prompt(self, w: int) -> None:
+    def draw_prompt(self):
         import curses
         pr = self.prompt
-        self._put(2, f"Session name for {pr['image']} (Enter for the default "
-                     f"'{pr['image']}-session', Esc cancels):", curses.A_BOLD)
-        self._put(3, f"  {pr['text']}_")
+        header = f"Session name for {pr['image']} (Enter for the default '{pr['image']}-session', Esc cancels):"
+        field = f"  {pr['text']}_"
+        self._popup([(header, curses.A_BOLD), ("", 0), (field, 0)])
+
+    def draw_confirm(self):
+        import curses
+        H, W = self.scr.getmaxyx()
+        # A volume name like claude-home must never be split at its hyphen.
+        wrapped = textwrap.wrap(self.confirm[1], max(W - 8, 20), break_on_hyphens=False) or [""]
+        self._popup([("Confirm", curses.A_BOLD), ("", 0)] + [(line, 0) for line in wrapped])
 
     # -- drawing
 
+    def _init_style(self) -> None:
+        """Map style tokens to curses attributes once. With colour: running green, stale yellow,
+        pending cyan (stopped stays dim, selected reverse — attributes, not colour). Without
+        colour, everything falls back to attributes, so nothing depends on colour alone."""
+        import curses
+        self._style = {}
+        try:
+            if curses.has_colors():
+                curses.start_color()
+                for i, (tok, col) in enumerate(
+                    (("running", curses.COLOR_GREEN), ("stale", curses.COLOR_YELLOW),
+                     ("pending", curses.COLOR_CYAN)), start=1):
+                    curses.init_pair(i, col, -1)
+                    self._style[tok] = curses.color_pair(i)
+        except curses.error:
+            self._style = {}
+
+    def _row_attr(self, token: str, is_self: bool) -> int:
+        import curses
+        base = {"selected": curses.A_REVERSE, "stopped": curses.A_DIM}.get(token, 0)
+        base = self._style.get(token, base)
+        if is_self and token != "selected":
+            base |= curses.A_BOLD   # the container zoo runs in stands out on top of its state
+        return base
+
     def body_height(self) -> int:
         h, _ = self.scr.getmaxyx()
-        return max(h - 3, 1)   # title, column header, footer
+        # title, column header, a blank spacer, footer.
+        return max(h - 4, 1)
 
     def _clamp(self, n: int) -> None:
         body = self.body_height()
@@ -1157,7 +1392,8 @@ class View:
 
     def title(self, now: float, n: int, width: int) -> str:
         return title_text(n, self.offset, self.body_height(), self.interval,
-                          stats_age(self.mon.figures, now), width)
+                          stats_age(self.mon.figures, now), width,
+                          host=self.host, agg=aggregate(self.mon.figures))
 
     def draw(self, now: float) -> None:
         import curses
@@ -1166,7 +1402,7 @@ class View:
         rows = self.mon.rows
         n = len(rows)
         self._clamp(n)
-        if h < 4 or w < 12:
+        if h < 5 or w < 12:
             self._put(0, "zoo: terminal too small")
             self.scr.noutrefresh()
             curses.doupdate()
@@ -1177,31 +1413,39 @@ class View:
         if self.mon.error:
             self._put(0, f"daemon unreachable: {self.mon.error}", curses.A_BOLD | curses.A_REVERSE)
         self._put(1, lines[0], curses.A_REVERSE)
+        # Row 2 is left blank: a spacer between the column header and the first primate.
         body = self.body_height()
         if self.help:
             for i, text in enumerate(help_lines(bool(self.roster))[:body]):
-                self._put(2 + i, text)
-        elif self.picker is not None:
-            self.draw_picker(body, w)
-        elif self.prompt is not None:
-            self.draw_prompt(w)
-        elif self.confirm is not None:
-            # A volume name like claude-home must never be split at its hyphen.
-            wrapped = textwrap.wrap(self.confirm[1], max(w - 2, 10), break_on_hyphens=False)
-            for i, text in enumerate(wrapped[:body]):
-                self._put(2 + i, text, curses.A_BOLD)
+                self._put(3 + i, text)
         elif n == 0:
-            self._put(2, "No primates." if not self.mon.error else "")
+            self._put(3, "No primates." if not self.mon.error else "")
         else:
             for i, text in enumerate(lines[1 + self.offset: 1 + self.offset + body]):
-                self._put(2 + i, text, curses.A_REVERSE if self.offset + i == self.sel else 0)
+                row = rows[self.offset + i]
+                selected = self.offset + i == self.sel
+                is_self = bool(self.self_id and row.id == self.self_id)
+                self._put(3 + i, text, self._row_attr(style_token(figures.get(row.id), selected), is_self))
         if self.notice and now - self.notice_at < NOTICE_SECONDS:
             self._put(h - 1, self.notice, curses.A_REVERSE)
         else:
             self.notice = ""
             self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id, self.cli), bool(self.roster)))
+        # Modal dialogs float over the list as centered boxes drawn on stdscr.
+        if self.picker is not None:
+            self.draw_picker()
+        elif self.prompt is not None:
+            self.draw_prompt()
+        elif self.confirm is not None:
+            self.draw_confirm()
         self.scr.noutrefresh()
         curses.doupdate()
+
+
+def _run_view(view: "View", host, caps) -> int:
+    view.host = host
+    view.caps = caps
+    return view.run()
 
 
 def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -> int:
@@ -1234,8 +1478,11 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         roster = read_roster(zfuncs)
         tpath = tmux_path(environ)
         tmux = Tmux(tpath) if tpath else None   # T2 makes this always present via auto-wrap
-        return curses.wrapper(lambda scr: View(scr, mon, interval, self_id=self_id, cli=cli, term=term,
-                                               roster=roster, zfuncs=zfuncs, cwd=os.getcwd(), tmux=tmux).run())
+        host = host_facts(mon._docker)          # host facts do not change: fetched once here
+        caps = host_capabilities(environ)
+        return curses.wrapper(lambda scr: _run_view(
+            View(scr, mon, interval, self_id=self_id, cli=cli, term=term,
+                 roster=roster, zfuncs=zfuncs, cwd=os.getcwd(), tmux=tmux), host, caps))
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:

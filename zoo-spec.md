@@ -178,6 +178,23 @@ shell, return), not the contract:
   invisible to a stubbed tmux and only a real server caught it — hence a real-tmux test alongside
   the stubbed ones.
 
+### 7.7 UX (v0.3.0)
+
+Cosmetic and ergonomic decisions layered on the model above, all backed by pure, unit-tested
+functions so the logic is testable without a terminal:
+
+- Rows are coloured by state, degrading to plain attributes where the terminal has no colour, so
+  colour only ever decorates a state that already reads in the text.
+- The title carries host facts (cpu count, total RAM from the daemon's `/info`) and Σ, the summed
+  CPU%/memory of the running primates.
+- The launch picker is **platform-aware**: images this host cannot run are greyed and refused with
+  a reason. The requirements table (cuda-* need an NVIDIA GPU; spark-bench is amd64-only) lives in
+  zoo, not derived from the dockerfiles. Inside a primate the capability view is the container's,
+  which is correct.
+- The picker, session-name prompt and kill confirm are centered curses popup boxes over the list.
+- A letter in the picker is type-ahead (jump to the next matching image, cycling). The main list
+  keeps its single-key actions, so type-ahead is picker-only.
+
 ---
 
 ## 8. Verification
