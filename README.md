@@ -177,12 +177,18 @@ Rows are coloured by state (running green, stale yellow, pending cyan; stopped d
 title carries host facts and a running total: `host 18 cpu · 31.3G` from the daemon and
 `Σ 12.4% · 4.2G` summed over the primates. A no-colour terminal degrades to plain attributes.
 
-**zoo runs inside tmux.** Started from a plain terminal it re-execs itself as window 0 of a tmux
-session named `zoo` (run it again from anywhere and you re-attach that session). Its actions then
-open **new tmux windows** rather than taking over the terminal, so the list keeps refreshing while
-you work. **tmux is therefore a prerequisite on the host** — it is in every primate image already,
-but a bare host needs `apt-get install tmux` (or the platform equivalent); without it `zoo` exits
-with a message. `zoo --once` is the exception: a plain one-frame dump for scripts, never wrapped.
+**zoo runs inside tmux, one instance per terminal.** Started from a plain terminal it re-execs
+itself as window 0 of its **own** tmux session (`zoo-<pid>`), and its actions open **new tmux
+windows** rather than taking over the terminal, so the list keeps refreshing while you work. Run
+`zoo` in several terminals and each is independent: they list the same primates (that is shared
+docker state) but navigate and open windows on their own, so two terminals can view different
+primates at once. **Quitting returns that terminal to its shell** — if you only browsed, the
+session ends; if you launched or attached to something, zoo detaches and leaves those windows
+running (a foreground primate outlives the quit; reattach with `tmux attach`, or tear down with
+`tmux kill-session`). `ctrl-b w` switches windows, `ctrl-b 0` returns to the list. **tmux is a
+prerequisite on the host** — in every primate image, but a bare host needs `apt-get install tmux`
+(or the platform equivalent); without it `zoo` exits with a message. `zoo --once` is the
+exception: a plain one-frame dump for scripts, never wrapped.
 
 ```bash
 zoo                 # the view (auto-wraps into tmux); ? lists the keys, q quits

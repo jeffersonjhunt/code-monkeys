@@ -34,10 +34,11 @@ import subprocess
 import sys
 import textwrap
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.3.3"
+__version__ = "0.4.2"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -531,7 +532,8 @@ def why_not(key: str, row: Optional[Row], self_id: str, cli: Optional[str]) -> s
 # zoo runs as window 0 of a tmux session it owns; attach/shell/launch open other windows, so no
 # process ever has to lend zoo its own terminal (that hand-off path, and every bug that lived in
 # it, is gone). Running zoo outside tmux re-execs it inside a fresh session named this.
-ZOO_TMUX_SESSION = "zoo"
+ZOO_TMUX_SESSION = "zoo"          # window-0 name and the fallback session name
+ZOO_SESSION_PREFIX = "zoo-"       # each launch gets its own session: zoo-<pid>
 
 
 class TmuxError(Exception):
@@ -577,13 +579,62 @@ def resolve_prog(prog: str, which=shutil.which) -> str:
     return which(prog) or prog
 
 
-def wrap_argv(tmux: str, argv0: str, args: List[str]) -> List[str]:
-    """The command that re-execs zoo inside its own tmux session as window 0. `new-session -A`
-    attaches to an existing `zoo` session rather than stacking a second one, so a later `zoo`
-    from another terminal re-attaches (the durable-zoo benefit). --in-tmux guards the re-exec
-    against ever wrapping again, belt-and-braces with the TMUX-env check in should_wrap."""
+def new_session_name(token: Optional[str] = None, environ=None) -> str:
+    """A session name unique to this launch, so each terminal's zoo is its own instance rather
+    than re-attaching a shared one. 48 random bits (uuid4), not the pid — a pid can be reused, and
+    a stale zoo-<pid> from a dead process would then make `new-session` fail as a duplicate and
+    block startup (review P-F1). ZOO_SESSION pins it for tests; `token` for unit tests."""
+    environ = os.environ if environ is None else environ
+    return environ.get("ZOO_SESSION") or f"{ZOO_SESSION_PREFIX}{token or uuid.uuid4().hex[-12:]}"
+
+
+def wrap_argv(tmux: str, argv0: str, args: List[str], session: str) -> List[str]:
+    """Re-exec zoo as window 0 of its OWN tmux session (no -A): each launch is an independent
+    instance with its own list process, so terminals do not mirror one another. --in-tmux guards
+    the re-exec against ever wrapping again."""
     inner = shlex.join([argv0, "--in-tmux", *args])
-    return [tmux, "new-session", "-A", "-s", ZOO_TMUX_SESSION, "-n", ZOO_TMUX_SESSION, inner]
+    return [tmux, "new-session", "-s", session, "-n", ZOO_TMUX_SESSION, inner]
+
+
+def detach_on_quit(window_count: int) -> bool:
+    """Whether `q` should detach the client before exiting. With only the list window, exiting
+    closes the sole window, the session ends, and the client lands back on the shell — no detach
+    needed. With other windows (an attach, a shell, a launched primate), exiting would close the
+    list window and leave the client on one of those; detaching first returns the terminal to the
+    shell while the session and those windows keep running (a launched primate outlives the quit)."""
+    return window_count > 1
+
+
+def stale_sessions(list_output: str, self_name: str) -> List[str]:
+    """zoo control sessions safe to reap on startup: carry zoo's ownership marker (@zoo=1 — the
+    prefix alone is not proof zoo created it), no attached client, exactly one window (just the
+    list — nothing launched), and not this instance. Input is `list-sessions -F '#{session_name}
+    #{session_attached} #{session_windows} #{@zoo}'`; an unmarked session drops the empty last
+    field, so split() yields fewer than four parts and it is skipped."""
+    out = []
+    for line in list_output.splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue   # fewer fields = unmarked (@zoo empty): not zoo's, never reaped
+        name, attached, windows, marker = parts
+        if name == self_name or marker != "1":
+            continue
+        if attached == "0" and windows == "1":
+            out.append(name)
+    return out
+
+
+def current_session(tmux: str, runner=subprocess.run) -> str:
+    """The tmux session zoo is running in (it is window 0 of its own session, so this is exact).
+    The Tmux client targets this, so actions stay in this terminal. Falls back to the constant
+    name if tmux cannot answer (should not happen inside the wrap)."""
+    try:
+        r = runner([tmux, "display-message", "-p", "#{session_name}"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ZOO_TMUX_SESSION
 
 
 # Runs the window's real command ("$@"), then holds the window open only if it exited non-zero,
@@ -648,6 +699,26 @@ class Tmux:
         # hold_command keeps the window open on a non-zero exit so its error is readable (T-F2).
         self._cmd("new-window", "-t", f"{self._session}:", *loc, "-n", name, "--", *hold_command(argv))
         return "opened"
+
+    def mark(self) -> None:
+        """Stamp this session as zoo's own (a user tmux option), so reap can tell zoo's control
+        sessions from a user's session that merely happens to be named zoo-… (review P-F2)."""
+        self._cmd("set-option", "-t", self._session, "@zoo", "1", check=False)
+
+    def detach(self) -> None:
+        """Detach this session's client — back to the shell, session and its windows left alive."""
+        self._cmd("detach-client", "-s", self._session, check=False)
+
+    def reap(self) -> None:
+        """Kill stale zoo control sessions — carrying zoo's @zoo marker, detached, only the list
+        window — left by past launches that disconnected instead of quitting. Never touches a
+        session zoo did not create, this session, or one with launched windows."""
+        r = self._cmd("list-sessions", "-F",
+                      "#{session_name} #{session_attached} #{session_windows} #{@zoo}", check=False)
+        if r.returncode != 0:
+            return
+        for name in stale_sessions(r.stdout, self._session):
+            self._cmd("kill-session", "-t", name, check=False)
 
 
 # --------------------------------------------------------------------------- samples
@@ -1039,6 +1110,14 @@ class View:
         rows = self.mon.rows
         return rows[self.sel] if 0 <= self.sel < len(rows) else None
 
+    def _quit(self) -> str:
+        """Quit always returns to the shell. With other windows open, detach the client first so
+        the terminal lands on the shell rather than on one of those windows when the list window
+        closes; the session and those windows (a launched primate) keep running, detached."""
+        if self.tmux is not None and detach_on_quit(len(self.tmux.windows())):
+            self.tmux.detach()
+        return "quit"
+
     def say(self, text: str, now: float) -> None:
         self.notice = text
         self.notice_at = now
@@ -1116,7 +1195,7 @@ class View:
             return None
         n = len(self.mon.rows)
         if key == ord("q"):
-            return "quit"
+            return self._quit()
         if key == 27:
             return None   # a bare Esc, or the head of a sequence ncurses does not know: not a quit (review F5)
         if key in (ord("n"), ord("s")):
@@ -1477,7 +1556,11 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         zfuncs = zfuncs_path(environ)
         roster = read_roster(zfuncs)
         tpath = tmux_path(environ)
-        tmux = Tmux(tpath) if tpath else None   # T2 makes this always present via auto-wrap
+        # This instance's own session (unique per launch), so actions stay in this terminal.
+        tmux = Tmux(tpath, session=current_session(tpath)) if tpath else None
+        if tmux is not None:
+            tmux.mark()   # stamp this session as zoo's, so reap only ever touches zoo's own
+            tmux.reap()   # clear stale marked empty sessions left by launches that disconnected
         host = host_facts(mon._docker)          # host facts do not change: fetched once here
         caps = host_capabilities(environ)
         return curses.wrapper(lambda scr: _run_view(
@@ -1557,7 +1640,7 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
                   "Install tmux, or use --once for a plain frame.", file=stderr)
             return 1
         raw = list(argv) if argv is not None else sys.argv[1:]
-        exec_fn(tmux, wrap_argv(tmux, resolve_prog(prog or sys.argv[0]), raw))
+        exec_fn(tmux, wrap_argv(tmux, resolve_prog(prog or sys.argv[0]), raw, new_session_name(environ=environ)))
         return 0   # unreached in production (execvp replaces the process); a test stub returns
     try:
         transport = transport or unix_transport(socket_path(environ))

@@ -85,6 +85,7 @@ esac
 TMUX_STUB = r'''#!/bin/sh
 printf '%s\n' "$*" >> "$ZOO_TMUX_LOG"
 case "$1" in
+  display-message) printf 'zoo-stub\n' ;;
   list-windows)
     printf '0\tzoo\n'
     if [ -f "$ZOO_TMUX_WINS" ]; then
@@ -603,6 +604,25 @@ class TtyTest(TtyBase):
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
         self.assert_terminal_returned(mark, before, 0)
+
+    def test_quit_from_the_list_alone_does_not_detach(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+        self.assertNotIn("detach-client", " ".join(self.tmux_calls()))   # sole window: plain exit
+
+    def test_quit_with_an_open_window_detaches_first_then_exits(self):
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send("j")                       # evoc (a session)
+        self.sh.wait_screen("a attach")
+        self.sh.send("a")                       # opens an attach window
+        self.wait_tmux("new-window")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)               # still returns to the shell
+        self.assertTrue(any(c.startswith("detach-client") for c in self.tmux_calls()),
+                        "quit with an open window should detach the client first")
 
     def test_ctrl_c_quits_and_restores_the_terminal(self):
         before = self.sh.stty()
@@ -1154,6 +1174,7 @@ class RealTmuxTest(unittest.TestCase):
             "PATH": f"{home / 'bin'}:{pathlib.Path(sys.executable).parent}:/usr/bin:/bin",
             "DOCKER_HOST": f"unix://{sock}",
             "ZOO_ZFUNCS": str(home / "zfuncs"),
+            "ZOO_SESSION": "zoo-rt",      # deterministic session name for this single instance
             "TMUX_TMPDIR": str(tmpdir),   # zoo's `tmux new-session` lands on an isolated server
             # TMUX deliberately unset: this is the one suite that lets zoo auto-wrap for real.
         }
@@ -1186,7 +1207,7 @@ class RealTmuxTest(unittest.TestCase):
     def active(self):
         """(active?, name) for zoo's windows, from the real server — the source of truth for
         which window has focus, rather than guessing from the pty screen mid-switch."""
-        r = self.tmux("list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}")
+        r = self.tmux("list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}")
         return r.stdout
 
     def test_autowrap_opens_a_real_window_and_ctrl_b_0_returns_to_a_live_list(self):
@@ -1195,20 +1216,20 @@ class RealTmuxTest(unittest.TestCase):
         self.sh.wait_screen("KIND", timeout=25)
         self.sh.wait_screen("evoc", timeout=25)      # list populated from the fake daemon
         self.sh.wait_screen("n new", timeout=25)     # roster present -> launch offered
-        self.wait_tmux_ok(["list-sessions"], "zoo")  # the session zoo created, for real
+        self.wait_tmux_ok(["list-sessions"], "zoo-rt")  # the session zoo created, for real
 
         # Launch a primate: a real second window opens, becomes active, and its command runs.
         self.sh.send("n")
         self.sh.wait_screen("choose an image")
         self.sh.send("\r")                           # the one image, alpha
-        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+        self.wait_tmux_ok(["list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}"],
                           "1 primate-alpha")         # opened AND focused (the whole point)
-        pane = self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-alpha"], "LAUNCHED-alpha")
+        pane = self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo-rt:primate-alpha"], "LAUNCHED-alpha")
         self.assertIn("LAUNCHED-alpha", pane)        # the zsh-function window really ran
 
         # ctrl-b 0 returns to zoo's window, which never stopped refreshing.
         self.sh.send(b"\x020")
-        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+        self.wait_tmux_ok(["list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}"],
                           "1 zoo")
         self.sh.wait_screen("KIND", timeout=25)
         self.sh.wait_screen("stats", timeout=25)     # the title's live age: zoo kept ticking
@@ -1217,10 +1238,32 @@ class RealTmuxTest(unittest.TestCase):
         self.sh.send("n")
         self.sh.wait_screen("choose an image")
         self.sh.send("\r")
-        self.wait_tmux_ok(["list-windows", "-t", "zoo", "-F", "#{window_active} #{window_name}"],
+        self.wait_tmux_ok(["list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}"],
                           "1 primate-alpha")
-        names = self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout.split()
+        names = self.tmux("list-windows", "-t", "zoo-rt", "-F", "#{window_name}").stdout.split()
         self.assertEqual(names.count("primate-alpha"), 1)   # focused, not duplicated
+
+    def test_reap_kills_a_marked_stale_session_but_spares_an_unmarked_one(self):
+        # Pre-existing sessions on the isolated server: one marked as zoo's (stale), one merely
+        # named zoo-… by someone else. Launching zoo marks itself and reaps only its own.
+        sockdir = pathlib.Path(self.tmux_sock).parent   # socket dir must exist, 0700, before pre-creating
+        sockdir.mkdir(parents=True, exist_ok=True)
+        sockdir.chmod(0o700)
+        self.tmux("new-session", "-d", "-s", "zoo-stale")
+        self.tmux("set-option", "-t", "zoo-stale", "@zoo", "1")
+        self.tmux("new-session", "-d", "-s", "zoo-user")     # unmarked, zoo-named
+        self.sh.send("zoo -i 0.5\r")
+        self.sh.wait_screen("KIND", timeout=25)
+        self.wait_tmux_ok(["list-sessions", "-F", "#{session_name}"], "zoo-rt")
+        import time
+        deadline = time.monotonic() + 15
+        while "zoo-stale" in self.tmux("list-sessions", "-F", "#{session_name}").stdout:
+            if time.monotonic() > deadline:
+                self.fail("a marked stale session was not reaped")
+            time.sleep(0.2)
+        names = self.tmux("list-sessions", "-F", "#{session_name}").stdout
+        self.assertIn("zoo-user", names)   # unmarked, zoo-named: never zoo's to reap
+        self.assertIn("zoo-rt", names)     # this instance survives
 
     def test_a_failing_launch_window_is_held_open_and_closes_on_enter(self):
         # T-F2: a window whose command exits non-zero must stay, showing the error and a prompt,
@@ -1234,18 +1277,123 @@ class RealTmuxTest(unittest.TestCase):
         self.sh.send("\r")
         # The window opened, its command failed, and hold_command kept it: the pane shows the
         # failure and the prompt, and the window is still there.
-        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-boom"], "BOOM-FAILED")
-        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo:primate-boom"], "press Enter to close")
+        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo-rt:primate-boom"], "BOOM-FAILED")
+        self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo-rt:primate-boom"], "press Enter to close")
         self.assertIn("primate-boom",
-                      self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout)
+                      self.tmux("list-windows", "-t", "zoo-rt", "-F", "#{window_name}").stdout)
         # Enter closes the held window (the read returns), leaving zoo's session behind.
         self.sh.send("\r")
         import time as _t
         deadline = _t.monotonic() + 20
-        while "primate-boom" in self.tmux("list-windows", "-t", "zoo", "-F", "#{window_name}").stdout:
+        while "primate-boom" in self.tmux("list-windows", "-t", "zoo-rt", "-F", "#{window_name}").stdout:
             if _t.monotonic() > deadline:
                 self.fail("held window did not close on Enter")
             self.sh._read(0.2)
+
+
+@unittest.skipUnless(shutil.which("tmux") and shutil.which("zsh"),
+                     "SKIPPED: needs tmux and zsh for the two-terminal test")
+class TwoTerminalsTest(unittest.TestCase):
+    """The headline of the per-terminal change: two terminals each launch zoo, get their own
+    session on one real (isolated) tmux server, and act independently — launching in one leaves
+    the other on its list. No ZOO_SESSION pin, so each gets its own zoo-<pid>."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        home = pathlib.Path(self.tmp.name)
+        (home / "bin").mkdir()
+        os.symlink(ZOO, home / "bin" / "zoo")
+        (home / "zfuncs").write_text(REAL_ZFUNCS_STUB)       # roster: alpha, boom
+        docker = home / "bin" / "docker"
+        docker.write_text(DOCKER_STUB)
+        docker.chmod(0o755)
+        sock = home / "d.sock"
+        self.state = DaemonState(fixture_small())
+        self.daemon = FakeDaemon(str(sock), self.state)
+        threading.Thread(target=self.daemon.serve_forever, daemon=True).start()
+        self.tmuxbin = shutil.which("tmux")
+        tmpdir = home / "tmxtmp"
+        tmpdir.mkdir()
+        self.tmux_sock = str(tmpdir / f"tmux-{os.getuid()}" / "default")
+        self.env = {
+            "TERM": "xterm-256color",
+            "HOME": str(home),
+            "PATH": f"{home / 'bin'}:{pathlib.Path(sys.executable).parent}:/usr/bin:/bin",
+            "DOCKER_HOST": f"unix://{sock}",
+            "ZOO_ZFUNCS": str(home / "zfuncs"),
+            "TMUX_TMPDIR": str(tmpdir),   # both terminals share one isolated tmux server
+        }
+        self.shells = []
+
+    def tearDown(self):
+        self.tmux("kill-server")
+        for sh in self.shells:
+            sh.close()
+        self.daemon.shutdown()
+        self.daemon.server_close()
+        self.tmp.cleanup()
+
+    def tmux(self, *args, timeout=10):
+        return subprocess.run([self.tmuxbin, "-S", self.tmux_sock, *args],
+                              capture_output=True, text=True, timeout=timeout)
+
+    def launch(self):
+        sh = Shell(self.env)
+        self.shells.append(sh)
+        sh.send(f"PROMPT='{PROMPT}'\r")
+        sh.expect(PROMPT_RE)
+        sh.send("zoo -i 0.5\r")
+        sh.expect(SMCUP)
+        sh.wait_screen("KIND", timeout=25)
+        return sh
+
+    def sessions(self):
+        r = self.tmux("list-sessions", "-F", "#{session_name} #{session_windows}")
+        return dict(line.split() for line in r.stdout.splitlines() if line)
+
+    def wait_sessions(self, n, timeout=25):
+        import time
+        deadline = time.monotonic() + timeout
+        while len(self.sessions()) < n:
+            if time.monotonic() > deadline:
+                raise AssertionError(f"expected {n} sessions, saw {self.sessions()}")
+            time.sleep(0.2)
+        return self.sessions()
+
+    def test_two_terminals_are_independent(self):
+        sh1 = self.launch()
+        sh2 = self.launch()
+        # Two distinct zoo sessions on the one server.
+        names = list(self.wait_sessions(2).keys())
+        self.assertEqual(len(names), 2)
+        self.assertTrue(all(n.startswith("zoo-") for n in names))
+        self.assertNotEqual(names[0], names[1])
+
+        # Terminal 1 launches a primate; it opens in terminal 1's session only.
+        sh1.send("n")
+        sh1.wait_screen("choose an image")
+        sh1.send("\r")                                  # alpha, first in the roster
+        import time
+        deadline = time.monotonic() + 25
+        while True:
+            sess = self.sessions()
+            with_alpha = [n for n in sess if "primate-alpha" in
+                          self.tmux("list-windows", "-t", n, "-F", "#{window_name}").stdout]
+            if with_alpha:
+                break
+            if time.monotonic() > deadline:
+                self.fail(f"primate-alpha never appeared; sessions={sess}")
+            time.sleep(0.2)
+
+        # Exactly one session has the primate window; the other still has only its list.
+        self.assertEqual(len(with_alpha), 1)
+        s1 = with_alpha[0]
+        s2 = next(n for n in self.sessions() if n != s1)
+        self.assertEqual(self.sessions()[s1], "2")      # list + primate-alpha
+        self.assertEqual(self.sessions()[s2], "1")      # untouched: just the list
+        # And terminal 2's active window is still its list (window named "zoo").
+        active2 = self.tmux("list-windows", "-t", s2, "-f", "#{window_active}", "-F", "#{window_name}").stdout.strip()
+        self.assertEqual(active2, "zoo")
 
 
 if __name__ == "__main__":

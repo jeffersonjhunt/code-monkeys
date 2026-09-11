@@ -594,16 +594,24 @@ class ShouldWrapTest(unittest.TestCase):
 
 
 class WrapArgvTest(unittest.TestCase):
-    def test_reexecs_zoo_inside_an_attach_or_create_session(self):
-        argv = zoo.wrap_argv("/usr/bin/tmux", "/home/x/.local/bin/zoo", ["-i", "5"])
-        self.assertEqual(argv[:6], ["/usr/bin/tmux", "new-session", "-A", "-s", "zoo", "-n"])
+    def test_reexecs_zoo_into_its_own_unique_session(self):
+        argv = zoo.wrap_argv("/usr/bin/tmux", "/home/x/.local/bin/zoo", ["-i", "5"], "zoo-4242")
+        self.assertEqual(argv[:5], ["/usr/bin/tmux", "new-session", "-s", "zoo-4242", "-n"])
+        self.assertNotIn("-A", argv)                 # no attach-or-create: each launch is its own
         inner = argv[-1]
         self.assertIn("--in-tmux", inner)
         self.assertIn("-i 5", inner)
-        self.assertTrue(inner.startswith("/home/x/.local/bin/zoo"))
+
+    def test_new_session_name_is_unique_and_prefixed(self):
+        self.assertEqual(zoo.new_session_name(token="abc"), "zoo-abc")
+        n1, n2 = zoo.new_session_name(), zoo.new_session_name()
+        self.assertTrue(n1.startswith("zoo-") and n2.startswith("zoo-"))
+        self.assertNotEqual(n1, n2)                              # random per launch, not pid
+        self.assertEqual(len(n1), len("zoo-") + 12)             # uuid4 hex[-12:]
+        self.assertEqual(zoo.new_session_name(environ={"ZOO_SESSION": "zoo-pin"}), "zoo-pin")
 
     def test_a_spaced_argv0_is_quoted(self):
-        inner = zoo.wrap_argv("tmux", "/home/my dir/zoo", [])[-1]
+        inner = zoo.wrap_argv("tmux", "/home/my dir/zoo", [], "zoo-1")[-1]
         self.assertIn("'/home/my dir/zoo'", inner)
 
     def test_the_reexec_argv_parses_with_in_tmux(self):
@@ -634,6 +642,26 @@ class TmuxClientTest(unittest.TestCase):
                       capture_output=True, text=True, timeout=5)
         self.assertEqual(bad.returncode, 3)                          # exit code preserved
         self.assertIn("press Enter to close", bad.stdout)            # and the window is held
+
+    def test_client_targets_its_own_session(self):
+        fake = FakeTmuxRun(windows=[("0", "zoo")])
+        tm = zoo.Tmux("/usr/bin/tmux", session="zoo-99", runner=fake)
+        tm.open_or_focus("shell-x", ["docker", "exec", "y", "sh"])
+        nw = next(c for c in fake.calls if c and c[0] == "new-window")
+        self.assertIn("zoo-99:", nw)                  # this instance's session, not the constant
+        self.assertNotIn("zoo:", " ".join(nw))
+
+    def test_current_session_from_display_message(self):
+        def runner(argv, **kw):
+            import subprocess as _sp
+            if "display-message" in argv:
+                return _sp.CompletedProcess(argv, 0, "zoo-4242\n", "")
+            return _sp.CompletedProcess(argv, 1, "", "no")
+        self.assertEqual(zoo.current_session("/usr/bin/tmux", runner=runner), "zoo-4242")
+
+        def broken(argv, **kw):
+            raise OSError("no tmux")
+        self.assertEqual(zoo.current_session("/usr/bin/tmux", runner=broken), "zoo")   # fallback
 
     def test_focus_an_existing_window_by_index_not_name(self):
         fake = FakeTmuxRun(windows=[("0", "zoo"), ("3", "shell-evoc")])
@@ -931,6 +959,65 @@ class FirstMatchTest(unittest.TestCase):
         self.assertEqual(fm([], "x"), -1)
 
 
+class QuitAndReapTest(unittest.TestCase):
+    def test_detach_on_quit_only_with_other_windows(self):
+        self.assertFalse(zoo.detach_on_quit(1))   # only the list: exit cleanly
+        self.assertFalse(zoo.detach_on_quit(0))
+        self.assertTrue(zoo.detach_on_quit(2))    # other windows: detach first
+        self.assertTrue(zoo.detach_on_quit(5))
+
+    def test_stale_sessions_needs_the_marker_not_just_the_name(self):
+        out = ("zoo-100 0 1 1\n"    # marked, detached, only the list -> stale
+               "zoo-200 1 1 1\n"    # attached -> not stale
+               "zoo-300 0 3 1\n"    # has launched windows -> not stale
+               "zoo-me 0 1 1\n"     # this instance -> never
+               "zoo-user 0 1\n"     # zoo-named but UNMARKED (empty field dropped) -> not zoo's
+               "work 0 1 1\n")      # marked?! but not this run's concern; name still eligible only via marker
+        self.assertEqual(zoo.stale_sessions(out, "zoo-me"), ["zoo-100", "work"])
+        # The point: an unmarked zoo-<...> session is never reaped.
+        self.assertNotIn("zoo-user", zoo.stale_sessions(out, "zoo-me"))
+        self.assertEqual(zoo.stale_sessions("", "zoo-me"), [])
+
+    def test_tmux_reap_kills_only_marked_stale_sessions(self):
+        calls = []
+        def runner(argv, **kw):
+            import subprocess as _sp
+            calls.append(argv[1:])
+            if argv[1] == "list-sessions":
+                return _sp.CompletedProcess(argv, 0,
+                    "zoo-1 0 1 1\nzoo-2 1 1 1\nzoo-user 0 1\nzoo-me 0 1 1\n", "")
+            return _sp.CompletedProcess(argv, 0, "", "")
+        zoo.Tmux("/usr/bin/tmux", session="zoo-me", runner=runner).reap()
+        kills = [c for c in calls if c and c[0] == "kill-session"]
+        self.assertEqual(kills, [["kill-session", "-t", "zoo-1"]])   # marked+stale only; not zoo-user (unmarked)
+
+    def test_tmux_mark_sets_the_ownership_option(self):
+        calls = []
+        def runner(argv, **kw):
+            import subprocess as _sp
+            calls.append(argv[1:]); return _sp.CompletedProcess(argv, 0, "", "")
+        zoo.Tmux("/usr/bin/tmux", session="zoo-me", runner=runner).mark()
+        self.assertIn(["set-option", "-t", "zoo-me", "@zoo", "1"], calls)
+
+    def test_view_quit_detaches_only_with_other_windows(self):
+        class FakeTmux:
+            def __init__(self, wins):
+                self._wins = wins
+                self.detached = False
+            def windows(self):
+                return self._wins
+            def detach(self):
+                self.detached = True
+        one = FakeTmux([("0", "zoo")])
+        v = zoo.View(scr=None, mon=zoo.Monitor(zoo.Docker(FakeDaemon())), interval=1.0, clock=lambda: 0.0, tmux=one)
+        self.assertEqual(v._quit(), "quit")
+        self.assertFalse(one.detached)                 # only the list: no detach
+        many = FakeTmux([("0", "zoo"), ("1", "attach-evoc")])
+        v2 = zoo.View(scr=None, mon=zoo.Monitor(zoo.Docker(FakeDaemon())), interval=1.0, clock=lambda: 0.0, tmux=many)
+        self.assertEqual(v2._quit(), "quit")
+        self.assertTrue(many.detached)                 # other windows: detached first
+
+
 class StyleTokenTest(unittest.TestCase):
     def test_token_by_state_and_selection(self):
         self.assertEqual(zoo.style_token(zoo.Figures(zoo.LIVE), False), "running")
@@ -1095,7 +1182,9 @@ class AutoWrapTest(unittest.TestCase):
         self.assertEqual(len(ex.calls), 1)
         file, argv = ex.calls[0]
         self.assertEqual(file, "/x/tmux")
-        self.assertEqual(argv[:6], ["/x/tmux", "new-session", "-A", "-s", "zoo", "-n"])
+        self.assertEqual(argv[:3], ["/x/tmux", "new-session", "-s"])
+        self.assertTrue(argv[3].startswith("zoo-"))   # a unique per-launch session, not shared "zoo"
+        self.assertNotIn("-A", argv)
         self.assertIn("--in-tmux", argv[-1])
         self.assertIn("/opt/zoo", argv[-1])   # re-execs THIS zoo (prog), not a bare name
 
