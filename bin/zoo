@@ -34,10 +34,11 @@ import subprocess
 import sys
 import textwrap
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.4.0"
+__version__ = "0.4.2"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -578,12 +579,13 @@ def resolve_prog(prog: str, which=shutil.which) -> str:
     return which(prog) or prog
 
 
-def new_session_name(pid: Optional[int] = None, environ=None) -> str:
+def new_session_name(token: Optional[str] = None, environ=None) -> str:
     """A session name unique to this launch, so each terminal's zoo is its own instance rather
-    than re-attaching a shared one. One process per launch, so the pid distinguishes concurrent
-    instances; a stale name from a dead pid is reaped on startup. ZOO_SESSION pins it for tests."""
+    than re-attaching a shared one. 48 random bits (uuid4), not the pid — a pid can be reused, and
+    a stale zoo-<pid> from a dead process would then make `new-session` fail as a duplicate and
+    block startup (review P-F1). ZOO_SESSION pins it for tests; `token` for unit tests."""
     environ = os.environ if environ is None else environ
-    return environ.get("ZOO_SESSION") or f"{ZOO_SESSION_PREFIX}{os.getpid() if pid is None else pid}"
+    return environ.get("ZOO_SESSION") or f"{ZOO_SESSION_PREFIX}{token or uuid.uuid4().hex[-12:]}"
 
 
 def wrap_argv(tmux: str, argv0: str, args: List[str], session: str) -> List[str]:
@@ -604,16 +606,18 @@ def detach_on_quit(window_count: int) -> bool:
 
 
 def stale_sessions(list_output: str, self_name: str) -> List[str]:
-    """zoo control sessions safe to reap on startup: prefix zoo-, no attached client, exactly one
-    window (just the list — nothing launched), and not this instance. Input is `list-sessions
-    -F '#{session_name} #{session_attached} #{session_windows}'`."""
+    """zoo control sessions safe to reap on startup: carry zoo's ownership marker (@zoo=1 — the
+    prefix alone is not proof zoo created it), no attached client, exactly one window (just the
+    list — nothing launched), and not this instance. Input is `list-sessions -F '#{session_name}
+    #{session_attached} #{session_windows} #{@zoo}'`; an unmarked session drops the empty last
+    field, so split() yields fewer than four parts and it is skipped."""
     out = []
     for line in list_output.splitlines():
         parts = line.split()
-        if len(parts) != 3:
-            continue
-        name, attached, windows = parts
-        if name == self_name or not name.startswith(ZOO_SESSION_PREFIX):
+        if len(parts) != 4:
+            continue   # fewer fields = unmarked (@zoo empty): not zoo's, never reaped
+        name, attached, windows, marker = parts
+        if name == self_name or marker != "1":
             continue
         if attached == "0" and windows == "1":
             out.append(name)
@@ -696,16 +700,21 @@ class Tmux:
         self._cmd("new-window", "-t", f"{self._session}:", *loc, "-n", name, "--", *hold_command(argv))
         return "opened"
 
+    def mark(self) -> None:
+        """Stamp this session as zoo's own (a user tmux option), so reap can tell zoo's control
+        sessions from a user's session that merely happens to be named zoo-… (review P-F2)."""
+        self._cmd("set-option", "-t", self._session, "@zoo", "1", check=False)
+
     def detach(self) -> None:
         """Detach this session's client — back to the shell, session and its windows left alive."""
         self._cmd("detach-client", "-s", self._session, check=False)
 
     def reap(self) -> None:
-        """Kill stale zoo control sessions (detached, only the list window) left by past launches
-        that disconnected instead of quitting. Never touches this session or a session with
-        launched windows."""
-        r = self._cmd("list-sessions", "-F", "#{session_name} #{session_attached} #{session_windows}",
-                      check=False)
+        """Kill stale zoo control sessions — carrying zoo's @zoo marker, detached, only the list
+        window — left by past launches that disconnected instead of quitting. Never touches a
+        session zoo did not create, this session, or one with launched windows."""
+        r = self._cmd("list-sessions", "-F",
+                      "#{session_name} #{session_attached} #{session_windows} #{@zoo}", check=False)
         if r.returncode != 0:
             return
         for name in stale_sessions(r.stdout, self._session):
@@ -1550,7 +1559,8 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         # This instance's own session (unique per launch), so actions stay in this terminal.
         tmux = Tmux(tpath, session=current_session(tpath)) if tpath else None
         if tmux is not None:
-            tmux.reap()   # clear stale empty sessions left by past launches that disconnected
+            tmux.mark()   # stamp this session as zoo's, so reap only ever touches zoo's own
+            tmux.reap()   # clear stale marked empty sessions left by launches that disconnected
         host = host_facts(mon._docker)          # host facts do not change: fetched once here
         caps = host_capabilities(environ)
         return curses.wrapper(lambda scr: _run_view(

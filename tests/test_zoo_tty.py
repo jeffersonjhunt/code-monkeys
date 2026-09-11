@@ -1243,6 +1243,28 @@ class RealTmuxTest(unittest.TestCase):
         names = self.tmux("list-windows", "-t", "zoo-rt", "-F", "#{window_name}").stdout.split()
         self.assertEqual(names.count("primate-alpha"), 1)   # focused, not duplicated
 
+    def test_reap_kills_a_marked_stale_session_but_spares_an_unmarked_one(self):
+        # Pre-existing sessions on the isolated server: one marked as zoo's (stale), one merely
+        # named zoo-… by someone else. Launching zoo marks itself and reaps only its own.
+        sockdir = pathlib.Path(self.tmux_sock).parent   # socket dir must exist, 0700, before pre-creating
+        sockdir.mkdir(parents=True, exist_ok=True)
+        sockdir.chmod(0o700)
+        self.tmux("new-session", "-d", "-s", "zoo-stale")
+        self.tmux("set-option", "-t", "zoo-stale", "@zoo", "1")
+        self.tmux("new-session", "-d", "-s", "zoo-user")     # unmarked, zoo-named
+        self.sh.send("zoo -i 0.5\r")
+        self.sh.wait_screen("KIND", timeout=25)
+        self.wait_tmux_ok(["list-sessions", "-F", "#{session_name}"], "zoo-rt")
+        import time
+        deadline = time.monotonic() + 15
+        while "zoo-stale" in self.tmux("list-sessions", "-F", "#{session_name}").stdout:
+            if time.monotonic() > deadline:
+                self.fail("a marked stale session was not reaped")
+            time.sleep(0.2)
+        names = self.tmux("list-sessions", "-F", "#{session_name}").stdout
+        self.assertIn("zoo-user", names)   # unmarked, zoo-named: never zoo's to reap
+        self.assertIn("zoo-rt", names)     # this instance survives
+
     def test_a_failing_launch_window_is_held_open_and_closes_on_enter(self):
         # T-F2: a window whose command exits non-zero must stay, showing the error and a prompt,
         # instead of vanishing. 'boom' returns 7 from the stub primate().
