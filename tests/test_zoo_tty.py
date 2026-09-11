@@ -1269,5 +1269,110 @@ class RealTmuxTest(unittest.TestCase):
             self.sh._read(0.2)
 
 
+@unittest.skipUnless(shutil.which("tmux") and shutil.which("zsh"),
+                     "SKIPPED: needs tmux and zsh for the two-terminal test")
+class TwoTerminalsTest(unittest.TestCase):
+    """The headline of the per-terminal change: two terminals each launch zoo, get their own
+    session on one real (isolated) tmux server, and act independently — launching in one leaves
+    the other on its list. No ZOO_SESSION pin, so each gets its own zoo-<pid>."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        home = pathlib.Path(self.tmp.name)
+        (home / "bin").mkdir()
+        os.symlink(ZOO, home / "bin" / "zoo")
+        (home / "zfuncs").write_text(REAL_ZFUNCS_STUB)       # roster: alpha, boom
+        docker = home / "bin" / "docker"
+        docker.write_text(DOCKER_STUB)
+        docker.chmod(0o755)
+        sock = home / "d.sock"
+        self.state = DaemonState(fixture_small())
+        self.daemon = FakeDaemon(str(sock), self.state)
+        threading.Thread(target=self.daemon.serve_forever, daemon=True).start()
+        self.tmuxbin = shutil.which("tmux")
+        tmpdir = home / "tmxtmp"
+        tmpdir.mkdir()
+        self.tmux_sock = str(tmpdir / f"tmux-{os.getuid()}" / "default")
+        self.env = {
+            "TERM": "xterm-256color",
+            "HOME": str(home),
+            "PATH": f"{home / 'bin'}:{pathlib.Path(sys.executable).parent}:/usr/bin:/bin",
+            "DOCKER_HOST": f"unix://{sock}",
+            "ZOO_ZFUNCS": str(home / "zfuncs"),
+            "TMUX_TMPDIR": str(tmpdir),   # both terminals share one isolated tmux server
+        }
+        self.shells = []
+
+    def tearDown(self):
+        self.tmux("kill-server")
+        for sh in self.shells:
+            sh.close()
+        self.daemon.shutdown()
+        self.daemon.server_close()
+        self.tmp.cleanup()
+
+    def tmux(self, *args, timeout=10):
+        return subprocess.run([self.tmuxbin, "-S", self.tmux_sock, *args],
+                              capture_output=True, text=True, timeout=timeout)
+
+    def launch(self):
+        sh = Shell(self.env)
+        self.shells.append(sh)
+        sh.send(f"PROMPT='{PROMPT}'\r")
+        sh.expect(PROMPT_RE)
+        sh.send("zoo -i 0.5\r")
+        sh.expect(SMCUP)
+        sh.wait_screen("KIND", timeout=25)
+        return sh
+
+    def sessions(self):
+        r = self.tmux("list-sessions", "-F", "#{session_name} #{session_windows}")
+        return dict(line.split() for line in r.stdout.splitlines() if line)
+
+    def wait_sessions(self, n, timeout=25):
+        import time
+        deadline = time.monotonic() + timeout
+        while len(self.sessions()) < n:
+            if time.monotonic() > deadline:
+                raise AssertionError(f"expected {n} sessions, saw {self.sessions()}")
+            time.sleep(0.2)
+        return self.sessions()
+
+    def test_two_terminals_are_independent(self):
+        sh1 = self.launch()
+        sh2 = self.launch()
+        # Two distinct zoo sessions on the one server.
+        names = list(self.wait_sessions(2).keys())
+        self.assertEqual(len(names), 2)
+        self.assertTrue(all(n.startswith("zoo-") for n in names))
+        self.assertNotEqual(names[0], names[1])
+
+        # Terminal 1 launches a primate; it opens in terminal 1's session only.
+        sh1.send("n")
+        sh1.wait_screen("choose an image")
+        sh1.send("\r")                                  # alpha, first in the roster
+        import time
+        deadline = time.monotonic() + 25
+        while True:
+            sess = self.sessions()
+            with_alpha = [n for n in sess if "primate-alpha" in
+                          self.tmux("list-windows", "-t", n, "-F", "#{window_name}").stdout]
+            if with_alpha:
+                break
+            if time.monotonic() > deadline:
+                self.fail(f"primate-alpha never appeared; sessions={sess}")
+            time.sleep(0.2)
+
+        # Exactly one session has the primate window; the other still has only its list.
+        self.assertEqual(len(with_alpha), 1)
+        s1 = with_alpha[0]
+        s2 = next(n for n in self.sessions() if n != s1)
+        self.assertEqual(self.sessions()[s1], "2")      # list + primate-alpha
+        self.assertEqual(self.sessions()[s2], "1")      # untouched: just the list
+        # And terminal 2's active window is still its list (window named "zoo").
+        active2 = self.tmux("list-windows", "-t", s2, "-f", "#{window_active}", "-F", "#{window_name}").stdout.strip()
+        self.assertEqual(active2, "zoo")
+
+
 if __name__ == "__main__":
     unittest.main()
