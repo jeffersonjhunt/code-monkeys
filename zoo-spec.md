@@ -162,8 +162,12 @@ The requirements above prescribe no architecture. The implementation on `master`
 and it is recorded here because it changes the *mechanism* of requirements 12–15 (attach, resume,
 shell, return), not the contract:
 
-- **zoo runs as window 0 of a tmux session it owns.** Launched outside tmux it re-execs itself
-  via `tmux new-session -A -s zoo` (`-A` re-attaches an existing `zoo` session). `--once` is never
+- **zoo runs as window 0 of its OWN tmux session, one per launch** (`tmux new-session -s
+  zoo-<pid>`, no `-A`). Each terminal is an independent instance; they share primates through
+  the docker daemon, not through tmux windows. Quitting returns the terminal to its shell —
+  exit when only the list window is open, else detach the client and leave launched windows
+  running; stale empty `zoo-*` sessions are reaped on startup. (The earlier single shared
+  `-A -s zoo` session made terminals mirror one another and was replaced.) `--once` is never
   wrapped — it stays the plain, scriptable frame.
 - **Actions open tmux windows** instead of the process lending its terminal to a child. This
   removes the single-terminal hand-off entirely (endwin/re-enter, the SIGINT dance, the ctrl-c
