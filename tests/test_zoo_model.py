@@ -915,22 +915,20 @@ class HostRetryTest(unittest.TestCase):
         self.assertEqual(view.host, (4, 8000000000))
 
 
-class JumpTest(unittest.TestCase):
+class FirstMatchTest(unittest.TestCase):
     NAMES = ["codemonkey", "claude", "minion", "kiro", "cuda-comfy"]
 
-    def test_jump_next_match_wrapping_and_cycling(self):
-        j = zoo.jump
-        self.assertEqual(j(self.NAMES, 0, "m"), 2)          # minion
-        self.assertEqual(j(self.NAMES, 0, "c"), 1)          # next c after codemonkey -> claude
-        self.assertEqual(j(self.NAMES, 1, "c"), 4)          # ... -> cuda-comfy
-        self.assertEqual(j(self.NAMES, 4, "c"), 0)          # ... wraps -> codemonkey
-        self.assertEqual(j(self.NAMES, 0, "M"), 2)          # case-insensitive query
-        self.assertEqual(j(["Alpha", "beta"], 1, "a"), 0)   # case-insensitive on the NAME too
-        self.assertEqual(j(self.NAMES, 0, "z"), 0)          # no match: stay
-        self.assertEqual(j([], 0, "x"), 0)                  # empty: stay
-
-    def test_single_match_stays_put(self):
-        self.assertEqual(zoo.jump(self.NAMES, 2, "m"), 2)   # minion is the only m
+    def test_prefix_match_first_or_minus_one(self):
+        fm = zoo.first_match
+        self.assertEqual(fm(self.NAMES, "k"), 3)      # kiro (not the 'k' inside codemonkey)
+        self.assertEqual(fm(self.NAMES, "cu"), 4)     # cuda-comfy
+        self.assertEqual(fm(self.NAMES, "co"), 0)     # codemonkey
+        self.assertEqual(fm(self.NAMES, "cl"), 1)     # claude
+        self.assertEqual(fm(self.NAMES, "m"), 2)      # minion
+        self.assertEqual(fm(self.NAMES, "K"), 3)      # case-insensitive
+        self.assertEqual(fm(self.NAMES, ""), 0)       # empty: the first
+        self.assertEqual(fm(self.NAMES, "z"), -1)     # no match
+        self.assertEqual(fm([], "x"), -1)
 
 
 class StyleTokenTest(unittest.TestCase):

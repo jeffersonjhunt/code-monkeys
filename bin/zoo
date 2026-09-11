@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.3.1"
+__version__ = "0.3.3"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -471,19 +471,15 @@ def runnable(image: str, caps: Dict[str, str]) -> Tuple[bool, str]:
     return (True, "")
 
 
-def jump(names: List[str], start: int, ch: str) -> int:
-    """The next index after `start` whose name starts with `ch` (case-insensitive), wrapping; so
-    pressing a letter repeatedly cycles through the matches. `start` if there is no match or the
-    list is empty. Picker type-ahead (the list keeps its single-key actions, so no type-ahead)."""
-    n = len(names)
-    if n == 0:
-        return start
-    ch = ch.lower()
-    for step in range(1, n + 1):
-        i = (start + step) % n
-        if names[i].lower().startswith(ch):
+def first_match(names: List[str], query: str) -> int:
+    """Index of the first name that starts with `query` (case-insensitive), or -1. Backs the
+    picker's vim-style `/` search: `/k` finds kiro, `/cu` cuda-*. Prefix, not substring, so a
+    query reads as "names beginning with…"; every letter is usable (j/k/q stay nav in the list)."""
+    q = query.lower()
+    for i, name in enumerate(names):
+        if name.lower().startswith(q):
             return i
-    return start
+    return -1
 
 
 LAUNCH_KEYS = [("n", "new"), ("s", "session")]
@@ -1181,6 +1177,19 @@ class View:
     def handle_picker(self, key: int, now: float) -> None:
         import curses
         pk = self.picker
+        if pk.get("query") is not None:            # vim-style / search: every letter is a query char
+            if key == 27:                          # Esc: leave search, back to nav (selection stays)
+                pk["query"] = None
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                pk["query"] = pk["query"][:-1]
+                self._picker_search()
+            elif key in (10, 13, curses.KEY_ENTER):
+                pk["query"] = None
+                self._picker_enter(now)
+            elif 32 <= key < 127:
+                pk["query"] += chr(key)
+                self._picker_search()
+            return None
         if key in (27, ord("q")):
             self.picker = None
             self.say("launch cancelled", now)
@@ -1188,21 +1197,30 @@ class View:
             pk["sel"] = max(pk["sel"] - 1, 0)
         elif key in (curses.KEY_DOWN, ord("j")):
             pk["sel"] = min(pk["sel"] + 1, len(self.roster) - 1)
+        elif key == ord("/"):
+            pk["query"] = ""                       # open the search; type to narrow, Esc to leave
         elif key in (10, 13, curses.KEY_ENTER):
-            image = self.roster[pk["sel"]]
-            ok, why = runnable(image, self.caps)
-            if not ok:
-                self.say(f"{image}: {why}", now)   # greyed row: refuse, leave the picker open
-                return None
-            self.picker = None
-            if pk["kind"] == PRIMATE:
-                self.launch(PRIMATE, image, "")
-            else:
-                self.prompt = {"image": image, "text": ""}
-        elif 32 <= key < 127:
-            # type-ahead: a letter jumps to the next matching image (j/k/q above stay nav/cancel).
-            pk["sel"] = jump(self.roster, pk["sel"], chr(key))
+            self._picker_enter(now)
         return None
+
+    def _picker_search(self) -> None:
+        idx = first_match(self.roster, self.picker["query"])
+        if idx >= 0:
+            self.picker["sel"] = idx
+
+    def _picker_enter(self, now: float) -> None:
+        pk = self.picker
+        image = self.roster[pk["sel"]]
+        ok, why = runnable(image, self.caps)
+        if not ok:
+            self.say(f"{image}: {why}", now)       # greyed row: refuse, leave the picker open
+            return
+        kind = pk["kind"]
+        self.picker = None
+        if kind == PRIMATE:
+            self.launch(PRIMATE, image, "")
+        else:
+            self.prompt = {"image": image, "text": ""}
 
     def handle_prompt(self, key: int, now: float) -> None:
         import curses
@@ -1243,33 +1261,51 @@ class View:
 
     # -- popup dialogs (centered boxes floating over the list)
 
-    def _make_popup(self, height: int, width: int):
+    def _put_at(self, y: int, x: int, text: str, attr: int = 0) -> None:
         import curses
-        H, W = self.scr.getmaxyx()
-        height = max(3, min(height, H))
-        width = max(12, min(width, W))
-        win = curses.newwin(height, width, max((H - height) // 2, 0), max((W - width) // 2, 0))
-        try:
-            win.erase()
-            win.box()
-        except curses.error:
-            pass
-        return win
-
-    def _popup_put(self, win, row: int, text: str, attr: int = 0) -> None:
-        import curses
-        h, w = win.getmaxyx()
-        if 1 <= row <= h - 2 and w > 4:
+        h, w = self.scr.getmaxyx()
+        if 0 <= y < h and 0 <= x < w:
             try:
-                win.addnstr(row, 2, text, w - 4, attr)
+                self.scr.addnstr(y, x, text, max(w - x - 1, 0), attr)
             except curses.error:
                 pass
+
+    def _popup(self, lines) -> None:
+        """Draw a centered bordered box of (text, attr) lines directly on stdscr. Drawing on the
+        main screen (not a separate window) means erase() clears it every frame, so a box can
+        never bleed through when the next one is a different size — the bug a wider search header
+        exposed in the newwin-per-frame version."""
+        import curses
+        H, W = self.scr.getmaxyx()
+        inner = max((len(t) for t, _ in lines), default=0)
+        width = min(max(inner + 4, 14), W)
+        height = min(len(lines) + 2, H)
+        top = max((H - height) // 2, 0)
+        left = max((W - width) // 2, 0)
+        try:
+            for x in range(left + 1, left + width - 1):
+                self.scr.addch(top, x, curses.ACS_HLINE)
+                self.scr.addch(top + height - 1, x, curses.ACS_HLINE)
+            for y in range(top + 1, top + height - 1):
+                self.scr.addch(y, left, curses.ACS_VLINE)
+                self.scr.addch(y, left + width - 1, curses.ACS_VLINE)
+            self.scr.addch(top, left, curses.ACS_ULCORNER)
+            self.scr.addch(top, left + width - 1, curses.ACS_URCORNER)
+            self.scr.addch(top + height - 1, left, curses.ACS_LLCORNER)
+            self.scr.addch(top + height - 1, left + width - 1, curses.ACS_LRCORNER)
+        except curses.error:
+            pass   # the bottom-right cell always errors on addch; the border is otherwise drawn
+        for i, (text, attr) in enumerate(lines[: height - 2]):
+            self._put_at(top + 1 + i, left + 2, text[: width - 4], attr)
 
     def draw_picker(self):
         import curses
         pk = self.picker
         what = "primate" if pk["kind"] == PRIMATE else "session"
-        header = f"Start a {what}: choose an image (Enter starts, Esc cancels)"
+        if pk.get("query") is not None:
+            header = f"Start a {what}: /{pk['query']}  (type to search, Enter starts, Esc back)"
+        else:
+            header = f"Start a {what}: choose an image ( / to search, Enter starts, Esc cancels)"
         entries = []                                       # (image, ok, label)
         for image in self.roster:
             ok, why = runnable(image, self.caps)
@@ -1279,35 +1315,26 @@ class View:
         sel = pk["sel"]
         offset = min(sel - room + 1, len(entries) - room) if sel >= room else 0
         offset = max(offset, 0)
-        content_w = max([len(header)] + [len(l) + 2 for _, _, l in entries])
-        win = self._make_popup(room + 4, content_w + 6)
-        self._popup_put(win, 1, header, curses.A_BOLD)
+        lines = [(header, curses.A_BOLD), ("", 0)]
         for i, (image, ok, label) in enumerate(entries[offset: offset + room]):
             idx = offset + i
             attr = curses.A_REVERSE if idx == sel else (0 if ok else curses.A_DIM)
-            self._popup_put(win, 3 + i, f"  {label}", attr)
-        return win
+            lines.append((f"  {label}", attr))
+        self._popup(lines)
 
     def draw_prompt(self):
         import curses
         pr = self.prompt
         header = f"Session name for {pr['image']} (Enter for the default '{pr['image']}-session', Esc cancels):"
         field = f"  {pr['text']}_"
-        win = self._make_popup(6, max(len(header), len(field), 24) + 6)
-        self._popup_put(win, 1, header, curses.A_BOLD)
-        self._popup_put(win, 3, field)
-        return win
+        self._popup([(header, curses.A_BOLD), ("", 0), (field, 0)])
 
     def draw_confirm(self):
         import curses
         H, W = self.scr.getmaxyx()
         # A volume name like claude-home must never be split at its hyphen.
         wrapped = textwrap.wrap(self.confirm[1], max(W - 8, 20), break_on_hyphens=False) or [""]
-        win = self._make_popup(len(wrapped) + 4, max(len(l) for l in wrapped) + 6)
-        self._popup_put(win, 1, "Confirm", curses.A_BOLD)
-        for i, line in enumerate(wrapped):
-            self._popup_put(win, 3 + i, line)
-        return win
+        self._popup([("Confirm", curses.A_BOLD), ("", 0)] + [(line, 0) for line in wrapped])
 
     # -- drawing
 
@@ -1404,17 +1431,14 @@ class View:
         else:
             self.notice = ""
             self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id, self.cli), bool(self.roster)))
-        self.scr.noutrefresh()
-        # Modal dialogs float over the list as centered boxes.
-        popup = None
+        # Modal dialogs float over the list as centered boxes drawn on stdscr.
         if self.picker is not None:
-            popup = self.draw_picker()
+            self.draw_picker()
         elif self.prompt is not None:
-            popup = self.draw_prompt()
+            self.draw_prompt()
         elif self.confirm is not None:
-            popup = self.draw_confirm()
-        if popup is not None:
-            popup.noutrefresh()
+            self.draw_confirm()
+        self.scr.noutrefresh()
         curses.doupdate()
 
 

@@ -913,6 +913,7 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("j")
         self.sh.send("\r")
         self.sh.wait_screen("Session name for claude")
+        self.assertNotIn("choose an image", self.sh.screen)   # picker box fully replaced, no bleed
         self.sh.send("scratchx\x7f")            # a typo, backspaced
         self.sh.wait_screen("  scratch_")
         self.sh.send("\r")
@@ -972,23 +973,32 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
-    def test_picker_type_ahead_jumps_and_cycles(self):
-        # roster (ZFUNCS_STUB): codemonkey, claude, minion. Selection is read back through the
-        # window a launch opens, since the picker's highlight is an attribute the model strips.
+    def test_picker_slash_search_jumps_and_launches(self):
+        # roster (ZFUNCS_STUB): codemonkey, claude, minion. / opens a search; typing narrows.
+        # Selection is read back through the window a launch opens (the highlight is an attribute).
         self.start_zoo()
         self.sh.wait_screen("n new  s session")
         self.sh.send("n"); self.sh.wait_screen("choose an image")
-        self.sh.send("m")                            # -> minion
-        self.sh.send("\r")
+        self.sh.send("/")
+        self.sh.wait_screen("/  (type to search")       # search line shown
+        self.sh.send("min")
+        self.sh.wait_screen("/min")
+        self.sh.send("\r")                              # Enter launches the match
         self.wait_tmux("new-window")
         self.assertIn("-n primate-minion", self.new_windows()[-1])
+        # A letter that is nav in the list (c has no bare meaning here) works inside search:
         self.sh.send("n"); self.sh.wait_screen("choose an image")
-        self.sh.send("c")                            # from codemonkey(0): next c -> claude
+        self.sh.send("/cl")                             # -> claude
+        self.sh.wait_screen("/cl")
         self.sh.send("\r")
         self.wait_tmux("primate-claude")
         self.assertIn("-n primate-claude", self.new_windows()[-1])
+        # Esc leaves search but keeps the selection; Enter then launches it.
         self.sh.send("n"); self.sh.wait_screen("choose an image")
-        self.sh.send("cc")                           # cycle: c->claude, c->codemonkey
+        self.sh.send("/co")                             # -> codemonkey
+        self.sh.wait_screen("/co")
+        self.sh.send(b"\x1b")                           # Esc: back to nav, selection stays on codemonkey
+        self.sh.wait_screen("( / to search")            # header back to the non-search form
         self.sh.send("\r")
         self.wait_tmux("primate-codemonkey")
         self.assertIn("-n primate-codemonkey", self.new_windows()[-1])
