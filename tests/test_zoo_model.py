@@ -891,6 +891,30 @@ class PlatformTest(unittest.TestCase):
         self.assertEqual(zoo.runnable("cuda-llama-cpp", self.caps("arm64", "linux", "nvidia")), (True, ""))
 
 
+class HostRetryTest(unittest.TestCase):
+    def test_host_facts_are_retried_until_info_answers(self):
+        class Flaky:
+            def __init__(self):
+                self.info_ok = False
+            def __call__(self, method, url, timeout=None):
+                if url == "/info":
+                    if not self.info_ok:
+                        raise zoo.DockerError("info unavailable")
+                    return 200, __import__("json").dumps({"NCPU": 4, "MemTotal": 8000000000}).encode()
+                if url == "/containers/json?all=true":
+                    return 200, b"[]"
+                return 404, b"{}"
+        flaky = Flaky()
+        view = zoo.View(scr=None, mon=zoo.Monitor(zoo.Docker(flaky)), interval=1.0, clock=lambda: 0.0)
+        view.host = zoo.host_facts(view.mon._docker)   # start: /info fails -> None (as interactive() would)
+        self.assertIsNone(view.host)
+        view.tick(1.0)                                  # still failing
+        self.assertIsNone(view.host)
+        flaky.info_ok = True
+        view.tick(2.0)                                  # now /info answers: host facts appear
+        self.assertEqual(view.host, (4, 8000000000))
+
+
 class JumpTest(unittest.TestCase):
     NAMES = ["codemonkey", "claude", "minion", "kiro", "cuda-comfy"]
 

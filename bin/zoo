@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -1086,6 +1086,8 @@ class View:
 
     def tick(self, now: float) -> None:
         self.mon.tick()
+        if self.host is None:
+            self.host = host_facts(self.mon._docker)   # retry until the daemon answers /info (review U-F2)
         self.last_tick = now
         self.dirty = True
 
