@@ -35,7 +35,7 @@ import sys
 import textwrap
 import time
 import uuid
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
 __version__ = "0.5.0"
@@ -990,7 +990,6 @@ _ENUMS = {
     "stale": (COLOR_NAMES, _DEFAULTS.stale),
     "pending": (COLOR_NAMES, _DEFAULTS.pending),
 }
-_CONFIG_KEYS = tuple(f.name for f in fields(Config))
 
 
 def config_path(environ) -> str:
@@ -1076,12 +1075,16 @@ def load_config(environ, opener=open) -> Tuple[Config, List[str]]:
     return parse_config(text)
 
 
-def save_config(cfg: Config, environ, opener=open) -> str:
-    """Write cfg to config_path() and return the path. Raises OSError on failure (the caller shows
-    the message as a notice)."""
+def save_config(cfg: Config, environ, opener=open, replacer=os.replace) -> str:
+    """Write cfg to config_path() and return the path. Atomic: render to a sibling temp file, then
+    rename it over the target, so a failed or interrupted write leaves the previous ~/.zoo intact
+    rather than truncating it (a corrupt file would parse to warnings and silently lose the user's
+    settings on next start). Raises OSError on failure (the caller shows the message as a notice)."""
     path = config_path(environ)
-    with opener(path, "w", encoding="utf-8") as fh:
+    tmp = path + ".tmp"
+    with opener(tmp, "w", encoding="utf-8") as fh:
         fh.write(render_config(cfg))
+    replacer(tmp, path)
     return path
 
 

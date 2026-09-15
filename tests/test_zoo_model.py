@@ -1466,7 +1466,8 @@ class CycleSettingTest(unittest.TestCase):
 
     def test_fields_cover_every_editable_config_field(self):
         # A new Config field must be added to SETTING_FIELDS or the screen silently omits it.
-        self.assertEqual(set(zoo.SETTING_FIELDS), {f.name for f in zoo.fields(zoo.Config)})
+        import dataclasses
+        self.assertEqual(set(zoo.SETTING_FIELDS), {f.name for f in dataclasses.fields(zoo.Config)})
 
 
 class SettingsModalTest(unittest.TestCase):
@@ -1643,6 +1644,35 @@ class ConfigLoadSaveTest(unittest.TestCase):
         cfg, warnings = zoo.load_config(self.env, opener=boom)
         self.assertEqual(cfg, zoo.Config())
         self.assertEqual(len(warnings), 1)
+
+    def test_save_is_atomic_a_failed_write_keeps_the_previous_file(self):
+        # F2: a write that dies mid-stream must not corrupt the existing ~/.zoo.
+        good = zoo.Config(interval=5.0, running="red")
+        zoo.save_config(good, self.env)                     # a real, complete write first
+
+        class _Boom:                                        # a file object that fails on write
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def write(self, *a):
+                raise OSError("disk full")
+
+        with self.assertRaises(OSError):
+            zoo.save_config(zoo.Config(interval=10.0), self.env, opener=lambda *a, **k: _Boom())
+        loaded, warnings = zoo.load_config(self.env)
+        self.assertEqual(loaded, good)                      # untouched
+        self.assertEqual(warnings, [])
+
+    def test_save_is_atomic_a_failed_rename_keeps_the_previous_file(self):
+        good = zoo.Config(interval=5.0)
+        zoo.save_config(good, self.env)
+        def boom_replace(src, dst):
+            raise OSError("rename failed")
+        with self.assertRaises(OSError):
+            zoo.save_config(zoo.Config(interval=10.0), self.env, replacer=boom_replace)
+        loaded, _ = zoo.load_config(self.env)
+        self.assertEqual(loaded.interval, 5.0)              # untouched
 
 
 class ResolveIntervalTest(unittest.TestCase):
