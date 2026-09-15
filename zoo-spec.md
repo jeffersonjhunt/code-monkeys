@@ -199,6 +199,27 @@ functions so the logic is testable without a terminal:
 - A letter in the picker is type-ahead (jump to the next matching image, cycling). The main list
   keeps its single-key actions, so type-ahead is picker-only.
 
+### 7.8 Settings (v0.5.0)
+
+Per-machine preferences persisted in a plain `~/.zoo` dotfile (`ZOO_CONFIG` overrides the path, the
+test seam). The file is `key = value` with `#` comments; a bad or unknown line never stops zoo — the
+value falls back to its field default and the reason shows as the opening notice, so a hand-edited
+typo degrades one setting rather than the whole app. Precedence is **defaults < `~/.zoo` < CLI**, so
+`--interval` still wins over the file.
+
+- Fields: `interval` (seconds, clamped to §7.5's 0.5–60 range), `header` and `selected` (the
+  column-header and selected-row styles), and `running`/`stale`/`pending` (the per-state row
+  colours). The header now defaults to **bold-underline** and the selection to **reverse** so the
+  two are never the same attribute — before, both were reverse and the selected row read as a second
+  header bar rather than a selection.
+- `,` opens a centered settings screen (same popup machinery as the picker): up/down move between
+  fields, left/right change a value (`interval` steps by 0.5; the rest cycle their choices), Enter or
+  `w` writes `~/.zoo`, Esc or `q` closes without writing. Saving applies live — the running loop's
+  interval changes and the styles are re-resolved, no restart.
+- The decisions are pure, unit-tested functions (`parse_config`/`render_config`, `resolve_interval`,
+  `style_attr`/`curses_color`, `cycle_setting`); the modal render and key routing are covered by a
+  real-curses tty test, as the other modals are.
+
 ---
 
 ## 8. Verification
