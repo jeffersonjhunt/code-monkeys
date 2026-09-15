@@ -1091,6 +1091,38 @@ def resolve_interval(cli_interval: Optional[float], cfg: Config) -> float:
     return cfg.interval if cli_interval is None else cli_interval
 
 
+# The settings screen edits these fields, in this order. interval steps by a number; the rest cycle
+# through a fixed list of choices. The reducer is pure so the whole screen's behaviour is unit-
+# tested without curses; the modal (handle_settings/draw_settings) is a thin shell over it.
+SETTING_FIELDS = ("interval", "header", "selected", "running", "stale", "pending")
+_SETTING_CHOICES = {
+    "header": HEADER_STYLES,
+    "selected": SELECT_STYLES,
+    "running": COLOR_NAMES,
+    "stale": COLOR_NAMES,
+    "pending": COLOR_NAMES,
+}
+INTERVAL_STEP = 0.5
+
+
+def cycle_setting(cfg: Config, field: str, direction: int) -> Config:
+    """Return cfg with one field moved one step in `direction` (-1 left, +1 right). interval steps
+    by INTERVAL_STEP, clamped to [MIN_INTERVAL, MAX_INTERVAL]; an enumerated field wraps through its
+    choices. An off-list current value (a hand-edited file) resets to the first choice."""
+    if field == "interval":
+        stepped = cfg.interval + INTERVAL_STEP * direction
+        return replace(cfg, interval=min(MAX_INTERVAL, max(MIN_INTERVAL, stepped)))
+    choices = _SETTING_CHOICES[field]
+    current = getattr(cfg, field)
+    index = (choices.index(current) + direction) % len(choices) if current in choices else 0
+    return replace(cfg, **{field: choices[index]})
+
+
+def setting_display(cfg: Config, field: str) -> str:
+    """The value of a settings field as shown on the screen (interval gets its unit)."""
+    return f"{cfg.interval:g}s" if field == "interval" else str(getattr(cfg, field))
+
+
 HELP_LINES = (
     "zoo keys",
     "",
@@ -1102,6 +1134,7 @@ HELP_LINES = (
     "  x                 remove the selected container (asks first)",
     "  + / -             refresh slower / faster",
     "  r                 refresh now",
+    "  ,                 settings (colours, refresh) — saved to ~/.zoo",
     "  ?                 this help",
     "  q, ctrl-c         quit (Esc cancels a picker, prompt or confirm)",
     "",
@@ -1270,6 +1303,7 @@ class View:
         self.offset = 0
         self.help = False
         self.confirm: Optional[Tuple[Row, str]] = None   # (row, prompt) while a kill awaits y/n
+        self.settings: Optional[dict] = None   # {"cfg", "cursor"} while the settings screen is open
         # A bad ~/.zoo surfaces as the opening notice rather than a startup error: zoo still runs
         # on defaults. notice_at at the clock's start keeps it up for its window from first draw.
         self.notice = ("~/.zoo: " + "; ".join(warnings)) if warnings else ""
@@ -1351,6 +1385,8 @@ class View:
         if self.help:
             self.help = False
             return None
+        if self.settings is not None:
+            return self.handle_settings(key, now)
         if self.picker is not None:
             return self.handle_picker(key, now)
         if self.prompt is not None:
@@ -1423,6 +1459,11 @@ class View:
             self.interval = max(MIN_INTERVAL, self.interval - 1.0)
         elif key == ord("r"):
             self.tick(now)
+        elif key == ord(","):
+            # Edit a copy, seeded with the interval actually running (which +/- may have nudged
+            # away from the saved value), so what you see is what you edit.
+            live = min(MAX_INTERVAL, max(MIN_INTERVAL, self.interval))
+            self.settings = {"cfg": replace(self.cfg, interval=live), "cursor": 0}
         elif key == ord("?"):
             self.help = True
         return None
@@ -1495,6 +1536,59 @@ class View:
         elif 32 <= key < 127 and chr(key) in NAME_CHARS and len(pr["text"]) < 64:
             pr["text"] += chr(key)
         return None
+
+    # -- settings
+
+    def handle_settings(self, key: int, now: float) -> None:
+        import curses
+        st = self.settings
+        if key in (27, ord("q")):
+            self.settings = None
+            self.say("settings unchanged", now)
+        elif key in (curses.KEY_UP, ord("k")):
+            st["cursor"] = (st["cursor"] - 1) % len(SETTING_FIELDS)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            st["cursor"] = (st["cursor"] + 1) % len(SETTING_FIELDS)
+        elif key in (curses.KEY_LEFT, ord("h")):
+            st["cfg"] = cycle_setting(st["cfg"], SETTING_FIELDS[st["cursor"]], -1)
+        elif key in (curses.KEY_RIGHT, ord("l")):
+            st["cfg"] = cycle_setting(st["cfg"], SETTING_FIELDS[st["cursor"]], +1)
+        elif key in (10, 13, curses.KEY_ENTER, ord("w")):
+            self._save_settings(now)
+        return None
+
+    def _save_settings(self, now: float) -> None:
+        """Write the edited config, then apply it live: the running interval changes and the styles
+        are re-resolved, so colours and the header/selection change under you without a restart. A
+        write failure keeps the screen open so the edits are not lost."""
+        cfg = self.settings["cfg"]
+        try:
+            path = save_config(cfg, self.environ)
+        except OSError as exc:
+            self.say(f"could not save settings: {exc.strerror or exc}", now)
+            return
+        self.settings = None
+        self.cfg = cfg
+        self.interval = cfg.interval
+        self._init_style()
+        self.say(f"saved settings to {path}", now)
+
+    def draw_settings(self) -> None:
+        import curses
+        st = self.settings
+        cfg = st["cfg"]
+        lines = [("Settings", curses.A_BOLD),
+                 ("up/down move, left/right change, Enter/w save, Esc cancel", curses.A_DIM),
+                 ("", 0)]
+        for i, field in enumerate(SETTING_FIELDS):
+            marker = ">" if i == st["cursor"] else " "
+            attr = curses.A_REVERSE if i == st["cursor"] else 0
+            lines.append((f"{marker} {field:<9} {setting_display(cfg, field)}", attr))
+        lines.append(("", 0))
+        lines.append((f"writes {config_path(self.environ)}", curses.A_DIM))
+        self._popup(lines)
+
+    # -- launching
 
     def launch(self, kind: str, image: str, name: str) -> None:
         self.open_window(launch_plan(kind, self.zfuncs, image, name, self.cwd))
@@ -1697,7 +1791,9 @@ class View:
             self.notice = ""
             self._put(h - 1, footer_text(actions_for(self.selected(), self.self_id, self.cli), bool(self.roster)))
         # Modal dialogs float over the list as centered boxes drawn on stdscr.
-        if self.picker is not None:
+        if self.settings is not None:
+            self.draw_settings()
+        elif self.picker is not None:
             self.draw_picker()
         elif self.prompt is not None:
             self.draw_prompt()

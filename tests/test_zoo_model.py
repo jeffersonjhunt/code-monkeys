@@ -1317,6 +1317,9 @@ class _RecordingScr:
     def addnstr(self, y, x, text, n, attr=0):
         self.puts.append((y, text, attr))
 
+    def addch(self, y, x, ch, attr=0):   # borders; content is asserted via addnstr
+        pass
+
     def noutrefresh(self):
         pass
 
@@ -1426,6 +1429,110 @@ class InitStyleColourTest(unittest.TestCase):
         # sel=0 is the selected row (screen row 3); the other running row is row 4.
         row4 = next(attr for (y, _t, attr) in scr.puts if y == 4)
         self.assertEqual(row4, 1001)   # color_pair(1) == running
+
+
+class CycleSettingTest(unittest.TestCase):
+    def test_interval_steps_by_half_and_clamps_both_ends(self):
+        self.assertEqual(zoo.cycle_setting(zoo.Config(interval=2.0), "interval", 1).interval, 2.5)
+        self.assertEqual(zoo.cycle_setting(zoo.Config(interval=2.0), "interval", -1).interval, 1.5)
+        self.assertEqual(
+            zoo.cycle_setting(zoo.Config(interval=zoo.MAX_INTERVAL), "interval", 1).interval,
+            zoo.MAX_INTERVAL)
+        self.assertEqual(
+            zoo.cycle_setting(zoo.Config(interval=zoo.MIN_INTERVAL), "interval", -1).interval,
+            zoo.MIN_INTERVAL)
+
+    def test_enum_fields_wrap_both_directions(self):
+        for field, choices in (("header", zoo.HEADER_STYLES),
+                               ("selected", zoo.SELECT_STYLES),
+                               ("running", zoo.COLOR_NAMES)):
+            at_first = zoo.replace(zoo.Config(), **{field: choices[0]})
+            self.assertEqual(getattr(zoo.cycle_setting(at_first, field, -1), field), choices[-1])
+            at_last = zoo.replace(zoo.Config(), **{field: choices[-1]})
+            self.assertEqual(getattr(zoo.cycle_setting(at_last, field, 1), field), choices[0])
+
+    def test_off_list_value_resets_to_first_choice(self):
+        cfg = zoo.replace(zoo.Config(), running="octarine")
+        self.assertEqual(zoo.cycle_setting(cfg, "running", 1).running, zoo.COLOR_NAMES[0])
+
+    def test_only_the_named_field_changes(self):
+        cfg = zoo.Config()
+        out = zoo.cycle_setting(cfg, "stale", 1)
+        self.assertEqual(zoo.replace(out, stale=cfg.stale), cfg)
+
+    def test_setting_display_gives_interval_a_unit(self):
+        self.assertEqual(zoo.setting_display(zoo.Config(interval=2.0), "interval"), "2s")
+        self.assertEqual(zoo.setting_display(zoo.Config(running="red"), "running"), "red")
+
+    def test_fields_cover_every_editable_config_field(self):
+        # A new Config field must be added to SETTING_FIELDS or the screen silently omits it.
+        self.assertEqual(set(zoo.SETTING_FIELDS), {f.name for f in zoo.fields(zoo.Config)})
+
+
+class SettingsModalTest(unittest.TestCase):
+    def _env(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return {"ZOO_CONFIG": os.path.join(d, "cfg")}
+
+    def _view(self, env, interval=2.0):
+        return zoo.View(_RecordingScr(), _StubMon([], {}), interval, clock=lambda: 0.0,
+                        cfg=zoo.Config(), environ=env)
+
+    def test_comma_opens_seeding_from_the_live_interval(self):
+        view = self._view(self._env(), interval=7.0)
+        view.handle(ord(","), 0.0)
+        self.assertIsNotNone(view.settings)
+        self.assertEqual(view.settings["cfg"].interval, 7.0)
+        self.assertEqual(view.settings["cursor"], 0)
+
+    def test_esc_and_q_close_without_writing(self):
+        import curses
+        for closer in (27, ord("q")):
+            env = self._env()
+            view = self._view(env)
+            view.handle(ord(","), 0.0)
+            view.handle(curses.KEY_RIGHT, 0.0)   # make an edit that must NOT be persisted
+            view.handle(closer, 0.0)
+            self.assertIsNone(view.settings)
+            self.assertFalse(os.path.exists(env["ZOO_CONFIG"]))
+            self.assertEqual(view.cfg, zoo.Config())   # live config untouched
+
+    def test_edit_then_save_writes_file_and_applies_live(self):
+        import curses
+        env = self._env()
+        view = self._view(env)
+        view.handle(ord(","), 0.0)
+        view.handle(curses.KEY_RIGHT, 0.0)               # interval 2.0 -> 2.5
+        for _ in range(3):
+            view.handle(curses.KEY_DOWN, 0.0)            # cursor -> 'running'
+        self.assertEqual(zoo.SETTING_FIELDS[view.settings["cursor"]], "running")
+        before = view.settings["cfg"].running
+        view.handle(curses.KEY_RIGHT, 0.0)
+        after = view.settings["cfg"].running
+        self.assertNotEqual(before, after)
+        view.handle(ord("w"), 0.0)                       # save
+        self.assertIsNone(view.settings)
+        self.assertEqual(view.interval, 2.5)             # applied to the running loop
+        self.assertEqual(view.cfg.running, after)
+        loaded, warnings = zoo.load_config(env)
+        self.assertEqual(warnings, [])
+        self.assertEqual((loaded.interval, loaded.running), (2.5, after))
+
+    def test_enter_also_saves(self):
+        env = self._env()
+        view = self._view(env)
+        view.handle(ord(","), 0.0)
+        view.handle(10, 0.0)                             # Enter
+        self.assertIsNone(view.settings)
+        self.assertTrue(os.path.exists(env["ZOO_CONFIG"]))
+
+    def test_save_failure_keeps_the_screen_open(self):
+        env = {"ZOO_CONFIG": "/nonexistent-dir-xyz/cfg"}
+        view = self._view(env)
+        view.handle(ord(","), 0.0)
+        view.handle(ord("w"), 0.0)
+        self.assertIsNotNone(view.settings)             # edits not lost
 
 
 class ConfigParseTest(unittest.TestCase):
