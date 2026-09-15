@@ -1277,6 +1277,157 @@ class AgedTest(unittest.TestCase):
         self.assertEqual(zoo.stats_age(figs, 96.5), 0.0)   # a reading newer than the clock is 0, not -0
 
 
+class StyleAttrTest(unittest.TestCase):
+    def test_names_map_to_distinct_composable_attributes(self):
+        import curses
+        self.assertEqual(zoo.style_attr("reverse"), curses.A_REVERSE)
+        self.assertEqual(zoo.style_attr("bold"), curses.A_BOLD)
+        self.assertEqual(zoo.style_attr("underline"), curses.A_UNDERLINE)
+        self.assertEqual(zoo.style_attr("bold-underline"), curses.A_BOLD | curses.A_UNDERLINE)
+
+    def test_unknown_name_falls_back_to_reverse(self):
+        import curses
+        self.assertEqual(zoo.style_attr("nonsense"), curses.A_REVERSE)
+
+    def test_default_header_and_selection_are_distinct(self):
+        # The reported bug: header and selected row were both A_REVERSE and looked identical.
+        self.assertNotEqual(zoo.style_attr(zoo.Config().header), zoo.style_attr(zoo.Config().selected))
+
+    def test_colour_names_map_to_curses_constants(self):
+        import curses
+        self.assertEqual(zoo.curses_color("green"), curses.COLOR_GREEN)
+        self.assertEqual(zoo.curses_color("magenta"), curses.COLOR_MAGENTA)
+        self.assertEqual(zoo.curses_color("default"), -1)
+        self.assertEqual(zoo.curses_color("chartreuse"), -1)   # unknown -> terminal default
+
+
+class _RecordingScr:
+    """The minimum of a curses window that View.draw touches, recording each addnstr's (row, attr)
+    so a test can assert which attribute a given screen row was drawn with."""
+    def __init__(self, h=10, w=80):
+        self.h, self.w = h, w
+        self.puts = []   # list of (y, text, attr)
+
+    def getmaxyx(self):
+        return (self.h, self.w)
+
+    def erase(self):
+        self.puts.clear()
+
+    def addnstr(self, y, x, text, n, attr=0):
+        self.puts.append((y, text, attr))
+
+    def noutrefresh(self):
+        pass
+
+
+class _StubMon:
+    def __init__(self, rows, figures):
+        self.rows = rows
+        self.figures = figures
+        self.error = ""
+
+
+class DrawAttrTest(unittest.TestCase):
+    """Hermetic View.draw: the VT100 Screen in the tty suite strips attributes, so the proof that
+    the header and the selected row are drawn with *different* attributes lives here, on a fake
+    screen that records them. Colour is forced off so the assertion is on the config-chosen
+    attributes alone."""
+    def _draw(self, cfg):
+        import curses
+        import unittest.mock as mock
+        rows = [zoo.Row(id=cid("11"), kind=zoo.SESSION, name="alpha", image="claude",
+                        running=True, status="Up 1 min"),
+                zoo.Row(id=cid("22"), kind=zoo.PRIMATE, name="beta", image="minion",
+                        running=True, status="Up 2 min")]
+        figures = {rows[0].id: zoo.Figures(zoo.LIVE, ok_at=100.0),
+                   rows[1].id: zoo.Figures(zoo.LIVE, ok_at=100.0)}
+        scr = _RecordingScr()
+        view = zoo.View(scr, _StubMon(rows, figures), 2.0, clock=lambda: 100.0, cfg=cfg)
+        with mock.patch.object(curses, "has_colors", return_value=False), \
+             mock.patch.object(curses, "doupdate", lambda: None):
+            view._init_style()
+            view.sel = 0
+            view.selected_id = rows[0].id
+            view.draw(100.0)
+        return view, scr
+
+    def test_header_row_uses_the_configured_header_attr(self):
+        cfg = zoo.Config()
+        view, scr = self._draw(cfg)
+        header = [attr for (y, _t, attr) in scr.puts if y == 1]
+        self.assertEqual(header, [zoo.style_attr(cfg.header)])
+
+    def test_selected_row_uses_the_configured_selection_attr_and_differs_from_header(self):
+        cfg = zoo.Config()
+        view, scr = self._draw(cfg)
+        # Rows are drawn starting at screen row 3; sel=0 is the first, so screen row 3.
+        selected = [attr for (y, _t, attr) in scr.puts if y == 3]
+        self.assertEqual(selected, [zoo.style_attr(cfg.selected)])
+        self.assertNotEqual(zoo.style_attr(cfg.header), zoo.style_attr(cfg.selected))
+
+    def test_config_drives_both_styles(self):
+        cfg = zoo.Config(header="reverse", selected="bold")
+        view, scr = self._draw(cfg)
+        header = next(attr for (y, _t, attr) in scr.puts if y == 1)
+        selected = next(attr for (y, _t, attr) in scr.puts if y == 3)
+        self.assertEqual(header, zoo.style_attr("reverse"))
+        self.assertEqual(selected, zoo.style_attr("bold"))
+
+
+class InitStyleColourTest(unittest.TestCase):
+    """The coloured path: with colour available, the config's running/stale/pending names must
+    reach init_pair (DrawAttrTest forces colour off, so it cannot cover this). curses colour calls
+    are stubbed so no real screen is needed."""
+    def _init(self, cfg):
+        import curses
+        import unittest.mock as mock
+        calls = []
+        view = zoo.View(_RecordingScr(), _StubMon([], {}), 2.0, clock=lambda: 0.0, cfg=cfg)
+        with mock.patch.object(curses, "has_colors", return_value=True), \
+             mock.patch.object(curses, "start_color", lambda: None), \
+             mock.patch.object(curses, "use_default_colors", lambda: None), \
+             mock.patch.object(curses, "init_pair", lambda i, f, b: calls.append((i, f, b))), \
+             mock.patch.object(curses, "color_pair", lambda i: 1000 + i):
+            view._init_style()
+        return view, calls
+
+    def test_config_colour_names_reach_init_pair_in_order(self):
+        import curses
+        cfg = zoo.Config(running="red", stale="blue", pending="white")
+        view, calls = self._init(cfg)
+        self.assertEqual(calls, [(1, curses.COLOR_RED, -1),
+                                 (2, curses.COLOR_BLUE, -1),
+                                 (3, curses.COLOR_WHITE, -1)])
+        self.assertEqual((view._style["running"], view._style["stale"], view._style["pending"]),
+                         (1001, 1002, 1003))
+
+    def test_running_row_drawn_with_its_colour_pair_when_not_selected(self):
+        import curses
+        import unittest.mock as mock
+        cfg = zoo.Config(running="red")
+        rows = [zoo.Row(id=cid("11"), kind=zoo.PRIMATE, name="a", image="minion",
+                        running=True, status="Up"),
+                zoo.Row(id=cid("22"), kind=zoo.PRIMATE, name="b", image="minion",
+                        running=True, status="Up")]
+        figures = {rows[0].id: zoo.Figures(zoo.LIVE, ok_at=100.0),
+                   rows[1].id: zoo.Figures(zoo.LIVE, ok_at=100.0)}
+        scr = _RecordingScr()
+        view = zoo.View(scr, _StubMon(rows, figures), 2.0, clock=lambda: 100.0, cfg=cfg)
+        with mock.patch.object(curses, "has_colors", return_value=True), \
+             mock.patch.object(curses, "start_color", lambda: None), \
+             mock.patch.object(curses, "use_default_colors", lambda: None), \
+             mock.patch.object(curses, "init_pair", lambda *a: None), \
+             mock.patch.object(curses, "color_pair", lambda i: 1000 + i), \
+             mock.patch.object(curses, "doupdate", lambda: None):
+            view._init_style()
+            view.sel, view.selected_id = 0, rows[0].id
+            view.draw(100.0)
+        # sel=0 is the selected row (screen row 3); the other running row is row 4.
+        row4 = next(attr for (y, _t, attr) in scr.puts if y == 4)
+        self.assertEqual(row4, 1001)   # color_pair(1) == running
+
+
 class ConfigParseTest(unittest.TestCase):
     def test_empty_and_comments_only_are_all_defaults(self):
         for text in ("", "   \n\n", "# just a comment\n#interval = 9\n"):

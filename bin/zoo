@@ -1214,6 +1214,32 @@ def style_token(fig: Optional[Figures], selected: bool) -> str:
     return _STATE_TOKEN.get(fig.state if fig is not None else STOPPED, "running")
 
 
+def style_attr(token: str) -> int:
+    """A header/selected style name -> a composable curses attribute (no colour pair, so this is
+    pure: the A_* constants exist without a live screen). An unknown name falls back to reverse.
+    The default header (bold-underline) and selection (reverse) MUST differ, or the two reverse
+    bars read as a header and a footer with no visible selection — the bug this replaces."""
+    import curses
+    return {
+        "reverse": curses.A_REVERSE,
+        "bold": curses.A_BOLD,
+        "underline": curses.A_UNDERLINE,
+        "standout": curses.A_STANDOUT,
+        "bold-underline": curses.A_BOLD | curses.A_UNDERLINE,
+    }.get(token, curses.A_REVERSE)
+
+
+def curses_color(name: str) -> int:
+    """A config colour name -> its curses COLOR_* constant; -1 (the terminal's own colour) for
+    'default' or anything unrecognised. Pure: the COLOR_* constants need no live screen."""
+    import curses
+    return {
+        "red": curses.COLOR_RED, "green": curses.COLOR_GREEN, "yellow": curses.COLOR_YELLOW,
+        "blue": curses.COLOR_BLUE, "magenta": curses.COLOR_MAGENTA, "cyan": curses.COLOR_CYAN,
+        "white": curses.COLOR_WHITE,
+    }.get(name, -1)
+
+
 class View:
     """The interactive loop. One thread: ticks the monitor when the interval elapses, reads a key
     with a short timeout in between, and redraws only when something changed (spec req 22)."""
@@ -1250,7 +1276,9 @@ class View:
         self.notice_at = self.clock() if warnings else -1e9
         self.last_tick = -1e9
         self.dirty = True
-        self._style: Dict[str, int] = {}   # token -> curses attr, built in run() once curses is up
+        self._style: Dict[str, int] = {}   # state token -> curses attr, built in _init_style
+        self.header_attr = style_attr(self.cfg.header)   # replaced in _init_style once curses is up
+        self.select_attr = style_attr(self.cfg.selected)
         self.host: Optional[Tuple[int, int]] = None   # (cpu count, total mem); fetched once at start
         self.caps: Dict[str, str] = {}                # host arch/os/gpu; set once at start
 
@@ -1566,27 +1594,37 @@ class View:
     # -- drawing
 
     def _init_style(self) -> None:
-        """Map style tokens to curses attributes once. With colour: running green, stale yellow,
-        pending cyan (stopped stays dim, selected reverse — attributes, not colour). Without
-        colour, everything falls back to attributes, so nothing depends on colour alone."""
+        """Resolve the config into curses attributes once curses is up. The header and selected-row
+        styles are attributes (config-chosen; header defaults to bold-underline, selection to
+        reverse, and they must differ). The running/stale/pending colours are pair-mapped from the
+        config's colour names; with no colour they fall back to plain attributes, so nothing depends
+        on colour alone."""
         import curses
+        self.header_attr = style_attr(self.cfg.header)
+        self.select_attr = style_attr(self.cfg.selected)
         self._style = {}
         try:
             if curses.has_colors():
                 curses.start_color()
-                for i, (tok, col) in enumerate(
-                    (("running", curses.COLOR_GREEN), ("stale", curses.COLOR_YELLOW),
-                     ("pending", curses.COLOR_CYAN)), start=1):
-                    curses.init_pair(i, col, -1)
+                try:
+                    curses.use_default_colors()   # so -1 means the terminal's own colour
+                except curses.error:
+                    pass
+                for i, (tok, name) in enumerate(
+                    (("running", self.cfg.running), ("stale", self.cfg.stale),
+                     ("pending", self.cfg.pending)), start=1):
+                    curses.init_pair(i, curses_color(name), -1)
                     self._style[tok] = curses.color_pair(i)
         except curses.error:
             self._style = {}
 
     def _row_attr(self, token: str, is_self: bool) -> int:
         import curses
-        base = {"selected": curses.A_REVERSE, "stopped": curses.A_DIM}.get(token, 0)
+        if token == "selected":
+            return self.select_attr    # selection overrides state colour, as a whole-row highlight
+        base = curses.A_DIM if token == "stopped" else 0
         base = self._style.get(token, base)
-        if is_self and token != "selected":
+        if is_self:
             base |= curses.A_BOLD   # the container zoo runs in stands out on top of its state
         return base
 
@@ -1639,7 +1677,7 @@ class View:
         self._put(0, self.title(now, n, w - 1), curses.A_BOLD)
         if self.mon.error:
             self._put(0, f"daemon unreachable: {self.mon.error}", curses.A_BOLD | curses.A_REVERSE)
-        self._put(1, lines[0], curses.A_REVERSE)
+        self._put(1, lines[0], self.header_attr)
         # Row 2 is left blank: a spacer between the column header and the first primate.
         body = self.body_height()
         if self.help:
