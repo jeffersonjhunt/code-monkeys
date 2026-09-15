@@ -35,7 +35,7 @@ import sys
 import textwrap
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
 __version__ = "0.4.2"
@@ -949,6 +949,148 @@ def layout(rows: List[Row], figures: Dict[str, Figures], width: int, self_id: st
 MIN_INTERVAL, MAX_INTERVAL = 0.5, 60.0
 CLI_MIN_INTERVAL = 0.1   # tests tick fast; a person never needs to
 
+
+# --------------------------------------------------------------------------- config (~/.zoo)
+#
+# zoo reads a plain "key = value" dotfile (# comments) once at startup. Everything in this section
+# is pure and curses-free so the model suite can test it: parse_config/render_config round-trip,
+# and resolve_interval layers the file under the CLI flag. A bad or unknown line never stops zoo —
+# the value falls back to its default and the reason rides back as a warning shown as a notice.
+# The settings modal (U2) edits a Config and writes render_config() to config_path().
+
+# Curated colour names the user may pick; _init_style maps these to curses COLOR_* at draw time, so
+# this stays import-curses-free. "default" is the terminal's own foreground.
+COLOR_NAMES = ("default", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
+# Row-selection and column-header styles, as tokens (mapped to attributes in _init_style). The
+# header default is deliberately NOT "reverse": the selected row is reverse, and two reverse bars
+# read as one header + one footer with no visible selection.
+SELECT_STYLES = ("reverse", "bold", "underline", "standout")
+HEADER_STYLES = ("bold-underline", "bold", "underline", "reverse")
+
+
+@dataclass(frozen=True)
+class Config:
+    """User settings persisted in ~/.zoo. Frozen so the modal edits via dataclasses.replace and a
+    Config is safe to share. Field defaults ARE the fallbacks parse_config restores on a bad value;
+    the field order is the order the settings screen and render_config present them."""
+    interval: float = 2.0
+    header: str = "bold-underline"
+    selected: str = "reverse"
+    running: str = "green"
+    stale: str = "yellow"
+    pending: str = "cyan"
+
+
+_DEFAULTS = Config()
+# key -> (allowed values, default) for the enumerated fields; interval is handled separately.
+_ENUMS = {
+    "header": (HEADER_STYLES, _DEFAULTS.header),
+    "selected": (SELECT_STYLES, _DEFAULTS.selected),
+    "running": (COLOR_NAMES, _DEFAULTS.running),
+    "stale": (COLOR_NAMES, _DEFAULTS.stale),
+    "pending": (COLOR_NAMES, _DEFAULTS.pending),
+}
+_CONFIG_KEYS = tuple(f.name for f in fields(Config))
+
+
+def config_path(environ) -> str:
+    """~/.zoo, or ZOO_CONFIG (the test seam, like ZOO_ZFUNCS)."""
+    return environ.get("ZOO_CONFIG") or os.path.join(environ.get("HOME", ""), ".zoo")
+
+
+def _parse_interval(value: str, warnings: List[str]) -> float:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        warnings.append(f"interval: {value!r} is not a number; using {_DEFAULTS.interval:g}")
+        return _DEFAULTS.interval
+    clamped = min(MAX_INTERVAL, max(MIN_INTERVAL, f))
+    if clamped != f:
+        warnings.append(f"interval: {f:g} out of range {MIN_INTERVAL:g}..{MAX_INTERVAL:g}; "
+                        f"using {clamped:g}")
+    return clamped
+
+
+def parse_config(text: str) -> Tuple[Config, List[str]]:
+    """Parse the dotfile text into a Config plus human-readable warnings. Blank lines and #-comments
+    are skipped; each remaining line is 'key = value'. Unknown keys and bad values warn and are
+    dropped (the default stands), so a hand-edited typo degrades one setting, never the whole app.
+    Last assignment of a key wins."""
+    values: Dict[str, object] = {}
+    warnings: List[str] = []
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            warnings.append(f"line {lineno}: {raw.strip()!r} is not 'key = value'; ignored")
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip().lower(), value.strip()
+        if key == "interval":
+            values["interval"] = _parse_interval(value, warnings)
+        elif key in _ENUMS:
+            allowed, default = _ENUMS[key]
+            v = value.lower()
+            if v in allowed:
+                values[key] = v
+            else:
+                warnings.append(f"{key}: {value!r} is not one of {', '.join(allowed)}; "
+                                f"using {default!r}")
+        else:
+            warnings.append(f"unknown setting {key!r}; ignored")
+    return replace(_DEFAULTS, **values), warnings
+
+
+def render_config(cfg: Config) -> str:
+    """Render a Config as the commented dotfile. parse_config(render_config(cfg)) == (cfg, [])."""
+    lines = [
+        "# zoo settings — edit here or press ',' in zoo. Delete a line to restore its default.",
+        f"# interval: seconds between refreshes ({MIN_INTERVAL:g}..{MAX_INTERVAL:g}).",
+        f"# header:   column-header style — {', '.join(HEADER_STYLES)}.",
+        f"# selected: selected-row style — {', '.join(SELECT_STYLES)}.",
+        f"# running/stale/pending: row colour by state — {', '.join(COLOR_NAMES)}.",
+        "",
+        f"interval = {cfg.interval:g}",
+        f"header = {cfg.header}",
+        f"selected = {cfg.selected}",
+        f"running = {cfg.running}",
+        f"stale = {cfg.stale}",
+        f"pending = {cfg.pending}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def load_config(environ, opener=open) -> Tuple[Config, List[str]]:
+    """Read config_path() into a Config. A missing file is the default with no warning; an
+    unreadable one warns and falls back, so a bad ~/.zoo can never keep zoo from starting."""
+    path = config_path(environ)
+    try:
+        with opener(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        return _DEFAULTS, []
+    except OSError as exc:
+        return _DEFAULTS, [f"could not read {path}: {exc.strerror or exc}"]
+    return parse_config(text)
+
+
+def save_config(cfg: Config, environ, opener=open) -> str:
+    """Write cfg to config_path() and return the path. Raises OSError on failure (the caller shows
+    the message as a notice)."""
+    path = config_path(environ)
+    with opener(path, "w", encoding="utf-8") as fh:
+        fh.write(render_config(cfg))
+    return path
+
+
+def resolve_interval(cli_interval: Optional[float], cfg: Config) -> float:
+    """The interval to run at: the CLI flag when given, else the config's. Keeps precedence in one
+    tested place — defaults < ~/.zoo < --interval."""
+    return cfg.interval if cli_interval is None else cli_interval
+
+
 HELP_LINES = (
     "zoo keys",
     "",
@@ -1079,10 +1221,14 @@ class View:
     def __init__(self, scr, mon: Monitor, interval: float, clock: Callable[[], float] = time.monotonic,
                  self_id: str = "", cli: Optional[str] = None, term: str = "xterm",
                  roster: Optional[List[str]] = None, zfuncs: str = "", cwd: str = "",
-                 tmux: Optional["Tmux"] = None):
+                 tmux: Optional["Tmux"] = None, cfg: Optional[Config] = None,
+                 environ: Optional[Dict[str, str]] = None,
+                 warnings: Optional[List[str]] = None):
         self.scr = scr
         self.mon = mon
         self.interval = interval
+        self.cfg = cfg or _DEFAULTS
+        self.environ = environ if environ is not None else os.environ
         self.clock = clock
         self.self_id = self_id
         self.cli = cli
@@ -1098,8 +1244,10 @@ class View:
         self.offset = 0
         self.help = False
         self.confirm: Optional[Tuple[Row, str]] = None   # (row, prompt) while a kill awaits y/n
-        self.notice = ""
-        self.notice_at = -1e9
+        # A bad ~/.zoo surfaces as the opening notice rather than a startup error: zoo still runs
+        # on defaults. notice_at at the clock's start keeps it up for its window from first draw.
+        self.notice = ("~/.zoo: " + "; ".join(warnings)) if warnings else ""
+        self.notice_at = self.clock() if warnings else -1e9
         self.last_tick = -1e9
         self.dirty = True
         self._style: Dict[str, int] = {}   # token -> curses attr, built in run() once curses is up
@@ -1527,7 +1675,8 @@ def _run_view(view: "View", host, caps) -> int:
     return view.run()
 
 
-def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -> int:
+def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr,
+                cfg: Optional[Config] = None, warnings: Optional[List[str]] = None) -> int:
     """Own the terminal for the view's lifetime and hand it back exactly as found (spec req 20)."""
     if not environ.get("TERM"):
         print("zoo: TERM is not set, so there is no terminal to draw on; use --once for a plain frame",
@@ -1565,7 +1714,8 @@ def interactive(mon: Monitor, interval: float, environ, stdin, stdout, stderr) -
         caps = host_capabilities(environ)
         return curses.wrapper(lambda scr: _run_view(
             View(scr, mon, interval, self_id=self_id, cli=cli, term=term,
-                 roster=roster, zfuncs=zfuncs, cwd=os.getcwd(), tmux=tmux), host, caps))
+                 roster=roster, zfuncs=zfuncs, cwd=os.getcwd(), tmux=tmux,
+                 cfg=cfg, environ=environ, warnings=warnings), host, caps))
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:
@@ -1606,8 +1756,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--once", action="store_true",
                    help=f"print one frame and exit (two readings {ONCE_GAP:.1f}s apart, so CPU%% is real)")
-    p.add_argument("-i", "--interval", type=float, default=2.0, metavar="SECONDS",
-                   help="seconds between refreshes (default 2)")
+    p.add_argument("-i", "--interval", type=float, default=None, metavar="SECONDS",
+                   help="seconds between refreshes (default: the ~/.zoo setting, else 2)")
     p.add_argument("--width", type=int, default=None, metavar="COLS",
                    help="frame width for --once (default: the terminal's)")
     p.add_argument("--in-tmux", action="store_true", help=argparse.SUPPRESS)
@@ -1622,7 +1772,7 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
     stderr = sys.stderr if stderr is None else stderr
     environ = os.environ if environ is None else environ
     args = build_parser().parse_args(argv)
-    if args.interval < CLI_MIN_INTERVAL:
+    if args.interval is not None and args.interval < CLI_MIN_INTERVAL:
         print(f"zoo: --interval must be at least {CLI_MIN_INTERVAL}s", file=stderr)
         return 2
     # Auto-wrap: an interactive run outside tmux re-execs itself as window 0 of a tmux session it
@@ -1652,7 +1802,9 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
         width = args.width or shutil.get_terminal_size(fallback=(120, 24)).columns
         self_id = read_self_container_id(environ.get("ZOO_MOUNTINFO") or "/proc/self/mountinfo")
         return once(mon, width, stdout, stderr, sleep=sleep, self_id=self_id)
-    return interactive(mon, args.interval, environ, stdin, stdout, stderr)
+    cfg, warnings = load_config(environ)
+    interval = resolve_interval(args.interval, cfg)
+    return interactive(mon, interval, environ, stdin, stdout, stderr, cfg=cfg, warnings=warnings)
 
 
 if __name__ == "__main__":

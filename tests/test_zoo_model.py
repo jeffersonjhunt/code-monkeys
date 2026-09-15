@@ -1277,5 +1277,123 @@ class AgedTest(unittest.TestCase):
         self.assertEqual(zoo.stats_age(figs, 96.5), 0.0)   # a reading newer than the clock is 0, not -0
 
 
+class ConfigParseTest(unittest.TestCase):
+    def test_empty_and_comments_only_are_all_defaults(self):
+        for text in ("", "   \n\n", "# just a comment\n#interval = 9\n"):
+            cfg, warnings = zoo.parse_config(text)
+            self.assertEqual(cfg, zoo.Config())
+            self.assertEqual(warnings, [])
+
+    def test_every_field_parses(self):
+        text = ("interval = 5\nheader = bold\nselected = standout\n"
+                "running = blue\nstale = magenta\npending = white\n")
+        cfg, warnings = zoo.parse_config(text)
+        self.assertEqual(warnings, [])
+        self.assertEqual(cfg, zoo.Config(interval=5.0, header="bold", selected="standout",
+                                         running="blue", stale="magenta", pending="white"))
+
+    def test_keys_and_values_are_case_and_space_insensitive(self):
+        cfg, warnings = zoo.parse_config("  RUNNING =  Green  \n\tHeader=Bold\n")
+        self.assertEqual(warnings, [])
+        self.assertEqual(cfg.running, "green")
+        self.assertEqual(cfg.header, "bold")
+
+    def test_last_assignment_of_a_key_wins(self):
+        cfg, _ = zoo.parse_config("interval = 3\ninterval = 7\n")
+        self.assertEqual(cfg.interval, 7.0)
+
+    def test_bad_interval_falls_back_with_a_warning(self):
+        cfg, warnings = zoo.parse_config("interval = soon\n")
+        self.assertEqual(cfg.interval, zoo.Config().interval)   # default stands
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("interval", warnings[0])
+
+    def test_out_of_range_interval_both_ends(self):
+        cfg_hi, w_hi = zoo.parse_config(f"interval = {zoo.MAX_INTERVAL + 100}\n")
+        cfg_lo, w_lo = zoo.parse_config(f"interval = {zoo.MIN_INTERVAL / 2}\n")
+        self.assertEqual(cfg_hi.interval, zoo.MAX_INTERVAL)
+        self.assertEqual(cfg_lo.interval, zoo.MIN_INTERVAL)
+        self.assertTrue(w_hi and w_lo)
+
+    def test_unknown_key_warns_and_is_ignored(self):
+        cfg, warnings = zoo.parse_config("colour_scheme = neon\n")
+        self.assertEqual(cfg, zoo.Config())
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("colour_scheme", warnings[0])
+
+    def test_bad_enum_value_keeps_default_and_warns(self):
+        cfg, warnings = zoo.parse_config("running = octarine\nselected = blink\n")
+        self.assertEqual(cfg.running, zoo.Config().running)
+        self.assertEqual(cfg.selected, zoo.Config().selected)
+        self.assertEqual(len(warnings), 2)
+
+    def test_line_without_equals_warns(self):
+        cfg, warnings = zoo.parse_config("interval\n")
+        self.assertEqual(cfg, zoo.Config())
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("key = value", warnings[0])
+
+
+class ConfigRoundTripTest(unittest.TestCase):
+    def test_render_then_parse_is_identity_with_no_warnings(self):
+        for cfg in (zoo.Config(),
+                    zoo.Config(interval=0.5, header="reverse", selected="bold",
+                               running="red", stale="cyan", pending="default"),
+                    zoo.Config(interval=60.0)):
+            parsed, warnings = zoo.parse_config(zoo.render_config(cfg))
+            self.assertEqual(parsed, cfg)
+            self.assertEqual(warnings, [])
+
+    def test_rendered_file_documents_the_ranges(self):
+        text = zoo.render_config(zoo.Config())
+        self.assertIn("interval =", text)
+        for name in zoo.COLOR_NAMES:
+            if name == "green":
+                self.assertIn(name, text)
+
+
+class ConfigPathTest(unittest.TestCase):
+    def test_zoo_config_seam_overrides_home(self):
+        self.assertEqual(zoo.config_path({"ZOO_CONFIG": "/x/y.zoo", "HOME": "/home/me"}), "/x/y.zoo")
+
+    def test_defaults_to_dot_zoo_in_home(self):
+        self.assertEqual(zoo.config_path({"HOME": "/home/me"}), "/home/me/.zoo")
+
+
+class ConfigLoadSaveTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.env = {"ZOO_CONFIG": os.path.join(self.dir, "cfg")}
+
+    def test_missing_file_is_defaults_with_no_warning(self):
+        cfg, warnings = zoo.load_config(self.env)
+        self.assertEqual(cfg, zoo.Config())
+        self.assertEqual(warnings, [])
+
+    def test_save_then_load_round_trips(self):
+        cfg = zoo.Config(interval=4.0, header="underline", selected="bold", running="red")
+        path = zoo.save_config(cfg, self.env)
+        self.assertEqual(path, self.env["ZOO_CONFIG"])
+        loaded, warnings = zoo.load_config(self.env)
+        self.assertEqual(loaded, cfg)
+        self.assertEqual(warnings, [])
+
+    def test_unreadable_file_falls_back_to_defaults_with_a_warning(self):
+        def boom(*a, **k):
+            raise OSError("nope")
+        cfg, warnings = zoo.load_config(self.env, opener=boom)
+        self.assertEqual(cfg, zoo.Config())
+        self.assertEqual(len(warnings), 1)
+
+
+class ResolveIntervalTest(unittest.TestCase):
+    def test_cli_flag_wins_over_config(self):
+        self.assertEqual(zoo.resolve_interval(5.0, zoo.Config(interval=2.0)), 5.0)
+
+    def test_config_used_when_no_flag(self):
+        self.assertEqual(zoo.resolve_interval(None, zoo.Config(interval=3.0)), 3.0)
+
+
 if __name__ == "__main__":
     unittest.main()
