@@ -1130,6 +1130,43 @@ class LongListTtyTest(TtyBase):
         self.sh.expect(PROMPT_RE)
 
 
+class SettingsTtyTest(TtyBase):
+    """The settings screen through real curses: ',' opens it, edits change the visible value, 'w'
+    writes ~/.zoo and the change applies to the live title, and Esc closes without writing. The
+    reducer and save are unit-tested hermetically; this proves the modal renders and the keys route
+    to it end-to-end (the box draw needs a real screen, like the other modals)."""
+    def test_open_edit_save_applies_live_and_persists(self):
+        cfgfile = pathlib.Path(self.tmp.name) / ".zoo"
+        self.assertFalse(cfgfile.exists())
+        self.start_zoo(interval="2")           # a clean seed so the +0.5 step lands on 2.5
+        self.sh.wait_screen("evoc")
+        self.sh.send(",")
+        self.sh.wait_screen("Settings")
+        self.sh.wait_screen("interval")
+        self.sh.wait_screen("selected")
+        self.sh.send("l")                      # cursor on interval: step 2 -> 2.5
+        self.sh.wait_screen("2.5s")
+        self.sh.send("w")                      # save
+        self.sh.wait_screen("saved settings")
+        self.sh.wait_screen("refresh 2.5s")    # applied to the running loop's title
+        self.assertIn("interval = 2.5", cfgfile.read_text())
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_esc_closes_without_writing(self):
+        cfgfile = pathlib.Path(self.tmp.name) / ".zoo"
+        self.start_zoo()
+        self.sh.wait_screen("evoc")
+        self.sh.send(",")
+        self.sh.wait_screen("Settings")
+        self.sh.send("l")                      # an edit that must not persist
+        self.sh.send(b"\x1b")                  # Esc
+        self.sh.wait_screen("settings unchanged")
+        self.assertFalse(cfgfile.exists())
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+
 # A roster of one image whose primate/primate-session print a marker and stay up, so a launch
 # window has observable, long-lived content without any docker.
 REAL_ZFUNCS_STUB = """

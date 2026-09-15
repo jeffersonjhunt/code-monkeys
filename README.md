@@ -178,7 +178,7 @@ title carries host facts and a running total: `host 18 cpu · 31.3G` from the da
 `Σ 12.4% · 4.2G` summed over the primates. A no-colour terminal degrades to plain attributes.
 
 **zoo runs inside tmux, one instance per terminal.** Started from a plain terminal it re-execs
-itself as window 0 of its **own** tmux session (`zoo-<pid>`), and its actions open **new tmux
+itself as window 0 of its **own** tmux session (`zoo-<uuid>`), and its actions open **new tmux
 windows** rather than taking over the terminal, so the list keeps refreshing while you work. Run
 `zoo` in several terminals and each is independent: they list the same primates (that is shared
 docker state) but navigate and open windows on their own, so two terminals can view different
@@ -193,7 +193,7 @@ exception: a plain one-frame dump for scripts, never wrapped.
 ```bash
 zoo                 # the view (auto-wraps into tmux); ? lists the keys, q quits
 zoo --once          # one plain frame, for scripts and a quick look (no tmux needed)
-zoo -i 5            # refresh every 5 s (default 2; + and - adjust it live)
+zoo -i 5            # refresh every 5 s (default 2, or the ~/.zoo setting; + and - adjust it live)
 ```
 
 | key | does |
@@ -202,11 +202,19 @@ zoo -i 5            # refresh every 5 s (default 2; + and - adjust it live)
 | `e` | open a **new shell** in the selected running container, in a new window (not its original terminal) |
 | `x` | remove the selected container, after a confirm that says what dies and that `<image>-home` survives |
 | `n` / `s` | start a primate / a session from the image roster (a session may be named), in a new window |
+| `,` | open the settings screen (colours, refresh rate) — saved to `~/.zoo` |
 
 The picker, the session-name prompt and the kill confirm are **centered popup boxes** over the
 list. In the picker a letter is **type-ahead** — it jumps to the next image whose name starts with
 it, repeats cycle — and an image this host cannot run (cuda-* without an NVIDIA GPU, `spark-bench`
-off amd64) is **greyed with the reason and cannot be started**. `ctrl-b w` switches between
+off amd64) is **greyed with the reason and cannot be started**.
+
+**Settings (`,`).** Per-machine preferences live in a plain `~/.zoo` dotfile (`key = value`, `#`
+comments): the refresh `interval`, the column-`header` and `selected`-row styles, and the
+`running`/`stale`/`pending` row colours. The `,` screen edits them — up/down move, left/right change
+a value, Enter or `w` saves, Esc cancels — and saving applies live, no restart. `--interval` still
+overrides the file. A bad or unknown line warns and falls back to that setting's default, so a typo
+never keeps zoo from starting. `ctrl-b w` switches between
 windows, `ctrl-b 0` returns to the list. Attaching to a
 `primate-session` nests tmux (it runs its own tmux inside the container), so **inside a session
 the prefix is doubled: `ctrl-b ctrl-b`**. Containers are identified by the `primate.*` labels only,

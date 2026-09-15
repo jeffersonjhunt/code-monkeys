@@ -1277,5 +1277,411 @@ class AgedTest(unittest.TestCase):
         self.assertEqual(zoo.stats_age(figs, 96.5), 0.0)   # a reading newer than the clock is 0, not -0
 
 
+class StyleAttrTest(unittest.TestCase):
+    def test_names_map_to_distinct_composable_attributes(self):
+        import curses
+        self.assertEqual(zoo.style_attr("reverse"), curses.A_REVERSE)
+        self.assertEqual(zoo.style_attr("bold"), curses.A_BOLD)
+        self.assertEqual(zoo.style_attr("underline"), curses.A_UNDERLINE)
+        self.assertEqual(zoo.style_attr("bold-underline"), curses.A_BOLD | curses.A_UNDERLINE)
+
+    def test_unknown_name_falls_back_to_reverse(self):
+        import curses
+        self.assertEqual(zoo.style_attr("nonsense"), curses.A_REVERSE)
+
+    def test_default_header_and_selection_are_distinct(self):
+        # The reported bug: header and selected row were both A_REVERSE and looked identical.
+        self.assertNotEqual(zoo.style_attr(zoo.Config().header), zoo.style_attr(zoo.Config().selected))
+
+    def test_colour_names_map_to_curses_constants(self):
+        import curses
+        self.assertEqual(zoo.curses_color("green"), curses.COLOR_GREEN)
+        self.assertEqual(zoo.curses_color("magenta"), curses.COLOR_MAGENTA)
+        self.assertEqual(zoo.curses_color("default"), -1)
+        self.assertEqual(zoo.curses_color("chartreuse"), -1)   # unknown -> terminal default
+
+
+class _RecordingScr:
+    """The minimum of a curses window that View.draw touches, recording each addnstr's (row, attr)
+    so a test can assert which attribute a given screen row was drawn with."""
+    def __init__(self, h=10, w=80):
+        self.h, self.w = h, w
+        self.puts = []   # list of (y, text, attr)
+
+    def getmaxyx(self):
+        return (self.h, self.w)
+
+    def erase(self):
+        self.puts.clear()
+
+    def addnstr(self, y, x, text, n, attr=0):
+        self.puts.append((y, text, attr))
+
+    def addch(self, y, x, ch, attr=0):   # borders; content is asserted via addnstr
+        pass
+
+    def noutrefresh(self):
+        pass
+
+
+class _StubMon:
+    def __init__(self, rows, figures):
+        self.rows = rows
+        self.figures = figures
+        self.error = ""
+
+
+class DrawAttrTest(unittest.TestCase):
+    """Hermetic View.draw: the VT100 Screen in the tty suite strips attributes, so the proof that
+    the header and the selected row are drawn with *different* attributes lives here, on a fake
+    screen that records them. Colour is forced off so the assertion is on the config-chosen
+    attributes alone."""
+    def _draw(self, cfg):
+        import curses
+        import unittest.mock as mock
+        rows = [zoo.Row(id=cid("11"), kind=zoo.SESSION, name="alpha", image="claude",
+                        running=True, status="Up 1 min"),
+                zoo.Row(id=cid("22"), kind=zoo.PRIMATE, name="beta", image="minion",
+                        running=True, status="Up 2 min")]
+        figures = {rows[0].id: zoo.Figures(zoo.LIVE, ok_at=100.0),
+                   rows[1].id: zoo.Figures(zoo.LIVE, ok_at=100.0)}
+        scr = _RecordingScr()
+        view = zoo.View(scr, _StubMon(rows, figures), 2.0, clock=lambda: 100.0, cfg=cfg)
+        with mock.patch.object(curses, "has_colors", return_value=False), \
+             mock.patch.object(curses, "doupdate", lambda: None):
+            view._init_style()
+            view.sel = 0
+            view.selected_id = rows[0].id
+            view.draw(100.0)
+        return view, scr
+
+    def test_header_row_uses_the_configured_header_attr(self):
+        cfg = zoo.Config()
+        view, scr = self._draw(cfg)
+        header = [attr for (y, _t, attr) in scr.puts if y == 1]
+        self.assertEqual(header, [zoo.style_attr(cfg.header)])
+
+    def test_selected_row_uses_the_configured_selection_attr_and_differs_from_header(self):
+        cfg = zoo.Config()
+        view, scr = self._draw(cfg)
+        # Rows are drawn starting at screen row 3; sel=0 is the first, so screen row 3.
+        selected = [attr for (y, _t, attr) in scr.puts if y == 3]
+        self.assertEqual(selected, [zoo.style_attr(cfg.selected)])
+        self.assertNotEqual(zoo.style_attr(cfg.header), zoo.style_attr(cfg.selected))
+
+    def test_config_drives_both_styles(self):
+        cfg = zoo.Config(header="reverse", selected="bold")
+        view, scr = self._draw(cfg)
+        header = next(attr for (y, _t, attr) in scr.puts if y == 1)
+        selected = next(attr for (y, _t, attr) in scr.puts if y == 3)
+        self.assertEqual(header, zoo.style_attr("reverse"))
+        self.assertEqual(selected, zoo.style_attr("bold"))
+
+
+class InitStyleColourTest(unittest.TestCase):
+    """The coloured path: with colour available, the config's running/stale/pending names must
+    reach init_pair (DrawAttrTest forces colour off, so it cannot cover this). curses colour calls
+    are stubbed so no real screen is needed."""
+    def _init(self, cfg):
+        import curses
+        import unittest.mock as mock
+        calls = []
+        view = zoo.View(_RecordingScr(), _StubMon([], {}), 2.0, clock=lambda: 0.0, cfg=cfg)
+        with mock.patch.object(curses, "has_colors", return_value=True), \
+             mock.patch.object(curses, "start_color", lambda: None), \
+             mock.patch.object(curses, "use_default_colors", lambda: None), \
+             mock.patch.object(curses, "init_pair", lambda i, f, b: calls.append((i, f, b))), \
+             mock.patch.object(curses, "color_pair", lambda i: 1000 + i):
+            view._init_style()
+        return view, calls
+
+    def test_config_colour_names_reach_init_pair_in_order(self):
+        import curses
+        cfg = zoo.Config(running="red", stale="blue", pending="white")
+        view, calls = self._init(cfg)
+        self.assertEqual(calls, [(1, curses.COLOR_RED, -1),
+                                 (2, curses.COLOR_BLUE, -1),
+                                 (3, curses.COLOR_WHITE, -1)])
+        self.assertEqual((view._style["running"], view._style["stale"], view._style["pending"]),
+                         (1001, 1002, 1003))
+
+    def test_running_row_drawn_with_its_colour_pair_when_not_selected(self):
+        import curses
+        import unittest.mock as mock
+        cfg = zoo.Config(running="red")
+        rows = [zoo.Row(id=cid("11"), kind=zoo.PRIMATE, name="a", image="minion",
+                        running=True, status="Up"),
+                zoo.Row(id=cid("22"), kind=zoo.PRIMATE, name="b", image="minion",
+                        running=True, status="Up")]
+        figures = {rows[0].id: zoo.Figures(zoo.LIVE, ok_at=100.0),
+                   rows[1].id: zoo.Figures(zoo.LIVE, ok_at=100.0)}
+        scr = _RecordingScr()
+        view = zoo.View(scr, _StubMon(rows, figures), 2.0, clock=lambda: 100.0, cfg=cfg)
+        with mock.patch.object(curses, "has_colors", return_value=True), \
+             mock.patch.object(curses, "start_color", lambda: None), \
+             mock.patch.object(curses, "use_default_colors", lambda: None), \
+             mock.patch.object(curses, "init_pair", lambda *a: None), \
+             mock.patch.object(curses, "color_pair", lambda i: 1000 + i), \
+             mock.patch.object(curses, "doupdate", lambda: None):
+            view._init_style()
+            view.sel, view.selected_id = 0, rows[0].id
+            view.draw(100.0)
+        # sel=0 is the selected row (screen row 3); the other running row is row 4.
+        row4 = next(attr for (y, _t, attr) in scr.puts if y == 4)
+        self.assertEqual(row4, 1001)   # color_pair(1) == running
+
+
+class CycleSettingTest(unittest.TestCase):
+    def test_interval_steps_by_half_and_clamps_both_ends(self):
+        self.assertEqual(zoo.cycle_setting(zoo.Config(interval=2.0), "interval", 1).interval, 2.5)
+        self.assertEqual(zoo.cycle_setting(zoo.Config(interval=2.0), "interval", -1).interval, 1.5)
+        self.assertEqual(
+            zoo.cycle_setting(zoo.Config(interval=zoo.MAX_INTERVAL), "interval", 1).interval,
+            zoo.MAX_INTERVAL)
+        self.assertEqual(
+            zoo.cycle_setting(zoo.Config(interval=zoo.MIN_INTERVAL), "interval", -1).interval,
+            zoo.MIN_INTERVAL)
+
+    def test_enum_fields_wrap_both_directions(self):
+        for field, choices in (("header", zoo.HEADER_STYLES),
+                               ("selected", zoo.SELECT_STYLES),
+                               ("running", zoo.COLOR_NAMES)):
+            at_first = zoo.replace(zoo.Config(), **{field: choices[0]})
+            self.assertEqual(getattr(zoo.cycle_setting(at_first, field, -1), field), choices[-1])
+            at_last = zoo.replace(zoo.Config(), **{field: choices[-1]})
+            self.assertEqual(getattr(zoo.cycle_setting(at_last, field, 1), field), choices[0])
+
+    def test_off_list_value_resets_to_first_choice(self):
+        cfg = zoo.replace(zoo.Config(), running="octarine")
+        self.assertEqual(zoo.cycle_setting(cfg, "running", 1).running, zoo.COLOR_NAMES[0])
+
+    def test_only_the_named_field_changes(self):
+        cfg = zoo.Config()
+        out = zoo.cycle_setting(cfg, "stale", 1)
+        self.assertEqual(zoo.replace(out, stale=cfg.stale), cfg)
+
+    def test_setting_display_gives_interval_a_unit(self):
+        self.assertEqual(zoo.setting_display(zoo.Config(interval=2.0), "interval"), "2s")
+        self.assertEqual(zoo.setting_display(zoo.Config(running="red"), "running"), "red")
+
+    def test_fields_cover_every_editable_config_field(self):
+        # A new Config field must be added to SETTING_FIELDS or the screen silently omits it.
+        import dataclasses
+        self.assertEqual(set(zoo.SETTING_FIELDS), {f.name for f in dataclasses.fields(zoo.Config)})
+
+
+class SettingsModalTest(unittest.TestCase):
+    def _env(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return {"ZOO_CONFIG": os.path.join(d, "cfg")}
+
+    def _view(self, env, interval=2.0):
+        return zoo.View(_RecordingScr(), _StubMon([], {}), interval, clock=lambda: 0.0,
+                        cfg=zoo.Config(), environ=env)
+
+    def test_comma_opens_seeding_from_the_live_interval(self):
+        view = self._view(self._env(), interval=7.0)
+        view.handle(ord(","), 0.0)
+        self.assertIsNotNone(view.settings)
+        self.assertEqual(view.settings["cfg"].interval, 7.0)
+        self.assertEqual(view.settings["cursor"], 0)
+
+    def test_esc_and_q_close_without_writing(self):
+        import curses
+        for closer in (27, ord("q")):
+            env = self._env()
+            view = self._view(env)
+            view.handle(ord(","), 0.0)
+            view.handle(curses.KEY_RIGHT, 0.0)   # make an edit that must NOT be persisted
+            view.handle(closer, 0.0)
+            self.assertIsNone(view.settings)
+            self.assertFalse(os.path.exists(env["ZOO_CONFIG"]))
+            self.assertEqual(view.cfg, zoo.Config())   # live config untouched
+
+    def test_edit_then_save_writes_file_and_applies_live(self):
+        import curses
+        env = self._env()
+        view = self._view(env)
+        view.handle(ord(","), 0.0)
+        view.handle(curses.KEY_RIGHT, 0.0)               # interval 2.0 -> 2.5
+        for _ in range(3):
+            view.handle(curses.KEY_DOWN, 0.0)            # cursor -> 'running'
+        self.assertEqual(zoo.SETTING_FIELDS[view.settings["cursor"]], "running")
+        before = view.settings["cfg"].running
+        view.handle(curses.KEY_RIGHT, 0.0)
+        after = view.settings["cfg"].running
+        self.assertNotEqual(before, after)
+        view.handle(ord("w"), 0.0)                       # save
+        self.assertIsNone(view.settings)
+        self.assertEqual(view.interval, 2.5)             # applied to the running loop
+        self.assertEqual(view.cfg.running, after)
+        loaded, warnings = zoo.load_config(env)
+        self.assertEqual(warnings, [])
+        self.assertEqual((loaded.interval, loaded.running), (2.5, after))
+
+    def test_enter_also_saves(self):
+        env = self._env()
+        view = self._view(env)
+        view.handle(ord(","), 0.0)
+        view.handle(10, 0.0)                             # Enter
+        self.assertIsNone(view.settings)
+        self.assertTrue(os.path.exists(env["ZOO_CONFIG"]))
+
+    def test_save_failure_keeps_the_screen_open(self):
+        env = {"ZOO_CONFIG": "/nonexistent-dir-xyz/cfg"}
+        view = self._view(env)
+        view.handle(ord(","), 0.0)
+        view.handle(ord("w"), 0.0)
+        self.assertIsNotNone(view.settings)             # edits not lost
+
+
+class ConfigParseTest(unittest.TestCase):
+    def test_empty_and_comments_only_are_all_defaults(self):
+        for text in ("", "   \n\n", "# just a comment\n#interval = 9\n"):
+            cfg, warnings = zoo.parse_config(text)
+            self.assertEqual(cfg, zoo.Config())
+            self.assertEqual(warnings, [])
+
+    def test_every_field_parses(self):
+        text = ("interval = 5\nheader = bold\nselected = standout\n"
+                "running = blue\nstale = magenta\npending = white\n")
+        cfg, warnings = zoo.parse_config(text)
+        self.assertEqual(warnings, [])
+        self.assertEqual(cfg, zoo.Config(interval=5.0, header="bold", selected="standout",
+                                         running="blue", stale="magenta", pending="white"))
+
+    def test_keys_and_values_are_case_and_space_insensitive(self):
+        cfg, warnings = zoo.parse_config("  RUNNING =  Green  \n\tHeader=Bold\n")
+        self.assertEqual(warnings, [])
+        self.assertEqual(cfg.running, "green")
+        self.assertEqual(cfg.header, "bold")
+
+    def test_last_assignment_of_a_key_wins(self):
+        cfg, _ = zoo.parse_config("interval = 3\ninterval = 7\n")
+        self.assertEqual(cfg.interval, 7.0)
+
+    def test_bad_interval_falls_back_with_a_warning(self):
+        cfg, warnings = zoo.parse_config("interval = soon\n")
+        self.assertEqual(cfg.interval, zoo.Config().interval)   # default stands
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("interval", warnings[0])
+
+    def test_out_of_range_interval_both_ends(self):
+        cfg_hi, w_hi = zoo.parse_config(f"interval = {zoo.MAX_INTERVAL + 100}\n")
+        cfg_lo, w_lo = zoo.parse_config(f"interval = {zoo.MIN_INTERVAL / 2}\n")
+        self.assertEqual(cfg_hi.interval, zoo.MAX_INTERVAL)
+        self.assertEqual(cfg_lo.interval, zoo.MIN_INTERVAL)
+        self.assertTrue(w_hi and w_lo)
+
+    def test_unknown_key_warns_and_is_ignored(self):
+        cfg, warnings = zoo.parse_config("colour_scheme = neon\n")
+        self.assertEqual(cfg, zoo.Config())
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("colour_scheme", warnings[0])
+
+    def test_bad_enum_value_keeps_default_and_warns(self):
+        cfg, warnings = zoo.parse_config("running = octarine\nselected = blink\n")
+        self.assertEqual(cfg.running, zoo.Config().running)
+        self.assertEqual(cfg.selected, zoo.Config().selected)
+        self.assertEqual(len(warnings), 2)
+
+    def test_line_without_equals_warns(self):
+        cfg, warnings = zoo.parse_config("interval\n")
+        self.assertEqual(cfg, zoo.Config())
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("key = value", warnings[0])
+
+
+class ConfigRoundTripTest(unittest.TestCase):
+    def test_render_then_parse_is_identity_with_no_warnings(self):
+        for cfg in (zoo.Config(),
+                    zoo.Config(interval=0.5, header="reverse", selected="bold",
+                               running="red", stale="cyan", pending="default"),
+                    zoo.Config(interval=60.0)):
+            parsed, warnings = zoo.parse_config(zoo.render_config(cfg))
+            self.assertEqual(parsed, cfg)
+            self.assertEqual(warnings, [])
+
+    def test_rendered_file_documents_the_ranges(self):
+        text = zoo.render_config(zoo.Config())
+        self.assertIn("interval =", text)
+        for name in zoo.COLOR_NAMES:
+            if name == "green":
+                self.assertIn(name, text)
+
+
+class ConfigPathTest(unittest.TestCase):
+    def test_zoo_config_seam_overrides_home(self):
+        self.assertEqual(zoo.config_path({"ZOO_CONFIG": "/x/y.zoo", "HOME": "/home/me"}), "/x/y.zoo")
+
+    def test_defaults_to_dot_zoo_in_home(self):
+        self.assertEqual(zoo.config_path({"HOME": "/home/me"}), "/home/me/.zoo")
+
+
+class ConfigLoadSaveTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.env = {"ZOO_CONFIG": os.path.join(self.dir, "cfg")}
+
+    def test_missing_file_is_defaults_with_no_warning(self):
+        cfg, warnings = zoo.load_config(self.env)
+        self.assertEqual(cfg, zoo.Config())
+        self.assertEqual(warnings, [])
+
+    def test_save_then_load_round_trips(self):
+        cfg = zoo.Config(interval=4.0, header="underline", selected="bold", running="red")
+        path = zoo.save_config(cfg, self.env)
+        self.assertEqual(path, self.env["ZOO_CONFIG"])
+        loaded, warnings = zoo.load_config(self.env)
+        self.assertEqual(loaded, cfg)
+        self.assertEqual(warnings, [])
+
+    def test_unreadable_file_falls_back_to_defaults_with_a_warning(self):
+        def boom(*a, **k):
+            raise OSError("nope")
+        cfg, warnings = zoo.load_config(self.env, opener=boom)
+        self.assertEqual(cfg, zoo.Config())
+        self.assertEqual(len(warnings), 1)
+
+    def test_save_is_atomic_a_failed_write_keeps_the_previous_file(self):
+        # F2: a write that dies mid-stream must not corrupt the existing ~/.zoo.
+        good = zoo.Config(interval=5.0, running="red")
+        zoo.save_config(good, self.env)                     # a real, complete write first
+
+        class _Boom:                                        # a file object that fails on write
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def write(self, *a):
+                raise OSError("disk full")
+
+        with self.assertRaises(OSError):
+            zoo.save_config(zoo.Config(interval=10.0), self.env, opener=lambda *a, **k: _Boom())
+        loaded, warnings = zoo.load_config(self.env)
+        self.assertEqual(loaded, good)                      # untouched
+        self.assertEqual(warnings, [])
+
+    def test_save_is_atomic_a_failed_rename_keeps_the_previous_file(self):
+        good = zoo.Config(interval=5.0)
+        zoo.save_config(good, self.env)
+        def boom_replace(src, dst):
+            raise OSError("rename failed")
+        with self.assertRaises(OSError):
+            zoo.save_config(zoo.Config(interval=10.0), self.env, replacer=boom_replace)
+        loaded, _ = zoo.load_config(self.env)
+        self.assertEqual(loaded.interval, 5.0)              # untouched
+
+
+class ResolveIntervalTest(unittest.TestCase):
+    def test_cli_flag_wins_over_config(self):
+        self.assertEqual(zoo.resolve_interval(5.0, zoo.Config(interval=2.0)), 5.0)
+
+    def test_config_used_when_no_flag(self):
+        self.assertEqual(zoo.resolve_interval(None, zoo.Config(interval=3.0)), 3.0)
+
+
 if __name__ == "__main__":
     unittest.main()
