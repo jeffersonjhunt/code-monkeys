@@ -109,4 +109,19 @@ else
   echo "WARNING: $SRC/bin/zoo missing — skipping it; the rest of the sync is done." >&2
 fi
 
+# 007 agent skills, for the same reason and with the same guard: nothing installed them into a
+# primate, so ~/.claude/skills held only the account-synced set and the repo's skills were
+# unreachable. install-skills.sh is the one definition of "how skills install" (host `setup`'s
+# Makefile delegates to it too); it copies each SKILL.md dir into $HOME/.local/share/agent-skills and
+# symlinks it into ~/.claude/skills and ~/.kiro/skills — all under the volume's $HOME, so a later
+# primate mounting this volume sees them. A plain script, not the Makefile: code-monkeys Makefiles
+# are host entry points and are never run inside a container. Guarded so a missing or failed install
+# costs you the skills, not the whole sync.
+if [ -f "$SRC/007/skills/scripts/install-skills.sh" ]; then
+  bash "$SRC/007/skills/scripts/install-skills.sh" \
+    || echo "WARNING: skills install failed — the rest of the sync is done." >&2
+else
+  echo "WARNING: $SRC/007/skills/scripts/install-skills.sh missing — skipping skills; the rest of the sync is done." >&2
+fi
+
 # ownership is fixed by the EXIT trap above, on success and on failure alike.

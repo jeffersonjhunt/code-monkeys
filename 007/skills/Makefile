@@ -68,22 +68,7 @@ endif
 	@echo "Created skill: $(SKILL)"
 
 install: ## Install skills for claude/kiro/opencode
-	@mkdir -p $(INSTALL_DIR) $(CLAUDE_SKILLS) $(KIRO_SKILLS)
-	@for d in $(SKILL_DIRS); do \
-		skill=$${d%/}; \
-		rm -rf "$(INSTALL_DIR)/$$skill"; \
-		cp -R "$$skill" "$(INSTALL_DIR)/$$skill"; \
-		rm -f "$(CLAUDE_SKILLS)/$$skill"; \
-		ln -s "$(INSTALL_DIR)/$$skill" "$(CLAUDE_SKILLS)/$$skill"; \
-		rm -f "$(KIRO_SKILLS)/$$skill"; \
-		ln -s "$(INSTALL_DIR)/$$skill" "$(KIRO_SKILLS)/$$skill"; \
-		echo "Installed $$skill"; \
-	done
-	@echo ""
-	@echo "Installed to: $(INSTALL_DIR)/"
-	@echo "Symlinked from:"
-	@echo "  Claude:  $(CLAUDE_SKILLS)/"
-	@echo "  Kiro:    $(KIRO_SKILLS)/"
+	@bash scripts/install-skills.sh
 
 uninstall: ## Remove installed skills
 	@for d in $(SKILL_DIRS); do \
