@@ -26,7 +26,6 @@ Each skill lives in its own directory and follows a standard structure:
 | [sdlc](sdlc/) | The default software development lifecycle every agent follows — intake through release |
 | [agent-team](agent-team/) | Multi-agent team orchestration (PM, Architect, Developer, Designer, Tester, Reviewer) with HITL checkpoints at every phase |
 | [apple-xcodebuild](apple-xcodebuild/) | Scaffold, build, test, run and screenshot iOS, iPadOS and macOS apps (incl. cross-platform) from a container via SSH to a macOS host |
-| [ios-xcodebuild](ios-xcodebuild/) | **Deprecated** — use apple-xcodebuild. Scheduled for removal |
 
 ## Usage
 

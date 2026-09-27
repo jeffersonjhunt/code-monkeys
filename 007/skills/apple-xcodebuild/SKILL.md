@@ -21,7 +21,7 @@ Container (Linux)                SSH (bash -s)               macOS host
                                                              └── Simulator.app · the app
 ```
 
-**Supersedes `ios-xcodebuild`** (iOS only, and it reported failed builds as successes).
+Replaces `ios-xcodebuild` (removed 2026-09-27: iOS only, and it reported failed builds as successes).
 
 ## Quick start
 
