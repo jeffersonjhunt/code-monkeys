@@ -1,13 +1,20 @@
 ---
 name: ios-xcodebuild
-description: Bootstrap, build, and deploy iOS apps from a Docker container via SSH to a macOS host using xcodebuild. Use when creating a new iOS project, building for simulator/device, deploying to simulator, or troubleshooting Xcode CLI builds.
+description: DEPRECATED — use apple-xcodebuild instead (iOS and macOS; this skill reports failed builds as successes). Do not use for new work. Kept only until apple-xcodebuild has fully replaced it, then removed.
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.0"
+  version: "1.1.0"
 ---
 
 # ios-xcodebuild
+
+> **DEPRECATED — use [`apple-xcodebuild`](../apple-xcodebuild/SKILL.md).** It covers iOS *and*
+> macOS, and fixes defects this skill still has: `ios-build.sh` pipes `xcodebuild` into `tail`
+> over SSH, so a **failed build is reported as success**; it forces `SWIFT_VERSION=5.9`; it
+> hand-assembles a bare executable into a `.app` (no asset catalog or entitlements); and
+> `ios-run.sh` launches the first `*.app` it finds. This skill is not being fixed and will be
+> removed once `apple-xcodebuild` has replaced it.
 
 Build and deploy iOS apps entirely from CLI tools inside a Docker container. Compilation and simulator control happen on the macOS host via SSH. No Xcode IDE is ever opened.
 

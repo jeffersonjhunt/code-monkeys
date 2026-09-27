@@ -30,6 +30,13 @@ natively by the host agent (Claude / Kiro). Kept here as a record:
 `math-fibonacci` is intentionally kept as a reference template for new
 skill authoring, even though Fibonacci itself is also trivial to compute.
 
+## Pending removal
+
+- [ ] Remove `ios-xcodebuild` (deprecated 2026-09-27, superseded by `apple-xcodebuild`) once
+  apple-xcodebuild is released. Also delete `tests/test_ios_xcodebuild.py`, and note that
+  `install-skills.sh` does not delete skills it no longer ships: an installed
+  `~/.claude/skills/ios-xcodebuild` link must be removed by hand (or install-skills taught to prune).
+
 ## Parking Lot
 
 ### CI Pipeline (`.github/workflows/ci.yml`)
