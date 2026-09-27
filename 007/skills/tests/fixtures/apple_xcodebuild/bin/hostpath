@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fake hostpath: the "Mac" is this machine, so a path maps to itself.
+[ -n "${FAKE_HOSTPATH_FAIL:-}" ] && { echo "not under a shared dir" >&2; exit 1; }
+echo "$1"

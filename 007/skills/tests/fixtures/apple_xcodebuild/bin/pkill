@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+echo "pkill $*" >> "${FAKE_LOG:-/dev/null}"
+f="${FAKE_STATE:?}/app.pid"
+if [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; then rm -f "$f"; exit 0; fi
+exit 1

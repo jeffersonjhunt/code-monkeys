@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Fake xcrun: simctl and xcresulttool. Env: FAKE_SIMCTL_JSON (file), FAKE_APP_CRASH=1.
+echo "xcrun $*" >> "${FAKE_LOG:-/dev/null}"
+if [ "$1" = "xcresulttool" ]; then
+  prev=""; path=""
+  for a in "$@"; do [ "$prev" = "--path" ] && path="$a"; prev="$a"; done
+  [ -f "$path/summary.json" ] && cat "$path/summary.json" && exit 0
+  exit 1
+fi
+[ "$1" = "simctl" ] || exit 0
+shift
+case "$1" in
+  list) cat "${FAKE_SIMCTL_JSON:?FAKE_SIMCTL_JSON not set}" ;;
+  launch) echo "$3: 4242" ;;
+  spawn)
+    if [ "$3" = "launchctl" ]; then
+      [ -n "${FAKE_APP_CRASH:-}" ] || echo "4242	0	UIKitApplication:com.example.demo[1234]"
+    fi ;;
+  io) out="${!#}"; mkdir -p "$(dirname "$out")"; printf 'PNG' > "$out" ;;
+  *) : ;;
+esac
+exit 0

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Fake xcodebuild. Env: FAKE_XCODEBUILD_RC, FAKE_BUILD_OUTPUT, FAKE_FIRSTLAUNCH_RC, FAKE_SDKS,
+# FAKE_SUPPORTED, FAKE_PRODUCTS, FAKE_TEST_RC, FAKE_TEST_SUMMARY.
+echo "xcodebuild $*" >> "${FAKE_LOG:-/dev/null}"
+args=" $* "
+case "$args" in
+  *" -version "*) echo "Xcode 27.0"; echo "Build version 27A266a"; exit 0 ;;
+  *" -checkFirstLaunchStatus "*) exit "${FAKE_FIRSTLAUNCH_RC:-0}" ;;
+  *" -showsdks "*)
+    for s in ${FAKE_SDKS:-macosx iphoneos iphonesimulator}; do echo "	X 27.0  	-sdk ${s}27.0"; done; exit 0 ;;
+  *" -showBuildSettings "*)
+    cat <<JSON
+[{"target":"DemoTests","buildSettings":{"PRODUCT_TYPE":"com.apple.product-type.bundle.unit-test"}},
+ {"target":"Demo","buildSettings":{"PRODUCT_TYPE":"com.apple.product-type.application",
+  "SUPPORTED_PLATFORMS":"${FAKE_SUPPORTED:-iphoneos iphonesimulator macosx}",
+  "TARGET_BUILD_DIR":"${FAKE_PRODUCTS:-/tmp/products}","FULL_PRODUCT_NAME":"Demo.app",
+  "PRODUCT_BUNDLE_IDENTIFIER":"com.example.demo","EXECUTABLE_NAME":"Demo"}}]
+JSON
+    exit 0 ;;
+esac
+last="${!#}"
+if [ "$last" = "test" ]; then
+  bundle=""; prev=""
+  for a in "$@"; do [ "$prev" = "-resultBundlePath" ] && bundle="$a"; prev="$a"; done
+  echo "Testing started"
+  if [ -n "$bundle" ] && [ -n "${FAKE_TEST_SUMMARY:-}" ]; then
+    mkdir -p "$bundle"; printf '%s' "$FAKE_TEST_SUMMARY" > "$bundle/summary.json"
+  fi
+  [ -n "${FAKE_BUILD_OUTPUT:-}" ] && printf '%s\n' "$FAKE_BUILD_OUTPUT"
+  exit "${FAKE_TEST_RC:-0}"
+fi
+echo "CompileSwift normal arm64 Demo.swift"
+[ -n "${FAKE_BUILD_OUTPUT:-}" ] && printf '%s\n' "$FAKE_BUILD_OUTPUT"
+rc="${FAKE_XCODEBUILD_RC:-0}"
+[ "$rc" = 0 ] && echo "** BUILD SUCCEEDED **" || echo "** BUILD FAILED **"
+exit "$rc"

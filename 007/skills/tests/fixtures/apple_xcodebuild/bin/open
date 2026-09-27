@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Fake open: "launches" the app as a sleeping process whose pid fake pgrep reports.
+echo "open $*" >> "${FAKE_LOG:-/dev/null}"
+[ "${1:-}" = "-a" ] && exit 0
+if [ -z "${FAKE_APP_CRASH:-}" ]; then
+  nohup sleep 30 >/dev/null 2>&1 &
+  echo $! > "${FAKE_STATE:?}/app.pid"
+fi
+exit 0

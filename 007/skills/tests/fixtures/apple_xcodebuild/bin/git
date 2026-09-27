@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fake git: only `clone … <dest>` — creates the destination.
+echo "git $*" >> "${FAKE_LOG:-/dev/null}"
+[ "$1" = "clone" ] || exit 0
+mkdir -p "${!#}"

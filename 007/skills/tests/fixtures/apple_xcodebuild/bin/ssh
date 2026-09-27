@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Fake ssh: skip options and the target, then run the remote command locally, stdin passed through.
+# FAKE_SSH_RC/FAKE_SSH_STDERR simulate ssh's own failure (exit 255).
+set -u
+echo "ssh $*" >> "${FAKE_LOG:-/dev/null}"
+if [ -n "${FAKE_SSH_RC:-}" ]; then echo "${FAKE_SSH_STDERR:-ssh: connect failed}" >&2; exit "$FAKE_SSH_RC"; fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o|-p|-i|-l|-F) shift 2 ;;
+    -*) shift ;;
+    *) shift; break ;;   # the user@host target
+  esac
+done
+exec bash -c "$*"
