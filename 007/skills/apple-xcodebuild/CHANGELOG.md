@@ -1,5 +1,10 @@
 # Changelog — apple-xcodebuild
 
+## [1.0.1] - 2026-09-27
+
+- `xc-doctor` reports an invalid or unpinned `.xcodegen-version` as a failed `xcodegen` check
+  (with its fix) and still runs every other check; it used to stop at that one error.
+
 ## [1.0.0] - 2026-09-27
 
 - New skill, superseding `ios-xcodebuild`: one skill for iOS, iPadOS and macOS, including

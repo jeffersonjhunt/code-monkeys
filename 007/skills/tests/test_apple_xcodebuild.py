@@ -293,6 +293,24 @@ def test_doctor_flags_codesign_unusable_over_ssh(project, env):
     assert c["status"] == "fail" and "--adhoc" in c["fix"]
 
 
+@pytest.mark.parametrize("content,expect", [
+    ("9.9.9", "no known commit"),              # unknown version, no commit to verify against
+    ("latest", "expected 2.45.4"),             # malformed
+    (f"2.45.4@{'a' * 40}", "known commit"),    # pin contradicts the known commit
+])
+def test_doctor_reports_bad_xcodegen_version_and_keeps_checking(project, env, content, expect):
+    """One bad line in .xcodegen-version must not hide every other check."""
+    (project / ".xcodegen-version").write_text(content + "\n")
+    r = run("xc-doctor.py", env=env, cwd=project)
+    assert r.returncode == 1
+    assert r.json and "checks" in r.json, "the doctor aborted instead of reporting"
+    c = next(c for c in r.json["checks"] if c["check"] == "xcodegen")
+    assert c["status"] == "fail" and expect in c["detail"]
+    s = statuses(r)
+    for other in ("ssh", "first-launch", "simulator", "project-path", "codesign", "screen-recording"):
+        assert s[other] == "ok", f"{other} should still have been checked"
+
+
 def test_doctor_flags_project_not_visible_on_the_mac(project, env, tmp_path):
     r = run("xc-doctor.py", env=env, cwd=project,
             HOST_PROJECT_PATH="/nonexistent/Demo", HOST_PROJECT_ROOT=project)

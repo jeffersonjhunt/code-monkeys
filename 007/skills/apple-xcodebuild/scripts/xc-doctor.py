@@ -110,14 +110,19 @@ def main():
     platforms = args.platform or ["ios", "macos"]
 
     checks = []
-    root = ver = None
+    root = ver = xcodegen_problem = None
     project_host = xcodegen_rel = ""
     if not args.no_project:
         root = xc.find_project_root(args.project_dir)
         project_host = xc.host_path(root)
         if (root / "project.yml").is_file():
-            ver, sha = xc.xcodegen_version(root)
-            xcodegen_rel = xc.xcodegen_rel(ver, sha)
+            # A bad .xcodegen-version is one failed check, not a reason to skip all the others.
+            try:
+                ver, sha = xc.xcodegen_version(root)
+                xcodegen_rel = xc.xcodegen_rel(ver, sha)
+            except xc.XcError as e:
+                xcodegen_problem = check("xcodegen", "fail", str(e),
+                                         e.fix or "write a version such as 2.45.4 into .xcodegen-version")
     target = xc.host_target()
 
     xc.log(f"probing {target}")
@@ -184,7 +189,9 @@ def main():
             checks.append(check("project-path", "fail", f"{project_host} does not exist on the Mac",
                                 "keep the project under a host-shared directory (~/workspace)"))
         cached = facts.get("xcodegen_cached")
-        if ver:
+        if xcodegen_problem:
+            checks.append(xcodegen_problem)
+        elif ver:
             if cached == "yes":
                 checks.append(check("xcodegen", "ok", f"cached {ver}"))
             else:
