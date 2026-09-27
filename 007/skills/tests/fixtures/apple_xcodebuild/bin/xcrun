@@ -15,7 +15,12 @@ case "$1" in
   spawn)
     if [ "$3" = "launchctl" ]; then
       [ -n "${FAKE_APP_CRASH:-}" ] || echo "4242	0	UIKitApplication:com.example.demo[1234]"
+      # A long listing after the match: `| grep -q` would exit early and SIGPIPE us.
+      [ -n "${FAKE_LAUNCHCTL_BIG:-}" ] && seq 1 200000 | sed 's/^/-	0	com.apple.job./'
     fi ;;
+  ui)
+    # `ui <udid> appearance` queries (prints the current one); with a 4th arg it sets it.
+    [ $# -eq 3 ] && echo "${FAKE_APPEARANCE:-light}" ;;
   io) out="${!#}"; mkdir -p "$(dirname "$out")"; printf 'PNG' > "$out" ;;
   *) : ;;
 esac

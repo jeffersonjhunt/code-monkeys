@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Fake open: "launches" the app as a sleeping process whose pid fake pgrep reports.
+# Fake open: "launches" App.app as a process whose command line is the app's real binary path,
+# so the system pgrep/pkill see exactly what they would on a Mac. FAKE_APP_CRASH=1: nothing starts.
 echo "open $*" >> "${FAKE_LOG:-/dev/null}"
 [ "${1:-}" = "-a" ] && exit 0
+app="${1%/}"
+exe="$(basename "$app" .app)"
 if [ -z "${FAKE_APP_CRASH:-}" ]; then
-  nohup sleep 30 >/dev/null 2>&1 &
+  nohup bash -c 'exec -a "$0" sleep 30' "$app/Contents/MacOS/$exe" >/dev/null 2>&1 &
   echo $! > "${FAKE_STATE:?}/app.pid"
 fi
 exit 0

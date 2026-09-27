@@ -64,6 +64,7 @@ def build_one(root, base_args, platform, config, team, extra_settings=(), adhoc=
         raise xc.XcError(f"remote build wrapper failed (exit {r.returncode}): {r.stderr.strip()[-800:]}")
     rc = int(rc_line[0][3:])
     text = log_local.read_text(errors="replace") if log_local.exists() else ""
+    xc.prune(log_local.parent, f"*-build-{platform}.log")
     result = {
         "platform": platform,
         "ok": rc == 0,
@@ -100,9 +101,7 @@ def main():
     ap.add_argument("--setting", action="append", default=[], metavar="KEY=VALUE",
                     help="extra xcodebuild build setting (repeatable), e.g. NDI_SDK=/Library/NDI SDK")
     args = ap.parse_args()
-    for kv in args.setting:
-        if "=" not in kv or not kv.split("=", 1)[0].strip():
-            raise xc.XcError(f"--setting {kv!r} is not KEY=VALUE")
+    xc.parse_settings(args.setting)
 
     root = xc.find_project_root(args.project_dir)
     if not args.no_generate:

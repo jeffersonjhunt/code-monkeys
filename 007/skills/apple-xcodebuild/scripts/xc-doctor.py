@@ -101,8 +101,8 @@ def main():
         root = xc.find_project_root(args.project_dir)
         project_host = xc.host_path(root)
         if (root / "project.yml").is_file():
-            ver = xc.xcodegen_version(root)
-            xcodegen_rel = xc.xcodegen_rel(ver)
+            ver, sha = xc.xcodegen_version(root)
+            xcodegen_rel = xc.xcodegen_rel(ver, sha)
     target = xc.host_target()
 
     xc.log(f"probing {target}")

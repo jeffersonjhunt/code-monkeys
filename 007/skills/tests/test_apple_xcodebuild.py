@@ -46,6 +46,7 @@ def env(tmp_path):
         "FAKE_STATE": str(state),
         "FAKE_SIMCTL_JSON": str(SIMCTL_JSON),
         "FAKE_PRODUCTS": str(tmp_path / "products"),
+        "FAKE_GIT_SHA": xc.KNOWN_XCODEGEN["2.45.4"],
     }
     yield e
     pidf = state / "app.pid"
@@ -156,6 +157,41 @@ def test_build_passes_extra_settings_and_adhoc(project, env):
     assert "DEVELOPMENT_TEAM=ABCDE12345" not in log
 
 
+def test_old_logs_are_pruned(project, env):
+    logs = project / "build" / "logs"
+    logs.mkdir(parents=True)
+    for i in range(12):
+        (logs / f"20000101-0000{i:02d}-build-macos.log").write_text("old")
+    (logs / "20000101-000000-test-macos.log").write_text("other kind: untouched")
+    assert run("xc-build.py", ["--platform", "macos"], env=env, cwd=project).returncode == 0
+    kept = sorted(p.name for p in logs.glob("*-build-macos.log"))
+    assert len(kept) == 10
+    assert "20000101-000000-build-macos.log" not in kept and not kept[-1].startswith("2000")
+    assert (logs / "20000101-000000-test-macos.log").exists()
+
+
+def test_xc_test_supports_adhoc_and_settings(project, env):
+    (project / ".devteam").write_text("ABCDE12345")
+    r = run("xc-test.py", ["--platform", "macos", "--adhoc", "--setting", "NDI_SDK=/x y"],
+            env=env, cwd=project, FAKE_TEST_SUMMARY=summary(1, 1))
+    assert r.returncode == 0, r.stderr
+    log = calls(env)
+    assert "NDI_SDK=/x y" in log and "DEVELOPMENT_TEAM=ABCDE12345" not in log
+    r = run("xc-test.py", ["--setting", "bad"], env=env, cwd=project)
+    assert r.returncode == 1 and "KEY=VALUE" in r.json["error"]
+
+
+def test_remote_exit_255_is_the_scripts_not_ssh(monkeypatch, env):
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    r = xc.remote("echo hi >&2; exit 255")
+    assert r.returncode == 255
+    assert r.stderr.strip() == "hi", "the sentinel must be stripped from stderr"
+    monkeypatch.setenv("FAKE_SSH_RC", "255")
+    with pytest.raises(xc.XcError, match="ssh to"):
+        xc.remote("true")
+
+
 def test_bad_setting_is_rejected(project, env):
     r = run("xc-build.py", ["--setting", "NOEQUALS"], env=env, cwd=project)
     assert r.returncode == 1 and "KEY=VALUE" in r.json["error"]
@@ -177,7 +213,7 @@ def test_xcodegen_is_built_once_then_cached(project, env):
     assert first.count("git clone") == 1
     assert "--branch 2.45.4" in first
     assert (project / "Demo.xcodeproj").is_dir(), "generate should have produced the project"
-    wrapper = Path(env["HOME"]) / xc.xcodegen_rel("2.45.4")
+    wrapper = Path(env["HOME"]) / xc.xcodegen_rel("2.45.4", xc.KNOWN_XCODEGEN["2.45.4"])
     assert wrapper.is_file() and os.access(wrapper, os.X_OK)
     run("xc-build.py", ["--platform", "macos"], env=env, cwd=project)
     assert calls(env).count("git clone") == 1, "second build must reuse the cache"
@@ -185,11 +221,36 @@ def test_xcodegen_is_built_once_then_cached(project, env):
 
 def test_xcodegen_version_is_pinned_per_project(project, env):
     (project / ".xcodegen-version").write_text("2.46.0\n")
-    run("xc-build.py", ["--platform", "macos"], env=env, cwd=project)
+    r = run("xc-build.py", ["--platform", "macos"], env=env, cwd=project,
+            FAKE_GIT_SHA=xc.KNOWN_XCODEGEN["2.46.0"])
+    assert r.returncode == 0, r.stderr
     assert "--branch 2.46.0" in calls(env)
     (project / ".xcodegen-version").write_text("latest\n")
     r = run("xc-build.py", ["--platform", "macos"], env=env, cwd=project)
     assert r.returncode == 1 and "xcodegen-version" in r.json["error"]
+
+
+def test_xcodegen_moved_tag_is_refused_and_not_cached(project, env):
+    """A tag that no longer points at the pinned commit must not be built or executed."""
+    r = run("xc-build.py", ["--platform", "macos"], env=env, cwd=project, FAKE_GIT_SHA="d" * 40)
+    assert r.returncode == 1
+    assert "refusing to build" in r.json["error"]
+    assert "swift build" not in calls(env)
+    assert not (Path(env["HOME"]) / xc.xcodegen_rel("2.45.4", xc.KNOWN_XCODEGEN["2.45.4"])).exists()
+
+
+def test_xcodegen_unknown_version_needs_a_commit(project, env):
+    (project / ".xcodegen-version").write_text("2.47.0\n")
+    r = run("xc-build.py", ["--platform", "macos"], env=env, cwd=project)
+    assert r.returncode == 1 and "no known commit" in r.json["error"]
+    assert "git ls-remote" in r.json["fix"]
+    sha = "a" * 40
+    (project / ".xcodegen-version").write_text(f"2.47.0@{sha}\n")
+    r = run("xc-build.py", ["--platform", "macos"], env=env, cwd=project, FAKE_GIT_SHA=sha)
+    assert r.returncode == 0, r.stderr
+    (project / ".xcodegen-version").write_text(f"2.45.4@{sha}\n")
+    r = run("xc-build.py", ["--platform", "macos"], env=env, cwd=project)
+    assert r.returncode == 1 and "known commit" in r.json["error"]
 
 
 # --- doctor ------------------------------------------------------------------------------------------
@@ -355,10 +416,42 @@ def test_ios_run_boots_waits_installs_launches(project, env):
     assert order == sorted(order)
 
 
+def test_ios_running_check_survives_sigpipe(project, env):
+    """launchctl lists the app first and then a lot more: `| grep -q` would SIGPIPE under pipefail."""
+    assert run("xc-build.py", ["--platform", "ios-sim"], env=env, cwd=project).returncode == 0
+    r = run("xc-run.py", ["--platform", "ios-sim", "--settle", "0"], env=env, cwd=project,
+            FAKE_LAUNCHCTL_BIG=1)
+    assert r.returncode == 0, r.stderr
+    assert r.json["running"] is True
+
+
+def test_macos_run_and_stop_with_regex_characters_in_path(project, env, tmp_path):
+    products = tmp_path / "Build (1)+[x]"
+    assert run("xc-build.py", ["--platform", "macos"], env=env, cwd=project,
+               FAKE_PRODUCTS=products).returncode == 0
+    r = run("xc-run.py", ["--platform", "macos", "--settle", "0"], env=env, cwd=project)
+    assert r.returncode == 0, r.stderr
+    assert r.json["running"] is True
+    r = run("xc-run.py", ["--platform", "macos", "--stop"], env=env, cwd=project)
+    assert r.json["stopped"] is True
+
+
 def test_ios_crash_on_launch_fails(project, env):
     assert run("xc-build.py", ["--platform", "ios-sim"], env=env, cwd=project).returncode == 0
     r = run("xc-run.py", ["--platform", "ios-sim", "--settle", "0"], env=env, cwd=project, FAKE_APP_CRASH=1)
     assert r.returncode == 1 and r.json["running"] is False
+
+
+def test_shot_restores_appearance(project, env, tmp_path):
+    booted = json.loads(SIMCTL_JSON.read_text())
+    booted["devices"]["com.apple.CoreSimulator.SimRuntime.iOS-27-0"][1]["state"] = "Booted"
+    f = tmp_path / "booted.json"
+    f.write_text(json.dumps(booted))
+    r = run("xc-shot.py", ["--appearance", "dark"], env=env, cwd=project, FAKE_SIMCTL_JSON=f)
+    assert r.returncode == 0, r.stderr
+    log = calls(env)
+    assert log.index("ui NEW-1 appearance dark") < log.index("io NEW-1 screenshot") \
+        < log.index("ui NEW-1 appearance light")
 
 
 def test_shot_refuses_macos(project, env):

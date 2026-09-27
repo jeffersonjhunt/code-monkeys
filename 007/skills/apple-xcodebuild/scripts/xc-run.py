@@ -39,11 +39,13 @@ if [ "$logsecs" -gt 0 ]; then
   lp=$!; sleep "$logsecs"; kill "$lp" 2>/dev/null || true
 fi
 sleep "$settle"
-if xcrun simctl spawn "$udid" launchctl list 2>/dev/null | grep -q "UIKitApplication:$bid"; then
-  echo "RUNNING=yes"
-else
-  echo "RUNNING=no"
-fi
+# Capture first, then match: `launchctl list | grep -q` under pipefail returns 141 (SIGPIPE)
+# whenever grep matches before launchctl finishes writing — a running app would read as crashed.
+jobs=$(xcrun simctl spawn "$udid" launchctl list 2>/dev/null || true)
+case "$jobs" in
+  *"UIKitApplication:$bid"*) echo "RUNNING=yes" ;;
+  *) echo "RUNNING=no" ;;
+esac
 """
 
 SIM_STOP = r"""
@@ -54,7 +56,9 @@ xcrun simctl terminate "$1" "$2" >/dev/null 2>&1 && echo "STOPPED=yes" || echo "
 MAC_RUN = r"""
 app="$1"; settle="$2"; logsecs="$3"; log="$4"; exe="$5"
 bin="$app/Contents/MacOS/$exe"
-pkill -f "^$bin" 2>/dev/null || true
+# pgrep/pkill take a regex: escape the path so "(", "+", "[" … in it match literally.
+re="^$(printf '%s' "$bin" | sed 's/[][\\.*^$(){}+?|]/\\&/g')"
+pkill -f "$re" 2>/dev/null || true
 if [ "$logsecs" -gt 0 ]; then
   mkdir -p "$(dirname "$log")"
   log stream --style compact --predicate "process == \"$exe\"" >"$log" 2>&1 &
@@ -64,7 +68,7 @@ open "$app"
 pid=""
 i=0
 while [ -z "$pid" ] && [ "$i" -lt 50 ]; do
-  pid=$(pgrep -f "^$bin" | head -1 || true); i=$((i + 1)); [ -z "$pid" ] && sleep 0.2
+  pid=$(pgrep -f "$re" | head -1 || true); i=$((i + 1)); [ -z "$pid" ] && sleep 0.2
 done
 echo "PID=$pid"
 [ "$logsecs" -gt 0 ] && { sleep "$logsecs"; kill "$lp" 2>/dev/null || true; }
@@ -74,7 +78,8 @@ if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "RUNNING=yes"; else ec
 
 MAC_STOP = r"""
 bin="$1/Contents/MacOS/$2"
-pkill -f "^$bin" 2>/dev/null && echo "STOPPED=yes" || echo "STOPPED=no"
+re="^$(printf '%s' "$bin" | sed 's/[][\\.*^$(){}+?|]/\\&/g')"
+pkill -f "$re" 2>/dev/null && echo "STOPPED=yes" || echo "STOPPED=no"
 """
 
 
@@ -132,6 +137,7 @@ def main():
     if not running:
         result["reason"] = f"the app was not running {args.settle}s after launch (crashed or quit)"
     if args.logs:
+        xc.prune(log_local.parent, f"*-run-{args.platform}.log")
         result["log"] = str(log_local)
         if log_local.exists():
             result["log_tail"] = log_local.read_text(errors="replace").splitlines()[-15:]

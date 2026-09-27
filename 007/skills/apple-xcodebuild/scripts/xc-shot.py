@@ -6,8 +6,8 @@ logged-in GUI (Aqua) session, so the window server lists no windows to it, and s
 that session (`launchctl asuser`) needs root. Asking for macos exits 2 with that reason rather
 than producing a blank or wallpaper-only image.
 
-Optionally set the simulator's appearance and orientation-independent status bar first, so shots
-are comparable across runs.
+The status bar is pinned (9:41, full battery) so shots are comparable across runs. --appearance
+switches light/dark for the shot and restores the previous appearance afterwards.
 """
 
 import argparse
@@ -22,9 +22,15 @@ import xc_common as xc  # noqa: E402
 SHOT = r"""
 udid="$1"; out="$2"; look="$3"
 mkdir -p "$(dirname "$out")"
-if [ -n "$look" ]; then xcrun simctl ui "$udid" appearance "$look"; sleep 1; fi
+prev=""
+if [ -n "$look" ]; then
+  # Appearance is simulator-wide and sticky: remember it and put it back after the shot.
+  prev=$(xcrun simctl ui "$udid" appearance 2>/dev/null || true)
+  xcrun simctl ui "$udid" appearance "$look"; sleep 1
+fi
 xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 >/dev/null 2>&1 || true
-xcrun simctl io "$udid" screenshot --type=png "$out" >/dev/null 2>&1
+xcrun simctl io "$udid" screenshot --type=png "$out" >/dev/null 2>&1 || true
+if [ -n "$prev" ] && [ "$prev" != "$look" ]; then xcrun simctl ui "$udid" appearance "$prev" || true; fi
 [ -s "$out" ] && echo "OK=yes" || echo "OK=no"
 """
 

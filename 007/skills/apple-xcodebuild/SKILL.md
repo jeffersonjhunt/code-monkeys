@@ -49,7 +49,7 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 | `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
 | `xc-bootstrap.py <App>` | Scaffolds an XcodeGen project: one app target for `--platforms ios,macos` (either or both), Swift 6, generated Info.plist, asset catalog, Swift Testing target, `.gitignore`, pinned `.xcodegen-version`. Scaffolds into an existing dir (e.g. a fresh repo) only if nothing would be overwritten; extends an existing `.gitignore`. |
 | `xc-build.py` | Regenerates the project from `project.yml`, builds `--platform ios-sim\|ios-device\|macos\|all` in `--config debug\|release`. Full log in `build/logs/`; the built app's path and bundle id (from the build settings) in `build/xc/build-<platform>.json`. `--setting KEY=VALUE` passes extra build settings; `--adhoc` forces ad-hoc macOS signing. |
-| `xc-test.py` | `xcodebuild test` per platform (a concrete simulator for iOS) with counts read from the `.xcresult`; `--package DIR` runs `swift test` for a local package. **Zero tests is a failure**, and so is a run whose counts cannot be read. |
+| `xc-test.py` | `xcodebuild test` per platform (a concrete simulator for iOS) with counts read from the `.xcresult`; `--package DIR` runs `swift test` for a local package. **Zero tests is a failure**, and so is a run whose counts cannot be read. Takes the same `--setting` and `--adhoc` as `xc-build`. |
 | `xc-run.py --platform ios-sim\|macos` | Launches the *recorded* app. Simulator: boot, wait for boot, install, launch. Mac: `open` (LaunchServices). Re-checks the process after `--settle` s so a crash-on-launch fails. `--logs N` captures N s of the app's log; `--stop` terminates it. |
 | `xc-shot.py` | Screenshot of the booted simulator (status bar pinned to 9:41, optional `--appearance dark`). **Not macOS** — see limits. |
 
@@ -60,7 +60,7 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 | Mac address | `XC_HOST`, `HOST_IP`, default `host.docker.internal` |
 | Mac user | `XC_HOST_USER`, `HOST_USER`, else the user in `HOST_WORKSPACE` (`/Users/<user>/…`) |
 | Container → Mac paths | `HOST_PROJECT_PATH` + `HOST_PROJECT_ROOT`, else the container's `hostpath` helper |
-| XcodeGen version | project's `.xcodegen-version`, default 2.45.4 |
+| XcodeGen version | project's `.xcodegen-version` (`2.45.4`, or `<version>@<commit>` for versions the skill does not know), default 2.45.4 — always verified against a pinned commit |
 | macOS signing | `--adhoc`; else `.signid` (named identity, manual); else team (`--team`, `TEAM_ID`, `.devteam`); else ad-hoc |
 | Device signing | team required (`--team`, `TEAM_ID`, `.devteam`) |
 
@@ -75,8 +75,10 @@ sudo xcodebuild -runFirstLaunch          # system components matching this Xcode
 xcodebuild -downloadPlatform iOS         # simulator runtime (~8 GB), creates default simulators
 ```
 
-XcodeGen needs no setup: the first build clones and compiles the pinned version into
-`~/Library/Caches/apple-xcodebuild/xcodegen/<version>/` on the Mac (~1 min), shared by all projects.
+XcodeGen needs no setup: the first build clones the pinned version, checks the clone is at the
+pinned commit (a moved tag is refused, never built), and compiles it into
+`~/Library/Caches/apple-xcodebuild/xcodegen/<version>-<commit>/` on the Mac (~1 min), shared by
+all projects.
 
 ## Limits
 
@@ -86,6 +88,8 @@ XcodeGen needs no setup: the first build clones and compiles the pinned version 
   (`errSecInternalComponent`). `xc-doctor` detects it; build with `--adhoc`.
 - **Physical devices** — `--platform ios-device` builds; installing/launching on hardware is not
   automated.
+- **Timeouts** stop the local `ssh` only; a remote `xcodebuild` keeps running until it finishes.
+- Logs (`build/logs/`) and result bundles (`build/xc/results/`) keep the newest 10 of each kind.
 
 ## References
 

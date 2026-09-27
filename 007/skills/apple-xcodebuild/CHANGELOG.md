@@ -14,3 +14,9 @@
   at launch; `xc-shot` takes simulator screenshots.
 - Test suite drives every script through a fake `ssh` that runs the remote script locally
   against fake Apple tools, so the Mac-side logic is tested without a Mac.
+- Review round 1 (all found before release): XcodeGen pinned to verified commits, not mutable
+  tags; `xc-run` no longer reports a running iOS app as crashed (`grep -q` under pipefail
+  SIGPIPE'd `launchctl` — reproduced on a real simulator); app paths are regex-escaped for
+  `pgrep`/`pkill`; a remote exit 255 is no longer mistaken for an ssh failure; `xc-test` gained
+  `--adhoc`/`--setting`; logs and result bundles are pruned to the newest 10; `xc-shot
+  --appearance` restores the previous appearance.

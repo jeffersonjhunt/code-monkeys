@@ -25,6 +25,17 @@ from pathlib import Path
 DEFAULT_HOST = "host.docker.internal"
 DEFAULT_XCODEGEN_VERSION = "2.45.4"
 XCODEGEN_REPO = "https://github.com/yonaskolb/XcodeGen.git"
+# Tags can be moved, so the cached XcodeGen (compiled and run on the Mac) is pinned to a commit.
+# 2.45.4 matches avatar's tools/XcodeGen submodule. Other versions: `<version>@<sha>` in
+# .xcodegen-version (find it with: git ls-remote <repo> refs/tags/<version>).
+KNOWN_XCODEGEN = {
+    "2.45.4": "8d3d3476a69ae3e5d68e1adccc701c410c05eb36",
+    "2.46.0": "8445e778451c7e44237b90281bde622d764b0084",
+}
+# First line of every remote script's stderr: proves ssh connected, so exit 255 afterwards is the
+# script's own status, not ssh failing.
+REMOTE_SENTINEL = "__XC_REMOTE_STARTED__"
+KEEP_ARTIFACTS = 10
 # Relative to the Mac user's $HOME; remote scripts expand it as "$HOME/$rel".
 XCODEGEN_CACHE_REL = "Library/Caches/apple-xcodebuild/xcodegen"
 
@@ -146,29 +157,35 @@ def ssh_base():
     return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host_target()]
 
 
-def remote(script, args=(), capture=True, timeout=None):
+def remote(script, args=(), timeout=None):
     """Run a bash script on the Mac. Returns CompletedProcess; never raises on a non-zero exit.
 
-    Exit 255 is ssh's own failure (unreachable, auth, host key) and is turned into an XcError so
-    no caller can mistake "could not ask" for "asked and got a no".
+    Exit 255 without the sentinel is ssh's own failure (unreachable, auth, host key) and is turned
+    into an XcError so no caller can mistake "could not ask" for "asked and got a no". A remote
+    command that itself exits 255 is returned like any other status.
+
+    Timeouts kill the local ssh only; a long remote command (xcodebuild) may keep running on the
+    Mac until it finishes (accepted — the timeouts are generous).
     """
     argv = " ".join(shlex.quote(str(a)) for a in args)
     cmd = ssh_base() + [f"bash -s -- {argv}".rstrip()]
-    body = "set -euo pipefail\n" + script
+    body = f"echo {REMOTE_SENTINEL} >&2\nset -euo pipefail\n" + script
     try:
         r = subprocess.run(
             cmd,
             input=body,
             text=True,
-            capture_output=capture,
+            capture_output=True,
             timeout=timeout,
         )
     except FileNotFoundError as e:
         raise XcError("ssh is not installed in this container", code=EXIT_ENV) from e
     except subprocess.TimeoutExpired as e:
         raise XcError(f"remote command timed out after {timeout}s", code=EXIT_FAIL) from e
-    if r.returncode == 255:
-        err = (r.stderr or "").strip()
+    started = REMOTE_SENTINEL in (r.stderr or "")
+    r.stderr = "\n".join(ln for ln in (r.stderr or "").splitlines() if ln != REMOTE_SENTINEL)
+    if r.returncode == 255 and not started:
+        err = r.stderr.strip()
         fix = None
         if "Host key verification failed" in err:
             host = host_target().split("@", 1)[1]
@@ -197,18 +214,50 @@ def read_project_name(root):
 
 
 def xcodegen_version(root):
+    """(version, commit) for the project: `.xcodegen-version` holds `2.45.4` or `2.45.4@<sha>`."""
     f = Path(root) / ".xcodegen-version"
-    if f.is_file():
-        v = f.read_text().strip()
-        if not re.fullmatch(r"\d+\.\d+\.\d+", v):
-            raise XcError(f".xcodegen-version holds {v!r}, expected a version like 2.45.4")
-        return v
-    return DEFAULT_XCODEGEN_VERSION
+    v = f.read_text().strip() if f.is_file() else DEFAULT_XCODEGEN_VERSION
+    m = re.fullmatch(r"(\d+\.\d+\.\d+)(?:@([0-9a-f]{40}))?", v)
+    if not m:
+        raise XcError(f".xcodegen-version holds {v!r}, expected 2.45.4 or 2.45.4@<40-hex commit>")
+    version, sha = m.group(1), m.group(2)
+    known = KNOWN_XCODEGEN.get(version)
+    if sha and known and sha != known:
+        raise XcError(f".xcodegen-version pins {version} to {sha}, but its known commit is {known}")
+    sha = sha or known
+    if not sha:
+        raise XcError(
+            f"XcodeGen {version} has no known commit to verify against",
+            fix=f"pin it: echo {version}@$(git ls-remote {XCODEGEN_REPO} refs/tags/{version} | cut -f1) "
+                "> .xcodegen-version",
+        )
+    return version, sha
 
 
-def xcodegen_rel(version):
-    """The cached xcodegen binary, relative to the Mac user's $HOME."""
-    return f"{XCODEGEN_CACHE_REL}/{version}/bin/xcodegen"
+def xcodegen_rel(version, sha):
+    """The cached xcodegen wrapper, relative to the Mac user's $HOME (keyed by version + commit)."""
+    return f"{XCODEGEN_CACHE_REL}/{version}-{sha[:12]}/bin/xcodegen"
+
+
+def prune(directory, pattern, keep=KEEP_ARTIFACTS):
+    """Delete all but the newest `keep` entries matching `pattern` (files or bundle dirs)."""
+    d = Path(directory)
+    if not d.is_dir():
+        return
+    entries = sorted(d.glob(pattern), key=lambda p: p.name, reverse=True)
+    for p in entries[keep:]:
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            p.unlink(missing_ok=True)
+
+
+def parse_settings(pairs):
+    """Validate `--setting KEY=VALUE` arguments."""
+    for kv in pairs:
+        if "=" not in kv or not kv.split("=", 1)[0].strip():
+            raise XcError(f"--setting {kv!r} is not KEY=VALUE")
+    return list(pairs)
 
 
 def state_dir(root):
@@ -371,7 +420,7 @@ def summarize_log(text, limit=10):
 # --- xcodegen ---------------------------------------------------------------------------------
 
 _ENSURE_XCODEGEN = r"""
-rel="$1"; ver="$2"; repo="$3"
+rel="$1"; ver="$2"; repo="$3"; want="$4"
 bin="$HOME/$rel"
 if [ -x "$bin" ]; then echo "cached"; exit 0; fi
 base="$(dirname "$(dirname "$bin")")"
@@ -389,6 +438,12 @@ if [ -x "$bin" ]; then echo "cached"; exit 0; fi
 rm -rf "$base"
 mkdir -p "$base/bin"
 git clone -q --depth 1 --branch "$ver" "$repo" "$base/src" >&2
+got=$(git -C "$base/src" rev-parse HEAD)
+if [ "$got" != "$want" ]; then
+  rm -rf "$base"
+  echo "XcodeGen tag $ver is at $got, expected $want — refusing to build it" >&2
+  exit 1
+fi
 swift build -c release --package-path "$base/src" >&2
 # Where products land depends on the toolchain (.build/release, or .build/out/Products/Release
 # under the newer build system) — ask SwiftPM rather than hardcode it.
@@ -403,18 +458,18 @@ echo "built"
 """
 
 
-def ensure_xcodegen(version):
+def ensure_xcodegen(version, sha):
     """Build the pinned XcodeGen into the Mac's cache if it is not there. Returns its $HOME-relative path."""
-    rel = xcodegen_rel(version)
-    xc_log = f"XcodeGen {version}"
-    r = remote(_ENSURE_XCODEGEN, [rel, version, XCODEGEN_REPO], timeout=1800)
+    rel = xcodegen_rel(version, sha)
+    xc_log = f"XcodeGen {version} ({sha[:12]})"
+    r = remote(_ENSURE_XCODEGEN, [rel, version, XCODEGEN_REPO, sha], timeout=1800)
     if r.returncode != 0:
         raise XcError(
             f"could not build {xc_log} on the Mac: {(r.stderr or '').strip()[-800:]}",
             fix="check git and network access on the Mac, or pin another version in .xcodegen-version",
         )
     if r.stdout.strip() == "built":
-        log(f"built {xc_log} into ~/{XCODEGEN_CACHE_REL}/{version}")
+        log(f"built {xc_log} into ~/{XCODEGEN_CACHE_REL}/{version}-{sha[:12]}")
     return rel
 
 
@@ -423,8 +478,8 @@ def generate_project(root):
     root = Path(root)
     if not (root / "project.yml").is_file():
         return None
-    version = xcodegen_version(root)
-    rel = ensure_xcodegen(version)
+    version, sha = xcodegen_version(root)
+    rel = ensure_xcodegen(version, sha)
     r = remote('cd "$1" && "$HOME/$2" generate --quiet --spec project.yml', [host_path(root), rel], timeout=300)
     if r.returncode != 0:
         raise XcError(f"xcodegen generate failed: {(r.stderr or r.stdout).strip()[-1500:]}")

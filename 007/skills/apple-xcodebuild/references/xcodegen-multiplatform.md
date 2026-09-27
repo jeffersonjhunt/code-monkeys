@@ -77,7 +77,17 @@ framework imports, with `swift test` on Linux too).
 
 ## Pinning XcodeGen
 
-`.xcodegen-version` holds one version (e.g. `2.45.4`). The skill builds each version once into
-`~/Library/Caches/apple-xcodebuild/xcodegen/<version>/` on the Mac and reuses it. A project that
+`.xcodegen-version` holds one version, e.g. `2.45.4`. XcodeGen is compiled and run on the Mac,
+and git tags can be moved, so every version is pinned to a commit: the skill knows the commits for
+2.45.4 (the one avatar's submodule pins) and 2.46.0; for any other version write
+`<version>@<40-hex commit>`:
+
+```bash
+echo "2.47.0@$(git ls-remote https://github.com/yonaskolb/XcodeGen.git refs/tags/2.47.0 | cut -f1)" > .xcodegen-version
+```
+
+After cloning, the checkout's `HEAD` must equal the pinned commit or the clone is deleted and
+nothing is built. Each version+commit is built once into
+`~/Library/Caches/apple-xcodebuild/xcodegen/<version>-<commit>/` on the Mac and reused. A project that
 vendors its own XcodeGen (avatar: `tools/XcodeGen` submodule + Makefile) keeps working with its
 own tooling; `xc-build.py` simply regenerates with the cached copy of the same version.

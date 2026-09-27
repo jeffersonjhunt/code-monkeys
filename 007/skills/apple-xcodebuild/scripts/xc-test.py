@@ -113,7 +113,7 @@ def verdict(kind, name, rc, counts, log_path, extra=None):
     return res
 
 
-def run_scheme(root, base, platform, device):
+def run_scheme(root, base, platform, device, adhoc=False, settings=()):
     stamp = time.strftime("%Y%m%d-%H%M%S")
     log_local = Path(root) / "build" / "logs" / f"{stamp}-test-{platform}.log"
     bundle_local = Path(root) / "build" / "xc" / "results" / f"{stamp}-{platform}.xcresult"
@@ -126,11 +126,12 @@ def run_scheme(root, base, platform, device):
         sim = xc.pick_simulator(r.stdout, device)
         dest = f"platform=iOS Simulator,id={sim['udid']}"
         extra["device"] = sim["name"]
-    signing = xc.signing_settings(root, platform)
+    signing = xc.signing_settings(root, platform, adhoc=adhoc)
     argv = base + [
         "-destination", dest,
         "-derivedDataPath", xc.host_path(root) + "/build/DerivedData",
         *signing["settings"],
+        *settings,
     ]
     xc.log(f"testing {platform} ({dest})")
     r = xc.remote(XCTEST, [xc.host_path(log_local), xc.host_path(bundle_local), *argv], timeout=3600)
@@ -140,6 +141,8 @@ def run_scheme(root, base, platform, device):
         raise xc.XcError(f"remote test wrapper failed (exit {r.returncode}): {r.stderr.strip()[-800:]}")
     rc = int(rc_line[0][3:])
     counts = counts_from_xcresult(summary.strip())
+    xc.prune(log_local.parent, f"*-test-{platform}.log")
+    xc.prune(bundle_local.parent, f"*-{platform}.xcresult")
     res = verdict("scheme", platform, rc, counts, log_local, {"destination": dest, **extra})
     if not res["ok"] and log_local.exists():
         res.update({k: v for k, v in xc.summarize_log(log_local.read_text(errors="replace")).items()
@@ -161,6 +164,7 @@ def run_package(root, pkg):
         raise xc.XcError(f"remote swift test wrapper failed (exit {r.returncode}): {r.stderr.strip()[-800:]}")
     rc = int(rc_line[0][3:])
     text = log_local.read_text(errors="replace") if log_local.exists() else ""
+    xc.prune(log_local.parent, f"*-swifttest-{pkg.name}.log")
     res = verdict("package", pkg.name, rc, counts_from_swift_test(text), log_local)
     if not res["ok"]:
         res.update({k: v for k, v in xc.summarize_log(text).items() if k in ("errors", "error_samples", "tail")})
@@ -177,7 +181,12 @@ def main():
     ap.add_argument("--scheme")
     ap.add_argument("--project-dir", default=".")
     ap.add_argument("--no-generate", action="store_true")
+    ap.add_argument("--adhoc", action="store_true",
+                    help="sign macOS test builds ad-hoc even if .signid/.devteam exist")
+    ap.add_argument("--setting", action="append", default=[], metavar="KEY=VALUE",
+                    help="extra xcodebuild build setting (repeatable)")
     args = ap.parse_args()
+    xc.parse_settings(args.setting)
 
     root = xc.find_project_root(args.project_dir)
     results = []
@@ -191,7 +200,7 @@ def main():
         if not platforms:
             platforms = xc.supported_platforms(base)
         for p in platforms:
-            results.append(run_scheme(root, base, p, args.device))
+            results.append(run_scheme(root, base, p, args.device, args.adhoc, args.setting))
 
     if not results:
         raise xc.XcError("nothing to test: --packages-only with no --package")
