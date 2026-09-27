@@ -1,0 +1,15 @@
+# XcodeGen output — project.yml is the source of truth
+*.xcodeproj/
+# apple-xcodebuild output: DerivedData, logs, results, build/xc state
+build/
+dist/
+# SwiftPM
+.build/
+.swiftpm/
+# Xcode per-user state
+xcuserdata/
+*.xcuserstate
+# Per-developer signing (see apple-xcodebuild references/signing-and-tcc.md)
+.devteam
+.signid
+.DS_Store

@@ -1,0 +1,48 @@
+# XcodeGen spec — the source of truth. The .xcodeproj is generated from it (and gitignored):
+# the apple-xcodebuild skill's xc-build.py regenerates it before every build, using the XcodeGen
+# version pinned in .xcodegen-version (built once into a cache on the Mac).
+name: __APP__
+options:
+  bundleIdPrefix: __BUNDLE_PREFIX__
+  deploymentTarget:
+__DEPLOYMENT_TARGETS__
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  __APP__:
+    type: application
+    supportedDestinations: [__DESTINATIONS__]
+    sources:
+      - Sources/__APP__
+      - Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: __BUNDLE_ID__
+        PRODUCT_NAME: __APP__
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: __APP__
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: YES
+__IOS_SETTINGS__
+    scheme:
+      testTargets:
+        - __APP__Tests
+  __APP__Tests:
+    type: bundle.unit-test
+    supportedDestinations: [__DESTINATIONS__]
+    sources:
+      - Tests/__APP__Tests
+    dependencies:
+      - target: __APP__
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        # XcodeGen derives TEST_HOST from the iOS bundle layout (App.app/App) for every
+        # destination; a macOS app keeps its binary under Contents/MacOS.
+        TEST_HOST[sdk=macosx*]: $(BUILT_PRODUCTS_DIR)/__APP__.app/Contents/MacOS/__APP__
+        BUNDLE_LOADER[sdk=macosx*]: $(TEST_HOST)
