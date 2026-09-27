@@ -4,7 +4,7 @@ description: Scaffold, build, test, run and screenshot iOS, iPadOS and macOS app
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.0.0"
+  version: "1.0.1"
 ---
 
 # apple-xcodebuild
