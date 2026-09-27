@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "screencapture $*" >> "${FAKE_LOG:-/dev/null}"
+out="${!#}"; mkdir -p "$(dirname "$out")"; printf 'PNG' > "$out"

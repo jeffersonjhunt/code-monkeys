@@ -75,6 +75,7 @@ open build/DerivedData/Build/Products/Debug/App.app      # LaunchServices, not t
 pgrep -f 'App.app/Contents/MacOS/App'
 log stream --style compact --predicate 'process == "App"'
 pkill -f 'App.app/Contents/MacOS/App'
+screencapture -x -o -l<windowid> out.png                 # one window, no shadow (needs Screen Recording)
 tccutil reset All com.bundle.id                          # forget permission grants
 defaults delete com.bundle.id                            # forget preferences
 ```

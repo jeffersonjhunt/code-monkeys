@@ -74,6 +74,21 @@ def signing_check(root):
                  "fix .signid/.devteam, or build with --adhoc")
 
 
+def screen_recording_check():
+    """Screenshots of macOS windows need the Screen Recording grant for the SSH server."""
+    try:
+        helper = xc.ensure_xcwin()
+    except xc.XcError as e:
+        return check("screen-recording", "warn", f"could not build the window helper: {e}",
+                     "macOS screenshots are unavailable until it builds (needs swiftc on the Mac)")
+    r = xc.remote('"$HOME/$1" preflight', [helper])
+    if r.stdout.strip() == "granted":
+        return check("screen-recording", "ok", "SSH sessions may capture windows (macOS screenshots work)")
+    return check("screen-recording", "warn",
+                 "SSH sessions may not record the screen — xc-shot --platform macos will refuse",
+                 xc.SCREEN_RECORDING_FIX)
+
+
 def check(name, status, detail, fix=None):
     c = {"check": name, "status": status, "detail": detail}
     if fix:
@@ -177,6 +192,8 @@ def main():
                                     "xc-build.py builds it on first use (needs git + network on the Mac)"
                                     if facts.get("git") == "yes" else "install git on the Mac"))
 
+    if "macos" in platforms:
+        checks.append(screen_recording_check())
     if root is not None and "macos" in platforms:
         checks.append(signing_check(root))
 

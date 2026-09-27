@@ -46,6 +46,15 @@ Options:
    (prompts for the Mac password), then build in the same session window. Never put the
    password in a script or env file.
 
+## Screen Recording for SSH (macOS screenshots)
+
+`xc-shot --platform macos` needs the Screen Recording (TCC) grant — not for the app, but for the
+process that owns SSH sessions, `/usr/libexec/sshd-keygen-wrapper`. Grant it once under System
+Settings ▸ Privacy & Security ▸ Screen & System Audio Recording. `xc-doctor` checks it with
+`CGPreflightScreenCaptureAccess()` from inside an SSH session, which is exactly the process that
+will capture. The grant covers every SSH session to that account, so give it only on a Mac you
+control.
+
 ## Resetting a macOS app's state
 
 ```bash

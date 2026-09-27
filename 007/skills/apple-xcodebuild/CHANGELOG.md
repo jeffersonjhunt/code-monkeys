@@ -11,7 +11,9 @@
 - `xc-doctor` checks everything that blocked real sessions: first-launch components, simulator
   runtimes, path visibility, and whether codesigning works over SSH.
 - `xc-test` fails on zero tests; `xc-run` launches the exact recorded build and fails on a crash
-  at launch; `xc-shot` takes simulator screenshots.
+  at launch; `xc-shot` takes simulator screenshots and — with the Screen Recording grant for
+  `sshd-keygen-wrapper` — macOS screenshots of the app's own window only (a small Swift helper,
+  compiled once on the Mac, finds the window; `xc-doctor` checks the grant).
 - Test suite drives every script through a fake `ssh` that runs the remote script locally
   against fake Apple tools, so the Mac-side logic is tested without a Mac.
 - Review round 1 (all found before release): XcodeGen pinned to verified commits, not mutable

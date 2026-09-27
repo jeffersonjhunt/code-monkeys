@@ -34,7 +34,7 @@ cd Demo
 python3 $X/xc-build.py                        # every platform the scheme supports
 python3 $X/xc-test.py                         # scheme tests on each platform
 python3 $X/xc-run.py --platform ios-sim       # or --platform macos
-python3 $X/xc-shot.py                         # simulator screenshot → build/shots/
+python3 $X/xc-shot.py                         # screenshot → build/shots/ (or --platform macos)
 python3 $X/xc-run.py --platform ios-sim --stop
 ```
 
@@ -46,12 +46,12 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 
 | Script | Does |
 |---|---|
-| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
+| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, the Screen Recording grant macOS screenshots need, and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
 | `xc-bootstrap.py <App>` | Scaffolds an XcodeGen project: one app target for `--platforms ios,macos` (either or both), Swift 6, generated Info.plist, asset catalog, Swift Testing target, `.gitignore`, pinned `.xcodegen-version`. Scaffolds into an existing dir (e.g. a fresh repo) only if nothing would be overwritten; extends an existing `.gitignore`. |
 | `xc-build.py` | Regenerates the project from `project.yml`, builds `--platform ios-sim\|ios-device\|macos\|all` in `--config debug\|release`. Full log in `build/logs/`; the built app's path and bundle id (from the build settings) in `build/xc/build-<platform>.json`. `--setting KEY=VALUE` passes extra build settings; `--adhoc` forces ad-hoc macOS signing. |
 | `xc-test.py` | `xcodebuild test` per platform (a concrete simulator for iOS) with counts read from the `.xcresult`; `--package DIR` runs `swift test` for a local package. **Zero tests is a failure**, and so is a run whose counts cannot be read. Takes the same `--setting` and `--adhoc` as `xc-build`. |
 | `xc-run.py --platform ios-sim\|macos` | Launches the *recorded* app. Simulator: boot, wait for boot, install, launch. Mac: `open` (LaunchServices). Re-checks the process after `--settle` s so a crash-on-launch fails. `--logs N` captures N s of the app's log; `--stop` terminates it. |
-| `xc-shot.py` | Screenshot of the booted simulator (status bar pinned to 9:41, optional `--appearance dark`). **Not macOS** — see limits. |
+| `xc-shot.py` | iOS: the booted simulator's screen (status bar pinned to 9:41; `--appearance dark` for the shot, then restored). macOS: **only the app's own window**, never the rest of the desktop — needs the Screen Recording grant below. |
 
 ## Configuration
 
@@ -75,6 +75,11 @@ sudo xcodebuild -runFirstLaunch          # system components matching this Xcode
 xcodebuild -downloadPlatform iOS         # simulator runtime (~8 GB), creates default simulators
 ```
 
+For macOS screenshots only: System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording ▸
+enable **sshd-keygen-wrapper** (`/usr/libexec/sshd-keygen-wrapper`, the SSH server; add it with +).
+Without it the window server hides other apps' windows from SSH sessions. Note this lets *any* SSH
+session to your account record the screen.
+
 XcodeGen needs no setup: the first build clones the pinned version, checks the clone is at the
 pinned commit (a moved tag is refused, never built), and compiles it into
 `~/Library/Caches/apple-xcodebuild/xcodegen/<version>-<commit>/` on the Mac (~1 min), shared by
@@ -82,8 +87,6 @@ all projects.
 
 ## Limits
 
-- **macOS screenshots** — an SSH session cannot see the Mac's GUI session's windows. `xc-shot.py
-  --platform macos` exits 2 and says so. Verify macOS layout with UI tests or a manual capture.
 - **Identity signing over SSH** — the login keychain's private keys are usually unusable from SSH
   (`errSecInternalComponent`). `xc-doctor` detects it; build with `--adhoc`.
 - **Physical devices** — `--platform ios-device` builds; installing/launching on hardware is not

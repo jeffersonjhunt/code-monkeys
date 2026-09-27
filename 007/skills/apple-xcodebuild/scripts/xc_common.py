@@ -537,3 +537,59 @@ def supported_platforms(base_args):
     if not out:
         raise XcError(f"scheme supports none of iOS Simulator / macOS (SUPPORTED_PLATFORMS={sdks})")
     return out
+
+
+# --- macOS processes and windows --------------------------------------------------------------
+
+# Bash: proc_re <path> -> an anchored ERE matching <path> literally, for pgrep/pkill -f. Paths may
+# contain "(", "+", "[" … which would otherwise be regex syntax.
+PROC_RE_FN = r"""
+proc_re() { printf '^%s' "$(printf '%s' "$1" | sed 's/[][\\.*^$(){}+?|]/\\&/g')"; }
+"""
+
+XCWIN_SOURCE = Path(__file__).resolve().parent.parent / "assets" / "xcwin.swift"
+XCWIN_CACHE_REL = "Library/Caches/apple-xcodebuild/xcwin"
+
+_ENSURE_XCWIN = r"""
+rel="$1"
+bin="$HOME/$rel"
+if [ ! -x "$bin" ]; then
+  mkdir -p "$(dirname "$bin")"
+  # Per-process temp names (two first runs at once each compile their own, then mv atomically).
+  # The source keeps its .swift extension: swiftc picks the input's handling by extension.
+  src="$(dirname "$bin")/xcwin.$$.swift"
+  trap 'rm -f "$src" "$bin.$$"' EXIT
+  cat > "$src" <<'XCWIN_SOURCE_EOF'
+__SOURCE__
+XCWIN_SOURCE_EOF
+  swiftc -O "$src" -o "$bin.$$" >&2
+  mv "$bin.$$" "$bin"
+fi
+echo "$rel"
+"""
+
+
+def xcwin_rel():
+    """The window helper's cache path, keyed by its source hash so an edit rebuilds it."""
+    import hashlib
+
+    digest = hashlib.sha256(XCWIN_SOURCE.read_bytes()).hexdigest()[:12]
+    return f"{XCWIN_CACHE_REL}/{digest}/xcwin"
+
+
+def ensure_xcwin():
+    """Compile the window helper on the Mac once. Returns its $HOME-relative path."""
+    source = XCWIN_SOURCE.read_text()
+    if "XCWIN_SOURCE_EOF" in source:
+        raise XcError("xcwin.swift must not contain the heredoc marker XCWIN_SOURCE_EOF")
+    rel = xcwin_rel()
+    r = remote(_ENSURE_XCWIN.replace("__SOURCE__", source), [rel], timeout=300)
+    if r.returncode != 0:
+        raise XcError(f"could not compile the window helper on the Mac: {r.stderr.strip()[-800:]}")
+    return rel
+
+
+SCREEN_RECORDING_FIX = (
+    "on the Mac: System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording ▸ enable "
+    "sshd-keygen-wrapper (/usr/libexec/sshd-keygen-wrapper — the SSH server; add it with + if absent)"
+)

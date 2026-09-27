@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Fake swiftc: "compiles" xcwin into a script answering like the real helper.
+# Env: FAKE_SCREEN_ACCESS (granted|denied), FAKE_WINDOW_ID (empty = the app has no window).
+echo "swiftc $*" >> "${FAKE_LOG:-/dev/null}"
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+# Like the real one: an input without a .swift extension goes to the linker and fails.
+case "$2" in *.swift) ;; *) echo "ld: unknown file type in '$2'" >&2; exit 1 ;; esac
+cat > "$out" <<'HELPER'
+#!/usr/bin/env bash
+case "$1" in
+  preflight) echo "${FAKE_SCREEN_ACCESS:-granted}" ;;
+  window) id="${FAKE_WINDOW_ID-77}"; [ -n "$id" ] || exit 1; echo "$id" ;;
+  *) exit 2 ;;
+esac
+HELPER
+chmod +x "$out"

@@ -454,9 +454,57 @@ def test_shot_restores_appearance(project, env, tmp_path):
         < log.index("ui NEW-1 appearance light")
 
 
-def test_shot_refuses_macos(project, env):
-    r = run("xc-shot.py", ["--platform", "macos"], env=env, cwd=project)
-    assert r.returncode == 2 and "SSH" in r.json["error"]
+@pytest.fixture
+def mac_running(project, env):
+    assert run("xc-build.py", ["--platform", "macos"], env=env, cwd=project).returncode == 0
+    assert run("xc-run.py", ["--platform", "macos", "--settle", "0"], env=env, cwd=project).returncode == 0
+    return project
+
+
+def test_macos_shot_captures_only_the_app_window(mac_running, env):
+    r = run("xc-shot.py", ["--platform", "macos", "--out", str(mac_running / "build" / "m.png")],
+            env=env, cwd=mac_running)
+    assert r.returncode == 0, r.stderr
+    assert r.json["window"] == "77"
+    assert "screencapture -x -o -l77 " in calls(env)
+    assert (mac_running / "build" / "m.png").read_text() == "PNG"
+
+
+def test_macos_shot_helper_is_compiled_once(mac_running, env):
+    for _ in range(2):
+        assert run("xc-shot.py", ["--platform", "macos"], env=env, cwd=mac_running).returncode == 0
+    assert calls(env).count("swiftc ") == 1
+    assert (Path(env["HOME"]) / xc.xcwin_rel()).is_file()
+
+
+def test_macos_shot_without_screen_recording_says_how_to_grant_it(mac_running, env):
+    r = run("xc-shot.py", ["--platform", "macos"], env=env, cwd=mac_running, FAKE_SCREEN_ACCESS="denied")
+    assert r.returncode == 2
+    assert "sshd-keygen-wrapper" in r.json["fix"]
+    assert "screencapture" not in calls(env)
+
+
+def test_macos_shot_needs_a_running_app_with_a_window(project, env, mac_running):
+    r = run("xc-shot.py", ["--platform", "macos"], env=env, cwd=mac_running, FAKE_WINDOW_ID="")
+    assert r.returncode == 1 and "no on-screen window" in r.json["error"]
+    assert "screencapture" not in calls(env), "no window must never fall back to a capture"
+    run("xc-run.py", ["--platform", "macos", "--stop"], env=env, cwd=mac_running)
+    r = run("xc-shot.py", ["--platform", "macos"], env=env, cwd=mac_running)
+    assert r.returncode == 1 and "not running" in r.json["error"] and "xc-run" in r.json["fix"]
+
+
+def test_macos_shot_refuses_appearance(mac_running, env):
+    r = run("xc-shot.py", ["--platform", "macos", "--appearance", "dark"], env=env, cwd=mac_running)
+    assert r.returncode == 1 and "simulator-only" in r.json["error"]
+
+
+def test_doctor_reports_screen_recording(project, env):
+    r = run("xc-doctor.py", ["--platform", "macos"], env=env, cwd=project)
+    assert statuses(r)["screen-recording"] == "ok"
+    r = run("xc-doctor.py", ["--platform", "macos"], env=env, cwd=project, FAKE_SCREEN_ACCESS="denied")
+    assert r.returncode == 0, "a missing grant only disables screenshots: warn, do not fail"
+    c = next(c for c in r.json["checks"] if c["check"] == "screen-recording")
+    assert c["status"] == "warn" and "sshd-keygen-wrapper" in c["fix"]
 
 
 def test_shot_requires_a_booted_simulator(project, env):

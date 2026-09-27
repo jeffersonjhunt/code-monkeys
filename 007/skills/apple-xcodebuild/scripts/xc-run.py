@@ -56,8 +56,7 @@ xcrun simctl terminate "$1" "$2" >/dev/null 2>&1 && echo "STOPPED=yes" || echo "
 MAC_RUN = r"""
 app="$1"; settle="$2"; logsecs="$3"; log="$4"; exe="$5"
 bin="$app/Contents/MacOS/$exe"
-# pgrep/pkill take a regex: escape the path so "(", "+", "[" … in it match literally.
-re="^$(printf '%s' "$bin" | sed 's/[][\\.*^$(){}+?|]/\\&/g')"
+re=$(proc_re "$bin")
 pkill -f "$re" 2>/dev/null || true
 if [ "$logsecs" -gt 0 ]; then
   mkdir -p "$(dirname "$log")"
@@ -78,7 +77,7 @@ if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "RUNNING=yes"; else ec
 
 MAC_STOP = r"""
 bin="$1/Contents/MacOS/$2"
-re="^$(printf '%s' "$bin" | sed 's/[][\\.*^$(){}+?|]/\\&/g')"
+re=$(proc_re "$bin")
 pkill -f "$re" 2>/dev/null && echo "STOPPED=yes" || echo "STOPPED=no"
 """
 
@@ -121,12 +120,12 @@ def main():
                                 xc.host_path(log_local) if args.logs else "", exe], timeout=600)
     else:
         if args.stop:
-            f = facts(xc.remote(MAC_STOP, [app, exe]).stdout)
+            f = facts(xc.remote(xc.PROC_RE_FN + MAC_STOP, [app, exe]).stdout)
             result.update(ok=True, stopped=f.get("STOPPED") == "yes")
             xc.emit(result)
             return 0
         xc.log(f"opening {app}")
-        r = xc.remote(MAC_RUN, [app, args.settle, args.logs,
+        r = xc.remote(xc.PROC_RE_FN + MAC_RUN, [app, args.settle, args.logs,
                                 xc.host_path(log_local) if args.logs else "", exe], timeout=600)
 
     if r.returncode != 0:
