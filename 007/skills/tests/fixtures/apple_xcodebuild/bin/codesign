@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+echo "codesign $*" >> "${FAKE_LOG:-/dev/null}"
+[ -n "${FAKE_CODESIGN_OUT:-}" ] && echo "$FAKE_CODESIGN_OUT" >&2
+exit "${FAKE_CODESIGN_RC:-0}"

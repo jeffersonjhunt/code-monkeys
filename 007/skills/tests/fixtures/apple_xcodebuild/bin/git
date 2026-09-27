@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fake git: `clone … <dest>` creates the destination; `rev-parse HEAD` prints $FAKE_GIT_SHA.
+echo "git $*" >> "${FAKE_LOG:-/dev/null}"
+case "$1" in
+  clone) mkdir -p "${!#}" ;;
+  -C) [ "$3" = "rev-parse" ] && echo "${FAKE_GIT_SHA:?FAKE_GIT_SHA not set}" ;;
+esac
+exit 0

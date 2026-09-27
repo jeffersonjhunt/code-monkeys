@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Fake swift: `build` (XcodeGen cache: makes a fake xcodegen), `build --show-bin-path`, `test`.
+echo "swift $*" >> "${FAKE_LOG:-/dev/null}"
+pkg=""; prev=""
+for a in "$@"; do [ "$prev" = "--package-path" ] && pkg="$a"; prev="$a"; done
+case "$1" in
+  build)
+    bin="$pkg/.build/out/Products/Release"
+    case " $* " in *" --show-bin-path "*) echo "$bin"; exit 0 ;; esac
+    mkdir -p "$bin"
+    cat > "$bin/xcodegen" <<'XG'
+#!/usr/bin/env bash
+echo "xcodegen $*" >> "${FAKE_LOG:-/dev/null}"
+[ "$1" = "--version" ] && { echo "Version: fake"; exit 0; }
+name=$(sed -n 's/^name:[[:space:]]*//p' project.yml | head -1)
+mkdir -p "$name.xcodeproj"
+XG
+    chmod +x "$bin/xcodegen" ;;
+  test)
+    [ -n "${FAKE_SWIFT_TEST_OUTPUT:-}" ] && printf '%s\n' "$FAKE_SWIFT_TEST_OUTPUT"
+    exit "${FAKE_SWIFT_TEST_RC:-0}" ;;
+esac

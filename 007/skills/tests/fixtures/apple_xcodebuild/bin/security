@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo '  1) 20B850F78235F69B870CDB40EA3DE0E35C5D93D7 "Apple Development: dev@example.com (ABCDE12345)"'
+echo '     1 valid identities found'

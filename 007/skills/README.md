@@ -25,7 +25,8 @@ Each skill lives in its own directory and follows a standard structure:
 | [spark-build](spark-build/) | Build the `cuda-*` primate images on a spark-cluster node, draining it from the cluster first |
 | [sdlc](sdlc/) | The default software development lifecycle every agent follows — intake through release |
 | [agent-team](agent-team/) | Multi-agent team orchestration (PM, Architect, Developer, Designer, Tester, Reviewer) with HITL checkpoints at every phase |
-| [ios-xcodebuild](ios-xcodebuild/) | Bootstrap, build, and deploy iOS apps from a Docker container via SSH to a macOS host |
+| [apple-xcodebuild](apple-xcodebuild/) | Scaffold, build, test, run and screenshot iOS, iPadOS and macOS apps (incl. cross-platform) from a container via SSH to a macOS host |
+| [ios-xcodebuild](ios-xcodebuild/) | **Deprecated** — use apple-xcodebuild. Scheduled for removal |
 
 ## Usage
 

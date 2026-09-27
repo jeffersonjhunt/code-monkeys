@@ -1,0 +1,15 @@
+{
+  "devices": {
+    "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+      {"udid": "OLD-1", "name": "iPhone 17", "state": "Shutdown", "isAvailable": true}
+    ],
+    "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
+      {"udid": "NEW-PAD", "name": "iPad Air 11-inch (M4)", "state": "Shutdown", "isAvailable": true},
+      {"udid": "NEW-1", "name": "iPhone 18 Pro", "state": "Shutdown", "isAvailable": true},
+      {"udid": "NEW-2", "name": "iPhone 17e", "state": "Shutdown", "isAvailable": true}
+    ],
+    "com.apple.CoreSimulator.SimRuntime.watchOS-27-0": [
+      {"udid": "WATCH", "name": "Apple Watch", "state": "Shutdown", "isAvailable": true}
+    ]
+  }
+}

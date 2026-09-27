@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "${FAKE_DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
