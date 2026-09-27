@@ -1,5 +1,15 @@
 # Changelog — apple-xcodebuild
 
+## [1.1.0] - 2026-09-27
+
+- `xc-test --packages-only --package DIR` works without an Xcode project (logs in the package's
+  `.build/xc/logs`), so an engine package can be tested before the app exists.
+- `xc-doctor` checks Automation Mode for macOS UI tests (a warning with the one-time fix).
+- SKILL.md gains "macOS UI tests (XCUITest)": click not tap on macOS 27, setup in the launch
+  environment, `-ApplePersistenceIgnoreState YES`, Automation Mode without a prompt. The
+  references record that no Accessibility grant is needed, where it lives on macOS 27, the SSH vs
+  GUI-session note, and that git's ownership glitch after Mac runs can last 10+ seconds.
+
 ## [1.0.1] - 2026-09-27
 
 - `xc-doctor` reports an invalid or unpinned `.xcodegen-version` as a failed `xcodegen` check

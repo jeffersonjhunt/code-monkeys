@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fake automationmodetool status. FAKE_AUTOMATION=auth: enabling Automation Mode needs authentication.
+echo "Automation Mode is disabled."
+if [ "${FAKE_AUTOMATION:-ok}" = "auth" ]; then
+  echo "This device REQUIRES user authentication to enable Automation Mode."
+else
+  echo "This device DOES NOT REQUIRE user authentication to enable Automation Mode."
+fi

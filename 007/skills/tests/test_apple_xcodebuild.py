@@ -386,6 +386,23 @@ def test_swift_test_counts(output, expected):
     assert mod.counts_from_swift_test("Building for debugging...\nBuild complete!") is None
 
 
+def test_packages_need_no_xcode_project(env, tmp_path):
+    """An engine package can be tested before any app project exists; logs go to its .build."""
+    pkg = tmp_path / "Engine"
+    pkg.mkdir()
+    (pkg / "Package.swift").write_text("// swift-tools-version: 6.0\n")
+    r = run("xc-test.py", ["--packages-only", "--package", str(pkg), "--project-dir", str(pkg)], env=env,
+            FAKE_SWIFT_TEST_OUTPUT="✔ Test run with 3 tests in 1 suite passed after 0.0 seconds.")
+    assert r.returncode == 0, r.stderr
+    assert r.json["results"][0]["passed"] == 3
+    assert list((pkg / ".build" / "xc" / "logs").glob("*-swifttest-Engine.log"))
+
+
+def test_scheme_tests_still_need_a_project(env, tmp_path):
+    r = run("xc-test.py", ["--project-dir", str(tmp_path)], env=env)
+    assert r.returncode == 1 and "project.yml" in r.json["error"]
+
+
 def test_package_with_no_tests_fails(project, env, tmp_path):
     pkg = tmp_path / "Engine"
     pkg.mkdir()
@@ -514,6 +531,15 @@ def test_macos_shot_needs_a_running_app_with_a_window(project, env, mac_running)
 def test_macos_shot_refuses_appearance(mac_running, env):
     r = run("xc-shot.py", ["--platform", "macos", "--appearance", "dark"], env=env, cwd=mac_running)
     assert r.returncode == 1 and "simulator-only" in r.json["error"]
+
+
+def test_doctor_reports_automation_mode(project, env):
+    r = run("xc-doctor.py", ["--platform", "macos"], env=env, cwd=project)
+    assert statuses(r)["automation-mode"] == "ok"
+    r = run("xc-doctor.py", ["--platform", "macos"], env=env, cwd=project, FAKE_AUTOMATION="auth")
+    assert r.returncode == 0, "only UI tests need it: warn, do not fail"
+    c = next(c for c in r.json["checks"] if c["check"] == "automation-mode")
+    assert c["status"] == "warn" and "enable-automationmode-without-authentication" in c["fix"]
 
 
 def test_doctor_reports_screen_recording(project, env):

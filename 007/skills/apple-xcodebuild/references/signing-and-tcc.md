@@ -55,6 +55,18 @@ Settings ▸ Privacy & Security ▸ Screen & System Audio Recording. `xc-doctor`
 will capture. The grant covers every SSH session to that account, so give it only on a Mac you
 control.
 
+## Grants this skill does NOT need
+
+- **Accessibility** (macOS 27: System Settings ▸ Privacy & Security ▸ *Device Control & Data
+  Access*). Not needed for UI tests — `click()` works without it; granting it to
+  `sshd-keygen-wrapper` would let any SSH session control the Mac. Verified by removing it: the
+  macOS UI tests still passed.
+
+Code started over SSH runs in a command-line session, not the logged-in GUI (Aqua) session; with
+a user logged in on the Mac, `xcodebuild` from SSH works for all test kinds (Apple DTS). If that
+ever stops being true, start the run in the GUI session instead (`launchctl bootstrap gui/<uid>`
+a one-off LaunchAgent) rather than granting more permissions.
+
 ## Resetting a macOS app's state
 
 ```bash
