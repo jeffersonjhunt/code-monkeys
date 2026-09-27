@@ -89,6 +89,21 @@ def screen_recording_check():
                  xc.SCREEN_RECORDING_FIX)
 
 
+def automation_mode_check():
+    """macOS UI tests (XCUITest) need Automation Mode; unless it may be enabled without
+    authentication, every run asks for Touch ID / an Apple Watch on the Mac — and fails unattended."""
+    r = xc.remote("automationmodetool 2>&1 || true")
+    out = r.stdout
+    if "DOES NOT REQUIRE" in out:
+        return check("automation-mode", "ok", "macOS UI tests can enable Automation Mode without a prompt")
+    if not out.strip():
+        return check("automation-mode", "warn", "could not read automationmodetool's status",
+                     "on the Mac: automationmodetool")
+    return check("automation-mode", "warn",
+                 "macOS UI tests will ask for authentication on every run (Touch ID / Apple Watch)",
+                 "once, on the Mac: sudo automationmodetool enable-automationmode-without-authentication")
+
+
 def check(name, status, detail, fix=None):
     c = {"check": name, "status": status, "detail": detail}
     if fix:
@@ -201,6 +216,7 @@ def main():
 
     if "macos" in platforms:
         checks.append(screen_recording_check())
+        checks.append(automation_mode_check())
     if root is not None and "macos" in platforms:
         checks.append(signing_check(root))
 

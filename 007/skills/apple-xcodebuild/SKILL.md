@@ -4,7 +4,7 @@ description: Scaffold, build, test, run and screenshot iOS, iPadOS and macOS app
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.0.1"
+  version: "1.1.0"
 ---
 
 # apple-xcodebuild
@@ -46,10 +46,10 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 
 | Script | Does |
 |---|---|
-| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, the Screen Recording grant macOS screenshots need, and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
+| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, the Screen Recording grant macOS screenshots need, Automation Mode for macOS UI tests, and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
 | `xc-bootstrap.py <App>` | Scaffolds an XcodeGen project: one app target for `--platforms ios,macos` (either or both), Swift 6, generated Info.plist, asset catalog, Swift Testing target, `.gitignore`, pinned `.xcodegen-version`. Scaffolds into an existing dir (e.g. a fresh repo) only if nothing would be overwritten; extends an existing `.gitignore`. |
 | `xc-build.py` | Regenerates the project from `project.yml`, builds `--platform ios-sim\|ios-device\|macos\|all` in `--config debug\|release`. Full log in `build/logs/`; the built app's path and bundle id (from the build settings) in `build/xc/build-<platform>.json`. `--setting KEY=VALUE` passes extra build settings; `--adhoc` forces ad-hoc macOS signing. |
-| `xc-test.py` | `xcodebuild test` per platform (a concrete simulator for iOS) with counts read from the `.xcresult`; `--package DIR` runs `swift test` for a local package. **Zero tests is a failure**, and so is a run whose counts cannot be read. Takes the same `--setting` and `--adhoc` as `xc-build`. |
+| `xc-test.py` | `xcodebuild test` per platform (a concrete simulator for iOS) with counts read from the `.xcresult`; `--package DIR` runs `swift test` for a local package — with `--packages-only` no Xcode project is needed (logs go to the package's `.build/xc/logs`). **Zero tests is a failure**, and so is a run whose counts cannot be read. Takes the same `--setting` and `--adhoc` as `xc-build`. |
 | `xc-run.py --platform ios-sim\|macos` | Launches the *recorded* app. Simulator: boot, wait for boot, install, launch. Mac: `open` (LaunchServices). Re-checks the process after `--settle` s so a crash-on-launch fails. `--logs N` captures N s of the app's log; `--stop` terminates it. |
 | `xc-shot.py` | iOS: the booted simulator's screen (status bar pinned to 9:41; `--appearance dark` for the shot, then restored). macOS: **only the app's own window**, never the rest of the desktop — needs the Screen Recording grant below. |
 
@@ -84,6 +84,26 @@ XcodeGen needs no setup: the first build clones the pinned version, checks the c
 pinned commit (a moved tag is refused, never built), and compiles it into
 `~/Library/Caches/apple-xcodebuild/xcodegen/<version>-<commit>/` on the Mac (~1 min), shared by
 all projects.
+
+## macOS UI tests (XCUITest)
+
+UI tests run on both platforms through `xc-test.py`, but macOS 27 needs four things (each cost a real
+debugging session):
+
+1. **Click, don't tap.** On macOS 27 `XCUIElement.tap()` no longer reaches controls ("Synthesize
+   event" takes ~5 s and nothing happens). Use `click()` on macOS, `tap()` elsewhere — a small
+   `press()` / `drag(to:)` extension with `#if os(macOS)` keeps tests cross-platform.
+2. **Pass test setup in `launchEnvironment`, not `launchArguments`.** macOS treats unknown
+   command-line arguments as files to open, and an app launched to "open a file" skips its first
+   window — the test then finds a menu bar and no UI.
+3. **Launch with `-ApplePersistenceIgnoreState YES`.** A run that quit with no window open saves
+   "no windows", and XCUITest's launch (unlike Finder or the Dock) doesn't send the event that
+   would open one anyway.
+4. **Automation Mode without a prompt.** Once, on the Mac:
+   `sudo automationmodetool enable-automationmode-without-authentication` — otherwise every run
+   asks for Touch ID / an Apple Watch and fails unattended. `xc-doctor` checks it.
+
+No Accessibility (Device Control & Data Access) grant is needed for any of this.
 
 ## Limits
 

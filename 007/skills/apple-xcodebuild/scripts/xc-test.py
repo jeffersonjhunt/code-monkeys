@@ -151,11 +151,14 @@ def run_scheme(root, base, platform, device, adhoc=False, settings=()):
 
 
 def run_package(root, pkg):
+    """`swift test` one package. Logs go to the project's build/logs, or — with no Xcode project
+    around (a package on its own) — to the package's .build/xc/logs, which SwiftPM ignores."""
     pkg = Path(pkg).resolve()
     if not (pkg / "Package.swift").is_file():
         raise xc.XcError(f"{pkg} has no Package.swift")
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    log_local = Path(root) / "build" / "logs" / f"{stamp}-swifttest-{pkg.name}.log"
+    logs = Path(root) / "build" / "logs" if root else pkg / ".build" / "xc" / "logs"
+    log_local = logs / f"{stamp}-swifttest-{pkg.name}.log"
     log_local.parent.mkdir(parents=True, exist_ok=True)
     xc.log(f"swift test {pkg.name}")
     r = xc.remote(SWIFTTEST, [xc.host_path(log_local), xc.host_path(pkg)], timeout=3600)
@@ -188,7 +191,14 @@ def main():
     args = ap.parse_args()
     xc.parse_settings(args.setting)
 
-    root = xc.find_project_root(args.project_dir)
+    if args.packages_only:
+        # Packages need no Xcode project (e.g. an engine package tested before the app exists).
+        try:
+            root = xc.find_project_root(args.project_dir)
+        except xc.XcError:
+            root = None
+    else:
+        root = xc.find_project_root(args.project_dir)
     results = []
     for pkg in args.package:
         results.append(run_package(root, pkg))
