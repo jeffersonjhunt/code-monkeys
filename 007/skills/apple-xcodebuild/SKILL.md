@@ -4,7 +4,7 @@ description: Scaffold, build, test, run and screenshot iOS, iPadOS and macOS app
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.1.0"
+  version: "1.1.1"
 ---
 
 # apple-xcodebuild
@@ -102,6 +102,10 @@ debugging session):
 4. **Automation Mode without a prompt.** Once, on the Mac:
    `sudo automationmodetool enable-automationmode-without-authentication` — otherwise every run
    asks for Touch ID / an Apple Watch and fails unattended. `xc-doctor` checks it.
+5. **Nobody using the Mac during the run.** While someone is working on the Mac, macOS 27 won't
+   let the test runner pull the app to the front: a test waits 60 s and fails "Failed to activate
+   application … (current state: Running Background)", often only the first few of a run. Rerun
+   with the Mac idle before suspecting the code.
 
 No Accessibility (Device Control & Data Access) grant is needed for any of this.
 
