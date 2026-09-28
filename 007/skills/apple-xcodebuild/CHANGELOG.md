@@ -1,5 +1,10 @@
 # Changelog — apple-xcodebuild
 
+## [1.1.1] - 2026-09-27
+
+- Docs: macOS UI tests fail "Failed to activate application … Running Background" while someone
+  is using the Mac; rerun with it idle (SKILL.md › macOS UI tests, troubleshooting).
+
 ## [1.1.0] - 2026-09-27
 
 - `xc-test --packages-only --package DIR` works without an Xcode project (logs in the package's
