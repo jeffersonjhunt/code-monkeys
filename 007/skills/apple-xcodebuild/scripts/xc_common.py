@@ -1,5 +1,12 @@
 """Shared plumbing for the apple-xcodebuild scripts: host resolution, path mapping, remote exec.
 
+The scripts run in one of two places:
+  - a container (or any other machine) sharing a folder with the Mac: commands go over SSH and
+    container paths are mapped to the Mac's (`hostpath`);
+  - the Mac itself, e.g. `ssh mac 'python3 …/xc-build.py --project-dir /Users/me/Source/app'` for
+    a project that lives only on that Mac: commands run right here and paths need no mapping.
+`on_the_mac()` decides; nothing else in the scripts differs between the two.
+
 Everything that touches the Mac goes through `remote()`. It sends a bash script over SSH on stdin
 (`bash -s`), so nothing is ever re-quoted through a remote login shell, and it always prepends
 `set -euo pipefail`. That is the whole fix for the bug this skill replaces: ios-xcodebuild ran
@@ -78,6 +85,30 @@ def run_main(fn):
     sys.exit(code or 0)
 
 
+# --- where the Mac is ---------------------------------------------------------------------------
+
+
+def on_the_mac():
+    """True when the scripts run on the Mac that builds: commands then run locally, not over SSH.
+
+    XC_LOCAL=1 / XC_LOCAL=0 forces the answer (the test suite runs on Linux). Otherwise a Mac
+    runs locally unless XC_HOST names another Mac to drive.
+    """
+    forced = os.environ.get("XC_LOCAL")
+    if forced is not None:
+        return forced == "1"
+    return sys.platform == "darwin" and not os.environ.get("XC_HOST")
+
+
+def where():
+    """The Mac being driven, for messages: user@host over SSH, or this Mac."""
+    if on_the_mac():
+        import socket
+
+        return f"this Mac ({socket.gethostname()})"
+    return host_target()
+
+
 # --- paths ------------------------------------------------------------------------------------
 
 
@@ -94,12 +125,14 @@ def find_project_root(start):
 
 
 def host_path(local):
-    """Map a container path to the same path as the Mac sees it.
+    """Map a container path to the same path as the Mac sees it (on the Mac: the path itself).
 
     HOST_PROJECT_PATH (with HOST_PROJECT_ROOT, the local dir it corresponds to) wins, for setups
     without `hostpath`. Otherwise the container's `hostpath` helper does the translation.
     """
     local = str(Path(local).resolve())
+    if on_the_mac():
+        return local
     override = os.environ.get("HOST_PROJECT_PATH")
     if override:
         root = os.environ.get("HOST_PROJECT_ROOT")
@@ -158,7 +191,8 @@ def ssh_base():
 
 
 def remote(script, args=(), timeout=None):
-    """Run a bash script on the Mac. Returns CompletedProcess; never raises on a non-zero exit.
+    """Run a bash script on the Mac (over SSH, or directly when on_the_mac()). Returns
+    CompletedProcess; never raises on a non-zero exit.
 
     Exit 255 without the sentinel is ssh's own failure (unreachable, auth, host key) and is turned
     into an XcError so no caller can mistake "could not ask" for "asked and got a no". A remote
@@ -167,8 +201,12 @@ def remote(script, args=(), timeout=None):
     Timeouts kill the local ssh only; a long remote command (xcodebuild) may keep running on the
     Mac until it finishes (accepted — the timeouts are generous).
     """
-    argv = " ".join(shlex.quote(str(a)) for a in args)
-    cmd = ssh_base() + [f"bash -s -- {argv}".rstrip()]
+    local = on_the_mac()
+    if local:
+        cmd = ["bash", "-s", "--", *(str(a) for a in args)]
+    else:
+        argv = " ".join(shlex.quote(str(a)) for a in args)
+        cmd = ssh_base() + [f"bash -s -- {argv}".rstrip()]
     body = f"echo {REMOTE_SENTINEL} >&2\nset -euo pipefail\n" + script
     try:
         r = subprocess.run(
@@ -179,12 +217,12 @@ def remote(script, args=(), timeout=None):
             timeout=timeout,
         )
     except FileNotFoundError as e:
-        raise XcError("ssh is not installed in this container", code=EXIT_ENV) from e
+        raise XcError(f"{cmd[0]} is not installed here", code=EXIT_ENV) from e
     except subprocess.TimeoutExpired as e:
         raise XcError(f"remote command timed out after {timeout}s", code=EXIT_FAIL) from e
     started = REMOTE_SENTINEL in (r.stderr or "")
     r.stderr = "\n".join(ln for ln in (r.stderr or "").splitlines() if ln != REMOTE_SENTINEL)
-    if r.returncode == 255 and not started:
+    if r.returncode == 255 and not started and not local:
         err = r.stderr.strip()
         fix = None
         if "Host key verification failed" in err:

@@ -138,11 +138,14 @@ def main():
             except xc.XcError as e:
                 xcodegen_problem = check("xcodegen", "fail", str(e),
                                          e.fix or "write a version such as 2.45.4 into .xcodegen-version")
-    target = xc.host_target()
+    target = xc.where()
 
     xc.log(f"probing {target}")
     r = xc.remote(PROBE, [project_host, xcodegen_rel])
-    checks.append(check("ssh", "ok", f"connected to {target}"))
+    if xc.on_the_mac():
+        checks.append(check("host", "ok", f"running on {target}"))
+    else:
+        checks.append(check("ssh", "ok", f"connected to {target}"))
     if r.returncode != 0:
         raise xc.XcError(f"probe failed on the Mac (exit {r.returncode}): {r.stderr.strip()}")
 

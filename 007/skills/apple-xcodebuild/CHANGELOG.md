@@ -1,5 +1,12 @@
 # Changelog — apple-xcodebuild
 
+## [1.2.0] - 2026-09-29
+
+- The scripts run on the Mac itself: on macOS (unless `XC_HOST` names another Mac) every command
+  runs locally and paths need no mapping, so a project cloned only on a build Mac is driven with
+  `ssh mac 'python3 …/xc-build.py --project-dir /Users/…/app'`. `XC_LOCAL=1`/`0` forces the choice.
+  `xc-doctor` reports a `host` check instead of `ssh` there. SKILL.md › Projects that live on the Mac.
+
 ## [1.1.1] - 2026-09-27
 
 - Docs: macOS UI tests fail "Failed to activate application … Running Background" while someone
