@@ -104,6 +104,14 @@ def automation_mode_check():
                  "once, on the Mac: sudo automationmodetool enable-automationmode-without-authentication")
 
 
+def screen_lock_check():
+    problem, note = xc.screen_state()
+    if problem is None:
+        return check("screen-lock", "ok", note or "desktop session unlocked — macOS UI tests can bring apps forward")
+    reason, fix = problem
+    return check("screen-lock", "warn", f"{reason} — macOS UI tests will fail 'Running Background'", fix)
+
+
 def check(name, status, detail, fix=None):
     c = {"check": name, "status": status, "detail": detail}
     if fix:
@@ -138,11 +146,14 @@ def main():
             except xc.XcError as e:
                 xcodegen_problem = check("xcodegen", "fail", str(e),
                                          e.fix or "write a version such as 2.45.4 into .xcodegen-version")
-    target = xc.host_target()
+    target = xc.where()
 
     xc.log(f"probing {target}")
     r = xc.remote(PROBE, [project_host, xcodegen_rel])
-    checks.append(check("ssh", "ok", f"connected to {target}"))
+    if xc.on_the_mac():
+        checks.append(check("host", "ok", f"running on {target}"))
+    else:
+        checks.append(check("ssh", "ok", f"connected to {target}"))
     if r.returncode != 0:
         raise xc.XcError(f"probe failed on the Mac (exit {r.returncode}): {r.stderr.strip()}")
 
@@ -217,6 +228,7 @@ def main():
     if "macos" in platforms:
         checks.append(screen_recording_check())
         checks.append(automation_mode_check())
+        checks.append(screen_lock_check())
     if root is not None and "macos" in platforms:
         checks.append(signing_check(root))
 

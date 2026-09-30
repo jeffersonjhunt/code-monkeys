@@ -708,3 +708,138 @@ def test_summarize_log():
     assert "Foo.swift:3: cannot find 'x'" in s["error_samples"]
     assert "App.debug.dylib: errSecInternalComponent" in s["error_samples"]
     assert s["tail"][-1] == "** BUILD FAILED **"
+
+
+# --- on the Mac itself ----------------------------------------------------------------------------
+# The scripts can run on the building Mac (driven with `ssh mac 'python3 …/xc-build.py …'` for a
+# project that lives only there). Then no ssh and no path mapping: a call to either is a bug, so the
+# fake hostpath is made to fail and the fake ssh's call log must stay free of ssh.
+
+
+@pytest.fixture
+def on_mac(env):
+    e = dict(env, XC_LOCAL="1", FAKE_HOSTPATH_FAIL="1")
+    e.pop("XC_HOST_USER")          # no SSH user needed — and none must be asked for
+    return e
+
+
+def ssh_calls(env):
+    return [ln for ln in calls(env).splitlines() if ln.startswith("ssh ")]
+
+
+def test_on_the_mac_everything_runs_locally(project, on_mac):
+    r = run("xc-doctor.py", env=on_mac, cwd=project)
+    assert r.returncode == 0, r.stderr
+    assert statuses(r)["host"] == "ok" and "ssh" not in statuses(r)
+    assert r.json["host"].startswith("this Mac")
+    r = run("xc-build.py", ["--platform", "macos"], env=on_mac, cwd=project)
+    assert r.returncode == 0, r.stderr
+    state = json.loads((project / "build" / "xc" / "build-macos.json").read_text())
+    assert Path(state["log"]).is_file()
+    r = run("xc-test.py", ["--platform", "macos"], env=on_mac, cwd=project, FAKE_TEST_SUMMARY=summary(3, 3))
+    assert r.returncode == 0 and r.json["results"][0]["passed"] == 3, r.stderr
+    r = run("xc-run.py", ["--platform", "macos", "--settle", "0"], env=on_mac, cwd=project)
+    assert r.returncode == 0 and r.json["running"] is True, r.stderr
+    r = run("xc-shot.py", ["--platform", "macos", "--out", str(project / "build" / "m.png")],
+            env=on_mac, cwd=project)
+    assert r.returncode == 0, r.stderr
+    assert (project / "build" / "m.png").read_text() == "PNG"
+    assert run("xc-run.py", ["--platform", "macos", "--stop"], env=on_mac, cwd=project).json["stopped"]
+    assert ssh_calls(on_mac) == [], "nothing may go over ssh on the Mac itself"
+
+
+def test_on_the_mac_a_failed_build_still_fails(project, on_mac):
+    r = run("xc-build.py", ["--platform", "macos"], env=on_mac, cwd=project, FAKE_XCODEBUILD_RC=65)
+    assert r.returncode == 1 and r.json["results"][0]["xcodebuild_rc"] == 65
+
+
+def test_on_the_mac_exit_255_is_the_scripts(on_mac, monkeypatch):
+    """Locally there is no ssh whose own failure a 255 could be: it is the script's status."""
+    for k, v in on_mac.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("XC_HOST_USER", raising=False)
+    r = xc.remote("exit 255")
+    assert r.returncode == 255
+    assert ssh_calls(on_mac) == []
+
+
+@pytest.mark.parametrize("platform, xc_host, xc_local, expected", [
+    ("darwin", None, None, True),            # a Mac drives itself
+    ("darwin", "other-mac.lan", None, False),  # …unless told to drive another Mac
+    ("linux", None, None, False),            # a container always goes over ssh
+    ("linux", None, "1", True),              # forced (the test suite)
+    ("darwin", None, "0", False),            # forced the other way
+])
+def test_on_the_mac_decision(monkeypatch, platform, xc_host, xc_local, expected):
+    monkeypatch.setattr(xc.sys, "platform", platform)
+    for k, v in (("XC_HOST", xc_host), ("XC_LOCAL", xc_local)):
+        if v is None:
+            monkeypatch.delenv(k, raising=False)
+        else:
+            monkeypatch.setenv(k, v)
+    assert xc.on_the_mac() is expected
+
+
+# --- a locked screen ------------------------------------------------------------------------------
+# On a locked screen every macOS UI test waits 60 s and fails "Running Background" (seen on a build
+# Mac whose display went to sleep): the doctor must say so, and xc-test must refuse up front.
+
+
+@pytest.mark.parametrize("screen, status, words", [
+    ("unlocked", "ok", "unlocked"),
+    ("locked", "warn", "screen is locked"),
+    ("nologin", "warn", "nobody is logged in"),
+])
+def test_doctor_reports_the_screen_lock(project, env, screen, status, words):
+    r = run("xc-doctor.py", env=env, cwd=project, FAKE_SCREEN=screen)
+    c = next(c for c in r.json["checks"] if c["check"] == "screen-lock")
+    assert c["status"] == status and words in c["detail"]
+    assert ("fix" in c) == (status != "ok")
+
+
+def test_macos_tests_refuse_a_locked_screen(project, env):
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project,
+            FAKE_SCREEN="locked", FAKE_TEST_SUMMARY=summary(3, 3))
+    assert r.returncode == 1
+    res = r.json["results"][0]
+    assert res["ok"] is False and "screen is locked" in res["reason"] and "Lock Screen" in res["fix"]
+    assert " test" not in "".join(ln for ln in calls(env).splitlines() if ln.startswith("xcodebuild")), \
+        "no test run may start on a locked screen"
+
+
+def test_allow_locked_runs_anyway(project, env):
+    r = run("xc-test.py", ["--platform", "macos", "--allow-locked"], env=env, cwd=project,
+            FAKE_SCREEN="locked", FAKE_TEST_SUMMARY=summary(3, 3))
+    assert r.returncode == 0, r.stderr
+    assert r.json["results"][0]["passed"] == 3
+
+
+def test_ios_tests_ignore_the_mac_screen(project, env):
+    r = run("xc-test.py", ["--platform", "ios-sim"], env=env, cwd=project,
+            FAKE_SCREEN="locked", FAKE_TEST_SUMMARY=summary(2, 2))
+    assert r.returncode == 0, r.stderr
+
+
+def test_doctor_a_sleeping_display_without_a_password_is_fine(project, env):
+    r = run("xc-doctor.py", env=env, cwd=project, FAKE_SCREEN="locked", FAKE_SCREENLOCK="off")
+    c = next(c for c in r.json["checks"] if c["check"] == "screen-lock")
+    assert c["status"] == "ok" and "display is asleep" in c["detail"]
+
+
+def test_macos_tests_wake_a_sleeping_display_and_run(project, env):
+    """Seen on a build Mac with the screen lock off: the display slept, the session read as locked,
+    and every UI test failed. Waking it needs no password, so xc-test wakes it and runs."""
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project,
+            FAKE_SCREEN="locked", FAKE_SCREENLOCK="off", FAKE_TEST_SUMMARY=summary(3, 3))
+    assert r.returncode == 0, r.stderr
+    assert "caffeinate -u" in calls(env) and "woke the display" in r.stderr
+
+
+def test_macos_test_run_keeps_the_display_awake(project, env):
+    run("xc-test.py", ["--platform", "macos"], env=env, cwd=project, FAKE_TEST_SUMMARY=summary(1, 1))
+    assert any(ln.startswith("caffeinate -d -i xcodebuild") for ln in calls(env).splitlines())
+
+
+def test_ios_test_run_leaves_the_display_alone(project, env):
+    run("xc-test.py", ["--platform", "ios-sim"], env=env, cwd=project, FAKE_TEST_SUMMARY=summary(1, 1))
+    assert "caffeinate" not in calls(env)

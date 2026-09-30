@@ -19,13 +19,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import xc_common as xc  # noqa: E402
 
-# $1 = log, $2 = result bundle, $3.. = xcodebuild argv
+# $1 = log, $2 = result bundle, $3 = keep the display awake (yes/no), $4.. = xcodebuild argv
 XCTEST = r"""
-log="$1"; bundle="$2"; shift 2
+log="$1"; bundle="$2"; awake="$3"; shift 3
 mkdir -p "$(dirname "$log")" "$(dirname "$bundle")"
 rm -rf "$bundle"
+# macOS UI tests need the display on: if it sleeps mid-run the session reads as locked and every
+# remaining test fails "Running Background". caffeinate -d holds it on until xcodebuild exits.
+keep=""
+[ "$awake" = yes ] && keep="caffeinate -d -i"
 set +e
-xcodebuild "$@" -resultBundlePath "$bundle" test >"$log" 2>&1
+$keep xcodebuild "$@" -resultBundlePath "$bundle" test >"$log" 2>&1
 rc=$?
 set -e
 echo "RC=$rc"
@@ -113,7 +117,7 @@ def verdict(kind, name, rc, counts, log_path, extra=None):
     return res
 
 
-def run_scheme(root, base, platform, device, adhoc=False, settings=()):
+def run_scheme(root, base, platform, device, adhoc=False, settings=(), allow_locked=False):
     stamp = time.strftime("%Y%m%d-%H%M%S")
     log_local = Path(root) / "build" / "logs" / f"{stamp}-test-{platform}.log"
     bundle_local = Path(root) / "build" / "xc" / "results" / f"{stamp}-{platform}.xcresult"
@@ -121,6 +125,17 @@ def run_scheme(root, base, platform, device, adhoc=False, settings=()):
     extra = {}
     if platform == "macos":
         dest = "platform=macOS"
+        problem, note = (None, None) if allow_locked else xc.screen_state(wake=True)
+        if note:
+            xc.log(note)
+        if problem:
+            # Refuse up front: on a locked screen each UI test waits 60 s, then fails with the
+            # misleading "Running Background" — ten tests cost ten minutes and name the wrong cause.
+            reason, fix = problem
+            xc.log(f"not testing macos: {reason}")
+            return {"kind": "scheme", "target": platform, "ok": False, "destination": dest,
+                    "reason": f"{reason}: macOS UI tests cannot bring the app forward "
+                              "(pass --allow-locked for a scheme without UI tests)", "fix": fix}
     else:
         r = xc.remote(SIMLIST)
         sim = xc.pick_simulator(r.stdout, device)
@@ -134,7 +149,8 @@ def run_scheme(root, base, platform, device, adhoc=False, settings=()):
         *settings,
     ]
     xc.log(f"testing {platform} ({dest})")
-    r = xc.remote(XCTEST, [xc.host_path(log_local), xc.host_path(bundle_local), *argv], timeout=3600)
+    r = xc.remote(XCTEST, [xc.host_path(log_local), xc.host_path(bundle_local),
+                           "yes" if platform == "macos" else "no", *argv], timeout=3600)
     head, _, summary = r.stdout.partition("---SUMMARY---")
     rc_line = [ln for ln in head.splitlines() if ln.startswith("RC=")]
     if r.returncode != 0 or not rc_line:
@@ -188,6 +204,8 @@ def main():
                     help="sign macOS test builds ad-hoc even if .signid/.devteam exist")
     ap.add_argument("--setting", action="append", default=[], metavar="KEY=VALUE",
                     help="extra xcodebuild build setting (repeatable)")
+    ap.add_argument("--allow-locked", action="store_true",
+                    help="run macOS tests even when the Mac's screen is locked (only for schemes without UI tests)")
     args = ap.parse_args()
     xc.parse_settings(args.setting)
 
@@ -210,7 +228,8 @@ def main():
         if not platforms:
             platforms = xc.supported_platforms(base)
         for p in platforms:
-            results.append(run_scheme(root, base, p, args.device, args.adhoc, args.setting))
+            results.append(run_scheme(root, base, p, args.device, args.adhoc, args.setting,
+                                          args.allow_locked))
 
     if not results:
         raise xc.XcError("nothing to test: --packages-only with no --package")
@@ -220,6 +239,8 @@ def main():
         counts = f"{res['passed']}/{res['total']} passed" if "total" in res else "no counts"
         why = f" — {res['reason']}" if not res["ok"] else ""
         print(f"{mark} {res['kind']} {res['target']}: {counts}{why}", file=sys.stderr)
+        if res.get("fix"):
+            print(f"    fix: {res['fix']}", file=sys.stderr)
     ok = all(r["ok"] for r in results)
     xc.emit({"ok": ok, "results": results})
     return 0 if ok else xc.EXIT_FAIL

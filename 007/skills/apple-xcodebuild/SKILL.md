@@ -4,7 +4,7 @@ description: Scaffold, build, test, run and screenshot iOS, iPadOS and macOS app
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.1.1"
+  version: "1.2.0"
 ---
 
 # apple-xcodebuild
@@ -20,6 +20,10 @@ Container (Linux)                SSH (bash -s)               macOS host
 └── read build/logs, build/xc    ◀─── shared folder ───▶    ├── xcrun simctl · open
                                                              └── Simulator.app · the app
 ```
+
+**Or run the scripts on the Mac itself**, for a project that lives only on that Mac (see
+[Projects that live on the Mac](#projects-that-live-on-the-mac)): same scripts, same flags, no
+shared folder.
 
 Replaces `ios-xcodebuild` (removed 2026-09-27: iOS only, and it reported failed builds as successes).
 
@@ -46,7 +50,7 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 
 | Script | Does |
 |---|---|
-| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, the Screen Recording grant macOS screenshots need, Automation Mode for macOS UI tests, and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
+| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, the Screen Recording grant macOS screenshots need, Automation Mode for macOS UI tests, that the Mac's desktop session is unlocked (UI tests need it), and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
 | `xc-bootstrap.py <App>` | Scaffolds an XcodeGen project: one app target for `--platforms ios,macos` (either or both), Swift 6, generated Info.plist, asset catalog, Swift Testing target, `.gitignore`, pinned `.xcodegen-version`. Scaffolds into an existing dir (e.g. a fresh repo) only if nothing would be overwritten; extends an existing `.gitignore`. |
 | `xc-build.py` | Regenerates the project from `project.yml`, builds `--platform ios-sim\|ios-device\|macos\|all` in `--config debug\|release`. Full log in `build/logs/`; the built app's path and bundle id (from the build settings) in `build/xc/build-<platform>.json`. `--setting KEY=VALUE` passes extra build settings; `--adhoc` forces ad-hoc macOS signing. |
 | `xc-test.py` | `xcodebuild test` per platform (a concrete simulator for iOS) with counts read from the `.xcresult`; `--package DIR` runs `swift test` for a local package — with `--packages-only` no Xcode project is needed (logs go to the package's `.build/xc/logs`). **Zero tests is a failure**, and so is a run whose counts cannot be read. Takes the same `--setting` and `--adhoc` as `xc-build`. |
@@ -64,7 +68,34 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 | macOS signing | `--adhoc`; else `.signid` (named identity, manual); else team (`--team`, `TEAM_ID`, `.devteam`); else ad-hoc |
 | Device signing | team required (`--team`, `TEAM_ID`, `.devteam`) |
 
-The project must live in a host-shared directory (e.g. `~/workspace`) — `xc-doctor` checks it.
+| Where commands run | on a Mac: right there (unless `XC_HOST` names another Mac); elsewhere: over SSH. `XC_LOCAL=1`/`0` forces it |
+
+From a container, the project must live in a host-shared directory (e.g. `~/workspace`) —
+`xc-doctor` checks it.
+
+## Projects that live on the Mac
+
+When the project is cloned on the Mac and not shared with the container (a build Mac on the
+network, say), run the scripts **on the Mac** — they notice they are on macOS, run every command
+locally and take paths as they are. Only the path differs:
+
+```bash
+MAC=jhunt@mighty-mouse.tworivers
+X=/Users/jhunt/Source/Edda/code-monkeys/007/skills/apple-xcodebuild/scripts   # the Mac's code-monkeys clone
+P=/Users/jhunt/Source/Edda/solitaire                                          # the project on the Mac
+ssh $MAC "python3 $X/xc-doctor.py --project-dir $P"
+ssh $MAC "python3 $X/xc-build.py  --project-dir $P --adhoc"
+ssh $MAC "python3 $X/xc-test.py   --project-dir $P --adhoc"
+```
+
+- The skill comes from the Mac's own code-monkeys clone — `git pull` there to update it. It needs
+  only the Mac's stock `python3` (3.9) and standard library.
+- Logs, results and screenshots stay in the project's `build/` on the Mac, and the JSON names Mac
+  paths. To look at a screenshot from the container, copy just that file back
+  (`scp $MAC:<file> <scratch dir>`); never sync the project itself.
+- Edit, commit and push on the Mac too (over SSH): the Mac's clone is the working copy.
+- Signing is still over SSH: the login keychain's keys are unusable there, so build the Mac app
+  with `--adhoc`.
 
 ## One-time Mac setup
 
@@ -106,6 +137,16 @@ debugging session):
    let the test runner pull the app to the front: a test waits 60 s and fails "Failed to activate
    application … (current state: Running Background)", often only the first few of a run. Rerun
    with the Mac idle before suspecting the code.
+6. **An awake, unlocked desktop session.** While the display sleeps the session reads as locked,
+   and *every* UI test fails the same way. `xc-test` wakes the display before macOS tests and holds
+   it on (`caffeinate -d`) until they finish. A real password lock it cannot open: on a build Mac
+   set System Settings ▸ Lock Screen ▸ "Require password after screen saver begins or display is
+   turned off" to **Never**. `xc-doctor` reports it (`screen-lock`), and `xc-test` refuses macOS
+   tests up front on a password-locked screen or with nobody logged in at the desktop, instead of
+   spending 60 s per test (`--allow-locked` for schemes without UI tests). Waking is not always
+   enough: on a Mac Studio with an external display, macOS turned the display off again 12 s after
+   the wake, despite `caffeinate`, and the whole run failed. **On a build Mac, also set "Turn
+   display off … when inactive" to Never** (System Settings ▸ Lock Screen).
 
 No Accessibility (Device Control & Data Access) grant is needed for any of this.
 

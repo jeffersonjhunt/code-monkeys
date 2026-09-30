@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Fake caffeinate. `-u` wakes the display: a screen that is only "locked" because the display slept
+# (FAKE_SCREENLOCK=off) becomes unlocked (state file). With a command after the flags, runs it.
+echo "caffeinate $*" >> "${FAKE_LOG:-/dev/null}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -u) [ "${FAKE_SCREENLOCK:-immediate}" = off ] && touch "${FAKE_STATE:-/tmp}/display-awake"; shift ;;
+    -t|-w) shift 2 ;;
+    -*) shift ;;
+    *) exec "$@" ;;
+  esac
+done

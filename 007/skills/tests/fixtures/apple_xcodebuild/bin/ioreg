@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Fake `ioreg -n Root -d1`: the console session. FAKE_SCREEN=locked | nologin (default: unlocked).
+echo "ioreg $*" >> "${FAKE_LOG:-/dev/null}"
+echo '+-o Root  <class IORegistryEntry, id 0x100000100, retain 30>'
+screen="${FAKE_SCREEN:-unlocked}"
+# Woken by `caffeinate -u` (fake): the display-asleep "lock" is gone.
+[ "$screen" = locked ] && [ -e "${FAKE_STATE:-/nonexistent}/display-awake" ] && screen=unlocked
+case "$screen" in
+  nologin) echo '    "IOConsoleUsers" = ()' ;;
+  locked)  echo '    "IOConsoleUsers" = ({"kCGSSessionUserNameKey"="tester","kCGSSessionOnConsoleKey"=Yes,"CGSSessionScreenIsLocked"=Yes})' ;;
+  *)       echo '    "IOConsoleUsers" = ({"kCGSSessionUserNameKey"="tester","kCGSSessionOnConsoleKey"=Yes})' ;;
+esac

@@ -1,5 +1,19 @@
 # Changelog — apple-xcodebuild
 
+## [1.2.0] - 2026-09-30
+
+- The scripts run on the Mac itself: on macOS (unless `XC_HOST` names another Mac) every command
+  runs locally and paths need no mapping, so a project cloned only on a build Mac is driven with
+  `ssh mac 'python3 …/xc-build.py --project-dir /Users/…/app'`. `XC_LOCAL=1`/`0` forces the choice.
+  `xc-doctor` reports a `host` check instead of `ssh` there. SKILL.md › Projects that live on the Mac.
+- macOS UI tests survive a sleeping display: `xc-test` wakes it first and holds it on
+  (`caffeinate -d`) for the run — the session reads as locked while the display sleeps, even with
+  the screen lock off, and every UI test failed "Running Background". A password-locked screen or
+  no desktop login is refused up front with the fix, not after 60 s per test (`--allow-locked`
+  for schemes without UI tests). `xc-doctor` has a `screen-lock` check.
+  Waking is not always enough (an external display turned off again despite `caffeinate`), so a
+  build Mac should also never turn its display off; SKILL.md › macOS UI tests.
+
 ## [1.1.1] - 2026-09-27
 
 - Docs: macOS UI tests fail "Failed to activate application … Running Background" while someone

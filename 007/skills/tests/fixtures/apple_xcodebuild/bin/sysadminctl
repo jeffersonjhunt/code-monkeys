@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fake `sysadminctl -screenLock status` (real one prints to stderr). FAKE_SCREENLOCK=off | immediate.
+echo "sysadminctl $*" >> "${FAKE_LOG:-/dev/null}"
+case "${FAKE_SCREENLOCK:-immediate}" in
+  off) echo "2026-09-29 20:29:43.936 sysadminctl[1:1] screenLock is off" >&2 ;;
+  *)   echo "2026-09-29 20:29:43.936 sysadminctl[1:1] screenLock delay is immediate" >&2 ;;
+esac
