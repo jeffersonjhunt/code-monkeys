@@ -6,6 +6,9 @@
   runs locally and paths need no mapping, so a project cloned only on a build Mac is driven with
   `ssh mac 'python3 …/xc-build.py --project-dir /Users/…/app'`. `XC_LOCAL=1`/`0` forces the choice.
   `xc-doctor` reports a `host` check instead of `ssh` there. SKILL.md › Projects that live on the Mac.
+- A locked screen (or no desktop login) is caught before it costs 60 s per UI test: `xc-doctor`
+  has a `screen-lock` check, and `xc-test` refuses macOS tests with the reason and fix
+  (`--allow-locked` runs them anyway, for schemes without UI tests).
 
 ## [1.1.1] - 2026-09-27
 

@@ -104,6 +104,14 @@ def automation_mode_check():
                  "once, on the Mac: sudo automationmodetool enable-automationmode-without-authentication")
 
 
+def screen_lock_check():
+    problem = xc.screen_state()
+    if problem is None:
+        return check("screen-lock", "ok", "desktop session unlocked — macOS UI tests can bring apps forward")
+    reason, fix = problem
+    return check("screen-lock", "warn", f"{reason} — macOS UI tests will fail 'Running Background'", fix)
+
+
 def check(name, status, detail, fix=None):
     c = {"check": name, "status": status, "detail": detail}
     if fix:
@@ -220,6 +228,7 @@ def main():
     if "macos" in platforms:
         checks.append(screen_recording_check())
         checks.append(automation_mode_check())
+        checks.append(screen_lock_check())
     if root is not None and "macos" in platforms:
         checks.append(signing_check(root))
 

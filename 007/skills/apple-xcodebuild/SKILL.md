@@ -50,7 +50,7 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 
 | Script | Does |
 |---|---|
-| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, the Screen Recording grant macOS screenshots need, Automation Mode for macOS UI tests, and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
+| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, the Screen Recording grant macOS screenshots need, Automation Mode for macOS UI tests, that the Mac's desktop session is unlocked (UI tests need it), and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
 | `xc-bootstrap.py <App>` | Scaffolds an XcodeGen project: one app target for `--platforms ios,macos` (either or both), Swift 6, generated Info.plist, asset catalog, Swift Testing target, `.gitignore`, pinned `.xcodegen-version`. Scaffolds into an existing dir (e.g. a fresh repo) only if nothing would be overwritten; extends an existing `.gitignore`. |
 | `xc-build.py` | Regenerates the project from `project.yml`, builds `--platform ios-sim\|ios-device\|macos\|all` in `--config debug\|release`. Full log in `build/logs/`; the built app's path and bundle id (from the build settings) in `build/xc/build-<platform>.json`. `--setting KEY=VALUE` passes extra build settings; `--adhoc` forces ad-hoc macOS signing. |
 | `xc-test.py` | `xcodebuild test` per platform (a concrete simulator for iOS) with counts read from the `.xcresult`; `--package DIR` runs `swift test` for a local package — with `--packages-only` no Xcode project is needed (logs go to the package's `.build/xc/logs`). **Zero tests is a failure**, and so is a run whose counts cannot be read. Takes the same `--setting` and `--adhoc` as `xc-build`. |
@@ -137,6 +137,12 @@ debugging session):
    let the test runner pull the app to the front: a test waits 60 s and fails "Failed to activate
    application … (current state: Running Background)", often only the first few of a run. Rerun
    with the Mac idle before suspecting the code.
+6. **An unlocked desktop session.** On a locked screen *every* UI test fails the same way. A build
+   Mac whose display sleeps locks itself unless System Settings ▸ Lock Screen ▸ "Require password
+   after screen saver begins or display is turned off" is **Never**. `xc-doctor` warns
+   (`screen-lock`) and `xc-test` refuses macOS tests on a locked screen or with nobody logged in
+   at the desktop, rather than spending 60 s per test (`--allow-locked` for schemes without UI
+   tests).
 
 No Accessibility (Device Control & Data Access) grant is needed for any of this.
 

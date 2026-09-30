@@ -627,6 +627,31 @@ def ensure_xcwin():
     return rel
 
 
+# The console session, from the IORegistry root: is someone logged in at the Mac, and is its
+# screen locked? macOS UI tests need an unlocked GUI session — on a locked screen every test waits
+# 60 s and fails "Failed to activate application … (current state: Running Background)".
+_SCREEN = r"""
+s=$(ioreg -n Root -d1 2>/dev/null || true)
+case "$s" in *'"kCGSSessionOnConsoleKey"=Yes'*) echo "CONSOLE=yes" ;; *) echo "CONSOLE=no" ;; esac
+case "$s" in *'"CGSSessionScreenIsLocked"=Yes'*) echo "LOCKED=yes" ;; *) echo "LOCKED=no" ;; esac
+"""
+
+SCREEN_LOCK_FIX = ("unlock the Mac — and on a build Mac, stop it locking: System Settings ▸ Lock Screen ▸ "
+                   "\"Require password after screen saver begins or display is turned off\" ▸ Never")
+NO_CONSOLE_FIX = "log in to the Mac's desktop (a GUI session, not just SSH) — or turn on automatic login"
+
+
+def screen_state():
+    """None if the GUI session can run macOS UI tests, else (reason, fix)."""
+    r = remote(_SCREEN)
+    f = dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+    if f.get("CONSOLE") != "yes":
+        return "nobody is logged in at the Mac's desktop", NO_CONSOLE_FIX
+    if f.get("LOCKED") == "yes":
+        return "the Mac's screen is locked", SCREEN_LOCK_FIX
+    return None
+
+
 SCREEN_RECORDING_FIX = (
     "on the Mac: System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording ▸ enable "
     "sshd-keygen-wrapper (/usr/libexec/sshd-keygen-wrapper — the SSH server; add it with + if absent)"

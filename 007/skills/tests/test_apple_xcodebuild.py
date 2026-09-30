@@ -778,3 +778,43 @@ def test_on_the_mac_decision(monkeypatch, platform, xc_host, xc_local, expected)
         else:
             monkeypatch.setenv(k, v)
     assert xc.on_the_mac() is expected
+
+
+# --- a locked screen ------------------------------------------------------------------------------
+# On a locked screen every macOS UI test waits 60 s and fails "Running Background" (seen on a build
+# Mac whose display went to sleep): the doctor must say so, and xc-test must refuse up front.
+
+
+@pytest.mark.parametrize("screen, status, words", [
+    ("unlocked", "ok", "unlocked"),
+    ("locked", "warn", "screen is locked"),
+    ("nologin", "warn", "nobody is logged in"),
+])
+def test_doctor_reports_the_screen_lock(project, env, screen, status, words):
+    r = run("xc-doctor.py", env=env, cwd=project, FAKE_SCREEN=screen)
+    c = next(c for c in r.json["checks"] if c["check"] == "screen-lock")
+    assert c["status"] == status and words in c["detail"]
+    assert ("fix" in c) == (status != "ok")
+
+
+def test_macos_tests_refuse_a_locked_screen(project, env):
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project,
+            FAKE_SCREEN="locked", FAKE_TEST_SUMMARY=summary(3, 3))
+    assert r.returncode == 1
+    res = r.json["results"][0]
+    assert res["ok"] is False and "screen is locked" in res["reason"] and "Lock Screen" in res["fix"]
+    assert " test" not in "".join(ln for ln in calls(env).splitlines() if ln.startswith("xcodebuild")), \
+        "no test run may start on a locked screen"
+
+
+def test_allow_locked_runs_anyway(project, env):
+    r = run("xc-test.py", ["--platform", "macos", "--allow-locked"], env=env, cwd=project,
+            FAKE_SCREEN="locked", FAKE_TEST_SUMMARY=summary(3, 3))
+    assert r.returncode == 0, r.stderr
+    assert r.json["results"][0]["passed"] == 3
+
+
+def test_ios_tests_ignore_the_mac_screen(project, env):
+    r = run("xc-test.py", ["--platform", "ios-sim"], env=env, cwd=project,
+            FAKE_SCREEN="locked", FAKE_TEST_SUMMARY=summary(2, 2))
+    assert r.returncode == 0, r.stderr
