@@ -818,3 +818,28 @@ def test_ios_tests_ignore_the_mac_screen(project, env):
     r = run("xc-test.py", ["--platform", "ios-sim"], env=env, cwd=project,
             FAKE_SCREEN="locked", FAKE_TEST_SUMMARY=summary(2, 2))
     assert r.returncode == 0, r.stderr
+
+
+def test_doctor_a_sleeping_display_without_a_password_is_fine(project, env):
+    r = run("xc-doctor.py", env=env, cwd=project, FAKE_SCREEN="locked", FAKE_SCREENLOCK="off")
+    c = next(c for c in r.json["checks"] if c["check"] == "screen-lock")
+    assert c["status"] == "ok" and "display is asleep" in c["detail"]
+
+
+def test_macos_tests_wake_a_sleeping_display_and_run(project, env):
+    """Seen on a build Mac with the screen lock off: the display slept, the session read as locked,
+    and every UI test failed. Waking it needs no password, so xc-test wakes it and runs."""
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project,
+            FAKE_SCREEN="locked", FAKE_SCREENLOCK="off", FAKE_TEST_SUMMARY=summary(3, 3))
+    assert r.returncode == 0, r.stderr
+    assert "caffeinate -u" in calls(env) and "woke the display" in r.stderr
+
+
+def test_macos_test_run_keeps_the_display_awake(project, env):
+    run("xc-test.py", ["--platform", "macos"], env=env, cwd=project, FAKE_TEST_SUMMARY=summary(1, 1))
+    assert any(ln.startswith("caffeinate -d -i xcodebuild") for ln in calls(env).splitlines())
+
+
+def test_ios_test_run_leaves_the_display_alone(project, env):
+    run("xc-test.py", ["--platform", "ios-sim"], env=env, cwd=project, FAKE_TEST_SUMMARY=summary(1, 1))
+    assert "caffeinate" not in calls(env)

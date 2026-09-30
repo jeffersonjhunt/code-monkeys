@@ -19,13 +19,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import xc_common as xc  # noqa: E402
 
-# $1 = log, $2 = result bundle, $3.. = xcodebuild argv
+# $1 = log, $2 = result bundle, $3 = keep the display awake (yes/no), $4.. = xcodebuild argv
 XCTEST = r"""
-log="$1"; bundle="$2"; shift 2
+log="$1"; bundle="$2"; awake="$3"; shift 3
 mkdir -p "$(dirname "$log")" "$(dirname "$bundle")"
 rm -rf "$bundle"
+# macOS UI tests need the display on: if it sleeps mid-run the session reads as locked and every
+# remaining test fails "Running Background". caffeinate -d holds it on until xcodebuild exits.
+keep=""
+[ "$awake" = yes ] && keep="caffeinate -d -i"
 set +e
-xcodebuild "$@" -resultBundlePath "$bundle" test >"$log" 2>&1
+$keep xcodebuild "$@" -resultBundlePath "$bundle" test >"$log" 2>&1
 rc=$?
 set -e
 echo "RC=$rc"
@@ -121,7 +125,9 @@ def run_scheme(root, base, platform, device, adhoc=False, settings=(), allow_loc
     extra = {}
     if platform == "macos":
         dest = "platform=macOS"
-        problem = None if allow_locked else xc.screen_state()
+        problem, note = (None, None) if allow_locked else xc.screen_state(wake=True)
+        if note:
+            xc.log(note)
         if problem:
             # Refuse up front: on a locked screen each UI test waits 60 s, then fails with the
             # misleading "Running Background" — ten tests cost ten minutes and name the wrong cause.
@@ -143,7 +149,8 @@ def run_scheme(root, base, platform, device, adhoc=False, settings=(), allow_loc
         *settings,
     ]
     xc.log(f"testing {platform} ({dest})")
-    r = xc.remote(XCTEST, [xc.host_path(log_local), xc.host_path(bundle_local), *argv], timeout=3600)
+    r = xc.remote(XCTEST, [xc.host_path(log_local), xc.host_path(bundle_local),
+                           "yes" if platform == "macos" else "no", *argv], timeout=3600)
     head, _, summary = r.stdout.partition("---SUMMARY---")
     rc_line = [ln for ln in head.splitlines() if ln.startswith("RC=")]
     if r.returncode != 0 or not rc_line:

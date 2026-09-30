@@ -628,12 +628,15 @@ def ensure_xcwin():
 
 
 # The console session, from the IORegistry root: is someone logged in at the Mac, and is its
-# screen locked? macOS UI tests need an unlocked GUI session — on a locked screen every test waits
+# screen locked? macOS UI tests need an awake, unlocked GUI session — otherwise every test waits
 # 60 s and fails "Failed to activate application … (current state: Running Background)".
+# CGSSessionScreenIsLocked is also set while the display merely sleeps; whether waking it asks for a
+# password is the screen-lock setting (`sysadminctl -screenLock status`: "off", or a delay).
 _SCREEN = r"""
 s=$(ioreg -n Root -d1 2>/dev/null || true)
 case "$s" in *'"kCGSSessionOnConsoleKey"=Yes'*) echo "CONSOLE=yes" ;; *) echo "CONSOLE=no" ;; esac
 case "$s" in *'"CGSSessionScreenIsLocked"=Yes'*) echo "LOCKED=yes" ;; *) echo "LOCKED=no" ;; esac
+case "$(sysadminctl -screenLock status 2>&1 || true)" in *"screenLock is off"*) echo "PASSWORD=no" ;; *) echo "PASSWORD=yes" ;; esac
 """
 
 SCREEN_LOCK_FIX = ("unlock the Mac — and on a build Mac, stop it locking: System Settings ▸ Lock Screen ▸ "
@@ -641,15 +644,30 @@ SCREEN_LOCK_FIX = ("unlock the Mac — and on a build Mac, stop it locking: Syst
 NO_CONSOLE_FIX = "log in to the Mac's desktop (a GUI session, not just SSH) — or turn on automatic login"
 
 
-def screen_state():
-    """None if the GUI session can run macOS UI tests, else (reason, fix)."""
+def _screen_facts():
     r = remote(_SCREEN)
-    f = dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+    return dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+
+
+def screen_state(wake=False):
+    """(problem, note): problem is None if macOS UI tests can run, else (reason, fix).
+
+    A screen "locked" only because the display slept (no password to wake it) is not a problem:
+    with wake=True the display is woken here; without, the note says it will need waking.
+    """
+    f = _screen_facts()
     if f.get("CONSOLE") != "yes":
-        return "nobody is logged in at the Mac's desktop", NO_CONSOLE_FIX
-    if f.get("LOCKED") == "yes":
-        return "the Mac's screen is locked", SCREEN_LOCK_FIX
-    return None
+        return ("nobody is logged in at the Mac's desktop", NO_CONSOLE_FIX), None
+    if f.get("LOCKED") != "yes":
+        return None, None
+    if f.get("PASSWORD") == "yes":
+        return ("the Mac's screen is locked (waking it asks for a password)", SCREEN_LOCK_FIX), None
+    if not wake:
+        return None, "the display is asleep (no password to wake it) — xc-test wakes it"
+    remote("caffeinate -u -t 2 || true")
+    if _screen_facts().get("LOCKED") == "yes":
+        return ("the Mac's screen stayed locked after waking the display", SCREEN_LOCK_FIX), None
+    return None, "woke the display"
 
 
 SCREEN_RECORDING_FIX = (

@@ -105,9 +105,9 @@ def automation_mode_check():
 
 
 def screen_lock_check():
-    problem = xc.screen_state()
+    problem, note = xc.screen_state()
     if problem is None:
-        return check("screen-lock", "ok", "desktop session unlocked — macOS UI tests can bring apps forward")
+        return check("screen-lock", "ok", note or "desktop session unlocked — macOS UI tests can bring apps forward")
     reason, fix = problem
     return check("screen-lock", "warn", f"{reason} — macOS UI tests will fail 'Running Background'", fix)
 

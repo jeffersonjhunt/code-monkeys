@@ -137,12 +137,13 @@ debugging session):
    let the test runner pull the app to the front: a test waits 60 s and fails "Failed to activate
    application … (current state: Running Background)", often only the first few of a run. Rerun
    with the Mac idle before suspecting the code.
-6. **An unlocked desktop session.** On a locked screen *every* UI test fails the same way. A build
-   Mac whose display sleeps locks itself unless System Settings ▸ Lock Screen ▸ "Require password
-   after screen saver begins or display is turned off" is **Never**. `xc-doctor` warns
-   (`screen-lock`) and `xc-test` refuses macOS tests on a locked screen or with nobody logged in
-   at the desktop, rather than spending 60 s per test (`--allow-locked` for schemes without UI
-   tests).
+6. **An awake, unlocked desktop session.** While the display sleeps the session reads as locked,
+   and *every* UI test fails the same way. `xc-test` wakes the display before macOS tests and holds
+   it on (`caffeinate -d`) until they finish. A real password lock it cannot open: on a build Mac
+   set System Settings ▸ Lock Screen ▸ "Require password after screen saver begins or display is
+   turned off" to **Never**. `xc-doctor` reports it (`screen-lock`), and `xc-test` refuses macOS
+   tests up front on a password-locked screen or with nobody logged in at the desktop, instead of
+   spending 60 s per test (`--allow-locked` for schemes without UI tests).
 
 No Accessibility (Device Control & Data Access) grant is needed for any of this.
 
