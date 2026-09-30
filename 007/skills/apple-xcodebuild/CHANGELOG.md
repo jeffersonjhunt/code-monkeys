@@ -1,6 +1,6 @@
 # Changelog — apple-xcodebuild
 
-## [1.2.0] - 2026-09-29
+## [1.2.0] - 2026-09-30
 
 - The scripts run on the Mac itself: on macOS (unless `XC_HOST` names another Mac) every command
   runs locally and paths need no mapping, so a project cloned only on a build Mac is driven with
@@ -11,6 +11,8 @@
   the screen lock off, and every UI test failed "Running Background". A password-locked screen or
   no desktop login is refused up front with the fix, not after 60 s per test (`--allow-locked`
   for schemes without UI tests). `xc-doctor` has a `screen-lock` check.
+  Waking is not always enough (an external display turned off again despite `caffeinate`), so a
+  build Mac should also never turn its display off; SKILL.md › macOS UI tests.
 
 ## [1.1.1] - 2026-09-27
 

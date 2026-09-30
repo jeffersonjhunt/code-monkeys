@@ -143,7 +143,10 @@ debugging session):
    set System Settings ▸ Lock Screen ▸ "Require password after screen saver begins or display is
    turned off" to **Never**. `xc-doctor` reports it (`screen-lock`), and `xc-test` refuses macOS
    tests up front on a password-locked screen or with nobody logged in at the desktop, instead of
-   spending 60 s per test (`--allow-locked` for schemes without UI tests).
+   spending 60 s per test (`--allow-locked` for schemes without UI tests). Waking is not always
+   enough: on a Mac Studio with an external display, macOS turned the display off again 12 s after
+   the wake, despite `caffeinate`, and the whole run failed. **On a build Mac, also set "Turn
+   display off … when inactive" to Never** (System Settings ▸ Lock Screen).
 
 No Accessibility (Device Control & Data Access) grant is needed for any of this.
 
