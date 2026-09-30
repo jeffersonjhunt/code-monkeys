@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Fake `ioreg -n Root -d1`: the console session. FAKE_SCREEN=locked | nologin (default: unlocked).
+# Fake `ioreg -n Root -d1`: the console session. FAKE_SCREEN=locked | nologin | broken (default: unlocked).
 echo "ioreg $*" >> "${FAKE_LOG:-/dev/null}"
+[ "${FAKE_SCREEN:-}" = broken ] && { echo "ioreg: failed" >&2; exit 1; }
 echo '+-o Root  <class IORegistryEntry, id 0x100000100, retain 30>'
 screen="${FAKE_SCREEN:-unlocked}"
 # Woken by `caffeinate -u` (fake): the display-asleep "lock" is gone.
