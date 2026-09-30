@@ -92,12 +92,13 @@ def on_the_mac():
     """True when the scripts run on the Mac that builds: commands then run locally, not over SSH.
 
     XC_LOCAL=1 / XC_LOCAL=0 forces the answer (the test suite runs on Linux). Otherwise a Mac
-    runs locally unless XC_HOST names another Mac to drive.
+    runs locally unless XC_HOST or HOST_IP names another Mac to drive — the same two settings
+    host_target() reads, so a Mac never ignores a host it was told to use.
     """
     forced = os.environ.get("XC_LOCAL")
     if forced is not None:
         return forced == "1"
-    return sys.platform == "darwin" and not os.environ.get("XC_HOST")
+    return sys.platform == "darwin" and not (os.environ.get("XC_HOST") or os.environ.get("HOST_IP"))
 
 
 def where():
@@ -634,6 +635,8 @@ def ensure_xcwin():
 # password is the screen-lock setting (`sysadminctl -screenLock status`: "off", or a delay).
 _SCREEN = r"""
 s=$(ioreg -n Root -d1 2>/dev/null || true)
+# No IOConsoleUsers at all means the read failed — not that nobody is logged in (that is an empty list).
+case "$s" in *IOConsoleUsers*) echo "PROBE=ok" ;; *) echo "PROBE=failed" ;; esac
 case "$s" in *'"kCGSSessionOnConsoleKey"=Yes'*) echo "CONSOLE=yes" ;; *) echo "CONSOLE=no" ;; esac
 case "$s" in *'"CGSSessionScreenIsLocked"=Yes'*) echo "LOCKED=yes" ;; *) echo "LOCKED=no" ;; esac
 case "$(sysadminctl -screenLock status 2>&1 || true)" in *"screenLock is off"*) echo "PASSWORD=no" ;; *) echo "PASSWORD=yes" ;; esac
@@ -641,6 +644,7 @@ case "$(sysadminctl -screenLock status 2>&1 || true)" in *"screenLock is off"*) 
 
 SCREEN_LOCK_FIX = ("unlock the Mac — and on a build Mac, stop it locking: System Settings ▸ Lock Screen ▸ "
                    "\"Require password after screen saver begins or display is turned off\" ▸ Never")
+PROBE_FAILED_FIX = "on the Mac: run `ioreg -n Root -d1` and look for IOConsoleUsers"
 NO_CONSOLE_FIX = "log in to the Mac's desktop (a GUI session, not just SSH) — or turn on automatic login"
 
 
@@ -656,6 +660,9 @@ def screen_state(wake=False):
     with wake=True the display is woken here; without, the note says it will need waking.
     """
     f = _screen_facts()
+    if f.get("PROBE") != "ok":
+        # "Could not tell" is never reported as a state it did not observe.
+        return ("could not read the Mac's desktop session (ioreg gave no IOConsoleUsers)", PROBE_FAILED_FIX), None
     if f.get("CONSOLE") != "yes":
         return ("nobody is logged in at the Mac's desktop", NO_CONSOLE_FIX), None
     if f.get("LOCKED") != "yes":

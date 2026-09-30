@@ -1,5 +1,12 @@
 # Changelog — apple-xcodebuild
 
+## [1.2.1] - 2026-09-30
+
+- A failed read of the Mac's desktop session is reported as that ("could not read …"), no longer
+  as "nobody is logged in"; `xc-test` still refuses macOS tests when it cannot tell.
+- On a Mac, `HOST_IP` sends the scripts to another Mac just as `XC_HOST` does — the same two
+  settings the SSH target is read from.
+
 ## [1.2.0] - 2026-09-30
 
 - The scripts run on the Mac itself: on macOS (unless `XC_HOST` names another Mac) every command

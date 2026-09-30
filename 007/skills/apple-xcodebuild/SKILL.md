@@ -4,7 +4,7 @@ description: Scaffold, build, test, run and screenshot iOS, iPadOS and macOS app
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.2.0"
+  version: "1.2.1"
 ---
 
 # apple-xcodebuild
@@ -68,7 +68,7 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 | macOS signing | `--adhoc`; else `.signid` (named identity, manual); else team (`--team`, `TEAM_ID`, `.devteam`); else ad-hoc |
 | Device signing | team required (`--team`, `TEAM_ID`, `.devteam`) |
 
-| Where commands run | on a Mac: right there (unless `XC_HOST` names another Mac); elsewhere: over SSH. `XC_LOCAL=1`/`0` forces it |
+| Where commands run | on a Mac: right there (unless `XC_HOST` or `HOST_IP` names another Mac); elsewhere: over SSH. `XC_LOCAL=1`/`0` forces it |
 
 From a container, the project must live in a host-shared directory (e.g. `~/workspace`) —
 `xc-doctor` checks it.

@@ -766,17 +766,20 @@ def test_on_the_mac_exit_255_is_the_scripts(on_mac, monkeypatch):
 @pytest.mark.parametrize("platform, xc_host, xc_local, expected", [
     ("darwin", None, None, True),            # a Mac drives itself
     ("darwin", "other-mac.lan", None, False),  # …unless told to drive another Mac
+    ("darwin", "HOST_IP=10.0.0.9", None, False),  # …by either setting host_target() reads
     ("linux", None, None, False),            # a container always goes over ssh
     ("linux", None, "1", True),              # forced (the test suite)
     ("darwin", None, "0", False),            # forced the other way
 ])
 def test_on_the_mac_decision(monkeypatch, platform, xc_host, xc_local, expected):
     monkeypatch.setattr(xc.sys, "platform", platform)
-    for k, v in (("XC_HOST", xc_host), ("XC_LOCAL", xc_local)):
-        if v is None:
-            monkeypatch.delenv(k, raising=False)
-        else:
-            monkeypatch.setenv(k, v)
+    for k in ("XC_HOST", "HOST_IP", "XC_LOCAL"):
+        monkeypatch.delenv(k, raising=False)
+    if xc_host:
+        k, _, v = xc_host.rpartition("=")
+        monkeypatch.setenv(k or "XC_HOST", v)
+    if xc_local is not None:
+        monkeypatch.setenv("XC_LOCAL", xc_local)
     assert xc.on_the_mac() is expected
 
 
@@ -789,6 +792,7 @@ def test_on_the_mac_decision(monkeypatch, platform, xc_host, xc_local, expected)
     ("unlocked", "ok", "unlocked"),
     ("locked", "warn", "screen is locked"),
     ("nologin", "warn", "nobody is logged in"),
+    ("broken", "warn", "could not read"),          # a failed read is not "nobody is logged in"
 ])
 def test_doctor_reports_the_screen_lock(project, env, screen, status, words):
     r = run("xc-doctor.py", env=env, cwd=project, FAKE_SCREEN=screen)
@@ -843,3 +847,11 @@ def test_macos_test_run_keeps_the_display_awake(project, env):
 def test_ios_test_run_leaves_the_display_alone(project, env):
     run("xc-test.py", ["--platform", "ios-sim"], env=env, cwd=project, FAKE_TEST_SUMMARY=summary(1, 1))
     assert "caffeinate" not in calls(env)
+
+
+def test_macos_tests_refuse_when_the_session_cannot_be_read(project, env):
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project,
+            FAKE_SCREEN="broken", FAKE_TEST_SUMMARY=summary(1, 1))
+    assert r.returncode == 1
+    reason = r.json["results"][0]["reason"]
+    assert "could not read" in reason and "nobody" not in reason
