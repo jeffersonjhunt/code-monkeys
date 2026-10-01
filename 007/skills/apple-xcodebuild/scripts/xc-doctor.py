@@ -146,6 +146,30 @@ def screen_saver_check():
                  "until someone moves the mouse", xc.SCREEN_SAVER_FIX)
 
 
+def other_copies_check(root):
+    """Copies of the app elsewhere on the Mac (a TestFlight or App Store install, an old build)
+    signed differently from this project's builds: opening one, then a build, makes macOS ask on
+    the Mac's screen each time it alternates."""
+    record = xc.read_state(root, "build-macos")
+    if not record or not record.get("bundle_id"):
+        return check("other-copies", "ok", "no macOS build recorded yet — nothing to compare")
+    r = xc.remote('mdfind "kMDItemCFBundleIdentifier == \'$1\'" 2>/dev/null || true', [record["bundle_id"]])
+    mine = xc.host_path(root)
+    paths = [p for p in r.stdout.splitlines() if p.endswith(".app") and not p.startswith(mine + "/")]
+    wanted = xc.run_signer(xc.signing_settings(root, "macos"))
+    differ = []
+    for p in paths:
+        s = xc.app_signer(p)
+        if s and not xc.same_signer(s, wanted):
+            differ.append(f"{p} ({xc.describe_signer(s)})")
+    if not differ:
+        return check("other-copies", "ok", f"no differently signed copy of {record['bundle_id']} on the Mac")
+    return check("other-copies", "warn",
+                 f"signed differently from this project's builds ({xc.describe_signer(wanted)}): " + "; ".join(differ),
+                 "don't open these on the build Mac (or remove them): alternating with a build makes macOS ask, "
+                 "on the Mac's screen, whether to open the build")
+
+
 def check(name, status, detail, fix=None):
     c = {"check": name, "status": status, "detail": detail}
     if fix:
@@ -266,6 +290,7 @@ def main():
         checks.append(screen_saver_check())
     if root is not None and "macos" in platforms:
         checks.append(signing_check(root))
+        checks.append(other_copies_check(root))
 
     failed = [c for c in checks if c["status"] == "fail"]
     xc.emit({"ok": not failed, "host": target, "checks": checks})

@@ -38,8 +38,9 @@ if [ "$rc" -eq 0 ]; then
 fi
 """
 
-def build_one(root, base_args, platform, config, team, extra_settings=(), adhoc=False):
+def build_one(root, base_args, platform, config, team, extra_settings=(), adhoc=False, allow_change=False):
     signing = xc.signing_settings(root, platform, team, adhoc)
+    xc.guard_signer(root, platform, signing, config, allow_change)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     log_local = Path(root) / "build" / "logs" / f"{stamp}-build-{platform}.log"
     log_local.parent.mkdir(parents=True, exist_ok=True)
@@ -97,6 +98,8 @@ def main():
     ap.add_argument("--team", help="Apple team ID (device builds; also used for macOS signing)")
     ap.add_argument("--adhoc", action="store_true",
                     help="sign macOS builds ad-hoc even if .signid/.devteam exist (see signing-and-tcc.md)")
+    ap.add_argument("--allow-signer-change", action="store_true",
+                    help="sign the Mac app differently from its last build (macOS then asks once, on the Mac)")
     ap.add_argument("--project-dir", default=".")
     ap.add_argument("--no-generate", action="store_true", help="do not run xcodegen first")
     ap.add_argument("--setting", action="append", default=[], metavar="KEY=VALUE",
@@ -113,7 +116,8 @@ def main():
     config = args.config.capitalize()
 
     platforms = xc.supported_platforms(base) if args.platform == "all" else [args.platform]
-    results = [build_one(root, base, p, config, args.team, args.setting, args.adhoc) for p in platforms]
+    results = [build_one(root, base, p, config, args.team, args.setting, args.adhoc, args.allow_signer_change)
+               for p in platforms]
 
     for res in results:
         mark = "✓" if res["ok"] else "✗"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fake mdfind: prints FAKE_MDFIND (paths separated by ';').
+echo "mdfind $*" >> "${FAKE_LOG:-/dev/null}"
+[ -n "${FAKE_MDFIND:-}" ] && printf '%s\n' "${FAKE_MDFIND//;/$'\n'}"
+exit 0

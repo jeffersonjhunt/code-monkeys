@@ -88,7 +88,9 @@ sign, as it should.
 
 The first team-signed run after ad-hoc ones makes macOS 27 ask, on the Mac's screen, whether to
 open "“…-Runner” (and the app) — "differs from previously opened versions". Click **Open Anyway**
-once; then keep signing the same way (stop passing `--adhoc` on that Mac), or it asks again.
+once; then keep signing the same way (stop passing `--adhoc` on that Mac), or it asks again. Since 1.3.1
+`xc-build`/`xc-test` refuse to change a Mac app's signer unless given `--allow-signer-change`, and
+`xc-doctor` warns about differently signed copies (e.g. a TestFlight install) on the build Mac.
 
 ## Screen Recording for SSH (macOS screenshots)
 

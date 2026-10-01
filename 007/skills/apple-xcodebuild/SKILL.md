@@ -4,7 +4,7 @@ description: Scaffold, build, test, run and screenshot iOS, iPadOS and macOS app
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.3.0"
+  version: "1.3.1"
 ---
 
 # apple-xcodebuild
@@ -67,6 +67,7 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 | XcodeGen version | project's `.xcodegen-version` (`2.45.4`, or `<version>@<commit>` for versions the skill does not know), default 2.45.4 — always verified against a pinned commit |
 | macOS signing | `--adhoc`; else `.signid` (named identity, manual); else team (`--team`, `TEAM_ID`, `.devteam`); else ad-hoc |
 | Device signing | team required (`--team`, `TEAM_ID`, `.devteam`) |
+| Changing a Mac app's signer | refused: `xc-build`/`xc-test` check how the app already on the Mac is signed and stop if this run would change it (macOS would ask on the Mac's screen). `--allow-signer-change` to switch on purpose |
 | Signing over SSH | the Mac's `api.env` (`ASC_ENV`, else `$HOME/.config/appstoreconnect/api.env` on the Mac): a signing keychain unlocked in the build's own session, and an App Store Connect API key — see signing-and-tcc.md › A signing keychain for SSH |
 | Where commands run | on a Mac: right there (unless `XC_HOST` or `HOST_IP` names another Mac); elsewhere: over SSH. `XC_LOCAL=1`/`0` forces it |
 

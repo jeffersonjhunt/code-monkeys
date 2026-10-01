@@ -370,6 +370,77 @@ def _with_signing_keychain(result):
     return result
 
 
+# --- the app's signer ------------------------------------------------------------------------
+# macOS 27 asks on the Mac's screen ("“App” differs from previously opened versions … Open
+# Anyway") when an app or test runner is opened with a different signer than before — ad-hoc vs
+# team, one team vs another — and a test runner hangs until someone answers. So a run that would
+# change the signer of the app already on the Mac stops instead, unless told to.
+
+_SIGNER = r"""
+if [ -d "$1" ]; then codesign -dvv "$1" 2>&1 || true; else echo "NOAPP"; fi
+"""
+
+
+def app_signer(app):
+    """How the app at `app` (a Mac path) is signed: {"adhoc", "team", "authority"}, or None if absent."""
+    out = remote(_SIGNER, [app]).stdout
+    if "NOAPP" in out:
+        return None
+    team = re.search(r"^TeamIdentifier=(.+)$", out, re.M)
+    auth = re.search(r"^Authority=(.+)$", out, re.M)
+    team = team.group(1).strip() if team and team.group(1).strip() != "not set" else None
+    return {"adhoc": "Signature=adhoc" in out, "team": team,
+            "authority": auth.group(1).strip() if auth else None}
+
+
+def describe_signer(s):
+    if s["adhoc"]:
+        return "ad-hoc"
+    if s["team"]:
+        return f"team {s['team']}"
+    return f"the identity {s['authority']!r}" if s.get("authority") else "an unknown signer"
+
+
+def run_signer(signing):
+    """The signer a run with these signing settings produces, in app_signer's form."""
+    settings = dict(kv.split("=", 1) for kv in signing["settings"] if "=" in kv)
+    if signing["style"] == "team":
+        return {"adhoc": False, "team": settings.get("DEVELOPMENT_TEAM"), "authority": None}
+    if signing["style"] == "identity":
+        return {"adhoc": False, "team": None, "authority": settings.get("CODE_SIGN_IDENTITY")}
+    return {"adhoc": True, "team": None, "authority": None}
+
+
+def same_signer(current, wanted):
+    if current["adhoc"] or wanted["adhoc"]:
+        return current["adhoc"] == wanted["adhoc"]
+    if wanted["team"]:
+        return current["team"] == wanted["team"]
+    # A named identity: the app's first authority starts with it ("Apple Development" matches
+    # "Apple Development: Name (ID)").
+    return bool(current.get("authority")) and current["authority"].startswith(wanted["authority"] or "\0")
+
+
+def guard_signer(root, platform, signing, config, allow=False):
+    """Refuse a macOS run that would change the signer of the app already built on the Mac."""
+    if platform != "macos" or allow:
+        return
+    record = read_state(root, "build-macos")
+    app = (record or {}).get("app") or \
+        f"{host_path(root)}/build/DerivedData/Build/Products/{config}/{read_project_name(root)}.app"
+    current = app_signer(app)
+    if current is None:
+        return
+    wanted = run_signer(signing)
+    if not same_signer(current, wanted):
+        raise XcError(
+            f"{Path(app).name} on the Mac is signed {describe_signer(current)}; this run would sign it "
+            f"{describe_signer(wanted)}. macOS would then ask on the Mac's screen (\"differs from previously "
+            "opened versions\") and test runners hang until someone answers",
+            fix="sign the same way as before (drop or add --adhoc, as the last build), or pass "
+                "--allow-signer-change to switch on purpose — then answer macOS's question on the Mac once")
+
+
 def signing_settings(root, platform, team=None, adhoc=False):
     """xcodebuild setting overrides for signing.
 
