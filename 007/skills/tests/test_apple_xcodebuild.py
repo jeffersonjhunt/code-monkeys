@@ -977,3 +977,84 @@ def test_a_hung_runner_without_a_dialog_is_reported_as_before(project, env):
             FAKE_BUILD_OUTPUT=HANG, FAKE_FRONT_APP="Solitaire", FAKE_TEST_SUMMARY=summary(2, 0, 2))
     res = r.json["results"][0]
     assert res["ok"] is False and "dialog" not in res["reason"] and "fix" not in res
+
+
+# --- the app's signer -------------------------------------------------------------------------------
+# A different signer than last time makes macOS 27 ask on the Mac's screen (seen on mighty-mouse,
+# ad-hoc -> team); builds must not cause that silently.
+
+
+def built_app(project, env, signer, args=("--platform", "macos")):
+    """A recorded macOS build whose app on the 'Mac' is signed `signer`."""
+    assert run("xc-build.py", list(args), env=env, cwd=project, FAKE_APP_SIGNER=signer).returncode == 0
+    (Path(env["FAKE_PRODUCTS"]) / "Demo.app").mkdir(parents=True, exist_ok=True)
+
+
+def builds(env):
+    return sum(1 for ln in calls(env).splitlines() if ln.startswith("xcodebuild") and ln.endswith(" build"))
+
+
+def test_a_build_will_not_change_the_apps_signer(project, env):
+    signing_mac(env)
+    (project / ".devteam").write_text("ABCDE12345")
+    built_app(project, env, "team:ABCDE12345")
+    before = builds(env)
+    r = run("xc-build.py", ["--platform", "macos", "--adhoc"], env=env, cwd=project, FAKE_APP_SIGNER="team:ABCDE12345")
+    assert r.returncode == 1
+    assert "signed team ABCDE12345; this run would sign it ad-hoc" in r.json["error"]
+    assert "--allow-signer-change" in r.json["fix"]
+    assert builds(env) == before, "nothing built"
+
+
+def test_the_same_signer_builds(project, env):
+    built_app(project, env, "adhoc")
+    r = run("xc-build.py", ["--platform", "macos"], env=env, cwd=project, FAKE_APP_SIGNER="adhoc")
+    assert r.returncode == 0, r.stderr
+
+
+def test_allow_signer_change_switches_on_purpose(project, env):
+    built_app(project, env, "adhoc")
+    (project / ".devteam").write_text("ABCDE12345")
+    r = run("xc-build.py", ["--platform", "macos", "--allow-signer-change"], env=env, cwd=project, FAKE_APP_SIGNER="adhoc")
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_test_run_will_not_change_the_apps_signer_either(project, env):
+    built_app(project, env, "adhoc")
+    (project / ".devteam").write_text("ABCDE12345")
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project, FAKE_APP_SIGNER="adhoc",
+            FAKE_TEST_SUMMARY=summary(1, 1))
+    assert r.returncode == 1 and "this run would sign it team ABCDE12345" in r.json["error"]
+
+
+def test_a_first_build_has_nothing_to_guard(project, env):
+    (project / ".devteam").write_text("ABCDE12345")
+    r = run("xc-build.py", ["--platform", "macos"], env=env, cwd=project, FAKE_APP_SIGNER="adhoc")
+    assert r.returncode == 0, r.stderr
+
+
+def test_ios_builds_are_not_guarded(project, env):
+    built_app(project, env, "team:ABCDE12345")
+    r = run("xc-build.py", ["--platform", "ios-sim"], env=env, cwd=project, FAKE_APP_SIGNER="team:ABCDE12345")
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize("signer, status", [("adhoc", "ok"), ("team:OTHERTEAM1", "warn")])
+def test_doctor_reports_differently_signed_copies(project, env, signer, status, tmp_path):
+    built_app(project, env, "adhoc")
+    copy = tmp_path / "Applications" / "Demo.app"          # e.g. a TestFlight install
+    copy.mkdir(parents=True)
+    r = run("xc-doctor.py", env=env, cwd=project, FAKE_MDFIND=str(copy), FAKE_APP_SIGNER=signer)
+    c = next(c for c in r.json["checks"] if c["check"] == "other-copies")
+    assert c["status"] == status
+    if status == "warn":
+        assert f"{copy} (team OTHERTEAM1)" in c["detail"] and "fix" in c
+
+
+def test_doctor_ignores_the_projects_own_builds(project, env):
+    built_app(project, env, "adhoc")
+    own = project / "build" / "x" / "Demo.app"              # exists, and is signed differently
+    own.mkdir(parents=True)
+    r = run("xc-doctor.py", env=env, cwd=project, FAKE_MDFIND=str(own), FAKE_APP_SIGNER="team:OTHERTEAM1")
+    c = next(c for c in r.json["checks"] if c["check"] == "other-copies")
+    assert c["status"] == "ok"

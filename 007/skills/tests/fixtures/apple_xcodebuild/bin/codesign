@@ -2,6 +2,16 @@
 # Fake codesign. FAKE_KC_LOCKED=1: signing from a --keychain fails (errSecInternalComponent) until
 # the fake security has unlocked it; FAKE_CODESIGN_RC/OUT force a result.
 echo "codesign $*" >> "${FAKE_LOG:-/dev/null}"
+# `codesign -dvv <app>`: how an existing app is signed, per FAKE_APP_SIGNER — adhoc (default),
+# team:<ID>, or identity:<name> (no team).
+if [ "$1" = "-dvv" ]; then
+  case "${FAKE_APP_SIGNER:-adhoc}" in
+    adhoc) echo "Signature=adhoc" >&2; echo "TeamIdentifier=not set" >&2 ;;
+    team:*) echo "Authority=Apple Development: Dev (ZZZ)" >&2; echo "TeamIdentifier=${FAKE_APP_SIGNER#team:}" >&2 ;;
+    identity:*) echo "Authority=${FAKE_APP_SIGNER#identity:}" >&2; echo "TeamIdentifier=not set" >&2 ;;
+  esac
+  exit 0
+fi
 case " $* " in
   *" --keychain "*)
     if [ -n "${FAKE_KC_LOCKED:-}" ] && [ ! -e "${FAKE_STATE:-/tmp}/kc-unlocked" ]; then

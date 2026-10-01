@@ -1,5 +1,15 @@
 # Changelog — apple-xcodebuild
 
+## [1.3.1] - 2026-10-01
+
+- No button-pressing on the build Mac from a signer change: macOS 27 asks "“App” differs from
+  previously opened versions" on the Mac's screen whenever an app is opened with a different
+  signer, and test runners hang until someone answers. `xc-build` and `xc-test` now check how the
+  macOS app already on the Mac is signed (codesign) and refuse a run that would change it — ad-hoc
+  vs team, one team vs another — with `--allow-signer-change` to switch on purpose.
+- `xc-doctor` `other-copies`: warns about copies of the app elsewhere on the Mac (a TestFlight or
+  App Store install) signed differently from the project's builds — alternating with them prompts too.
+
 ## [1.3.0] - 2026-10-01
 
 - Signing over SSH with a dedicated keychain: when the Mac has an `api.env` (the file project

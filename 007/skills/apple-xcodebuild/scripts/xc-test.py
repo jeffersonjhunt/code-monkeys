@@ -117,7 +117,7 @@ def verdict(kind, name, rc, counts, log_path, extra=None):
     return res
 
 
-def run_scheme(root, base, platform, device, adhoc=False, settings=(), allow_locked=False):
+def run_scheme(root, base, platform, device, adhoc=False, settings=(), allow_locked=False, allow_change=False):
     stamp = time.strftime("%Y%m%d-%H%M%S")
     log_local = Path(root) / "build" / "logs" / f"{stamp}-test-{platform}.log"
     bundle_local = Path(root) / "build" / "xc" / "results" / f"{stamp}-{platform}.xcresult"
@@ -142,6 +142,7 @@ def run_scheme(root, base, platform, device, adhoc=False, settings=(), allow_loc
         dest = f"platform=iOS Simulator,id={sim['udid']}"
         extra["device"] = sim["name"]
     signing = xc.signing_settings(root, platform, adhoc=adhoc)
+    xc.guard_signer(root, platform, signing, "Debug", allow_change)
     argv = base + [
         "-destination", dest,
         "-derivedDataPath", xc.host_path(root) + "/build/DerivedData",
@@ -213,6 +214,8 @@ def main():
                     help="sign macOS test builds ad-hoc even if .signid/.devteam exist")
     ap.add_argument("--setting", action="append", default=[], metavar="KEY=VALUE",
                     help="extra xcodebuild build setting (repeatable)")
+    ap.add_argument("--allow-signer-change", action="store_true",
+                    help="sign the Mac app differently from its last build (macOS then asks once, on the Mac)")
     ap.add_argument("--allow-locked", action="store_true",
                     help="run macOS tests even when the Mac's screen is locked (only for schemes without UI tests)")
     args = ap.parse_args()
@@ -238,7 +241,7 @@ def main():
             platforms = xc.supported_platforms(base)
         for p in platforms:
             results.append(run_scheme(root, base, p, args.device, args.adhoc, args.setting,
-                                          args.allow_locked))
+                                          args.allow_locked, args.allow_signer_change))
 
     if not results:
         raise xc.XcError("nothing to test: --packages-only with no --package")
