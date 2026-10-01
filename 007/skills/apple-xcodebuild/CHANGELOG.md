@@ -1,5 +1,18 @@
 # Changelog — apple-xcodebuild
 
+## [1.3.0] - 2026-10-01
+
+- Signing over SSH with a dedicated keychain: when the Mac has an `api.env` (the file project
+  Makefiles read), identity- and team-signed `xc-build`/`xc-test` runs unlock its signing keychain
+  in the same remote session as `xcodebuild`, sign with `--keychain`, and provision with its App
+  Store Connect API key. The password stays on the Mac.
+- `xc-doctor`'s `codesign` check signs its probe the same way, so "ok" means builds can sign. It
+  used to try only the login keychain and report it locked while `make` signed fine; it now also
+  says when the signing keychain won't unlock, or unlocks but its key isn't open to codesign.
+- signing-and-tcc.md › A signing keychain for SSH: the verified setup (keychain, CSR-made
+  identity, key partition list, WWDR G3, API key, api.env). SKILL.md's configuration table had a
+  blank line splitting it in two; fixed.
+
 ## [1.2.2] - 2026-10-01
 
 - A screen saver is named as such. On macOS 27 it runs inside loginwindow, the session reads as

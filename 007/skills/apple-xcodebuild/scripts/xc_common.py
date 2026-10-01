@@ -319,12 +319,64 @@ def read_state(root, name):
 # --- signing ----------------------------------------------------------------------------------
 
 
+# A build Mac driven over SSH cannot use the login keychain's keys or the Apple ID in Xcode. Its
+# per-machine api.env (the file Makefiles read too) names a dedicated signing keychain, a file
+# holding that keychain's password, and an App Store Connect API key for provisioning. The Mac reads
+# the password itself, in the same session as the signing — it never reaches this side.
+_SIGNING_ENV = r"""
+f="${1:-}"; [ -n "$f" ] || f="$HOME/.config/appstoreconnect/api.env"
+[ -f "$f" ] && grep -E '^[A-Z_]+=' "$f" || true
+"""
+_signing_env = None
+
+
+def signing_env():
+    """The Mac's api.env (ASC_ENV, else $HOME/.config/appstoreconnect/api.env on the Mac):
+    ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH, SIGNING_KEYCHAIN, SIGNING_KEYCHAIN_PASS_FILE. {} if none."""
+    global _signing_env
+    if _signing_env is None:
+        r = remote(_SIGNING_ENV, [os.environ.get("ASC_ENV", "")])
+        _signing_env = dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln) \
+            if r.returncode == 0 else {}
+    return _signing_env
+
+
+def signing_keychain():
+    """(keychain, password file) from api.env, or None."""
+    env = signing_env()
+    kc, pw = env.get("SIGNING_KEYCHAIN"), env.get("SIGNING_KEYCHAIN_PASS_FILE")
+    return (kc, pw) if kc and pw else None
+
+
+def unlock_preamble(signing):
+    """Bash to put before a remote script that signs: unlocks the signing keychain in that session."""
+    if not signing.get("keychain"):
+        return ""
+    kc, pw = (shlex.quote(x) for x in signing["keychain"])
+    return (f'security unlock-keychain -p "$(cat {pw})" {kc} >/dev/null 2>&1 '
+            f'|| {{ echo "could not unlock the signing keychain {kc} with {pw}" >&2; exit 1; }}\n')
+
+
+def _with_signing_keychain(result):
+    """Adds the signing keychain and API key from api.env to an identity- or team-signed result."""
+    kc = signing_keychain()
+    if kc:
+        result["settings"] = result["settings"] + [f"OTHER_CODE_SIGN_FLAGS=--keychain {kc[0]}"]
+        result["keychain"] = kc
+    env = signing_env()
+    if result.get("provisioning") and all(env.get(k) for k in ("ASC_KEY_PATH", "ASC_KEY_ID", "ASC_ISSUER_ID")):
+        result["auth"] = ["-authenticationKeyPath", env["ASC_KEY_PATH"], "-authenticationKeyID", env["ASC_KEY_ID"],
+                          "-authenticationKeyIssuerID", env["ASC_ISSUER_ID"]]
+    return result
+
+
 def signing_settings(root, platform, team=None, adhoc=False):
     """xcodebuild setting overrides for signing.
 
     macOS follows avatar's precedence: `.signid` (a named identity, manual — no Apple account,
     and TCC grants survive rebuilds), then a team (`--team`, TEAM_ID, `.devteam` — automatic),
-    then ad-hoc. The simulator needs no identity. A device build requires a team.
+    then ad-hoc. The simulator needs no identity. A device build requires a team. Identity and
+    team signing use the Mac's signing keychain and API key when its api.env names them.
     """
     root = Path(root)
     team = team or os.environ.get("TEAM_ID") or _read_dotfile(root / ".devteam")
@@ -342,22 +394,22 @@ def signing_settings(root, platform, team=None, adhoc=False):
                 "a device build needs an Apple team",
                 fix="pass --team <TEAMID>, set TEAM_ID, or put the ID in .devteam",
             )
-        return {
+        return _with_signing_keychain({
             "style": "team",
             "settings": ["CODE_SIGN_STYLE=Automatic", f"DEVELOPMENT_TEAM={team}"],
             "provisioning": True,
-        }
+        })
     if signid:
-        return {
+        return _with_signing_keychain({
             "style": "identity",
             "settings": ["CODE_SIGN_STYLE=Manual", f"CODE_SIGN_IDENTITY={signid}"],
-        }
+        })
     if team:
-        return {
+        return _with_signing_keychain({
             "style": "team",
             "settings": ["CODE_SIGN_STYLE=Automatic", f"DEVELOPMENT_TEAM={team}"],
             "provisioning": True,
-        }
+        })
     return {"style": "adhoc", "settings": ["CODE_SIGN_STYLE=Manual", "CODE_SIGN_IDENTITY=-"]}
 
 

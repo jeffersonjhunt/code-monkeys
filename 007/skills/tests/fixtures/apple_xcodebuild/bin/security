@@ -1,3 +1,15 @@
 #!/usr/bin/env bash
+# Fake security. unlock-keychain succeeds with password FAKE_KC_PASS (default "pw") and marks the
+# keychain unlocked (state file); the password itself is never logged. Anything else lists one identity.
+args="$*"
+case "$1" in
+  unlock-keychain)
+    pw=""; kc=""
+    while [ $# -gt 0 ]; do case "$1" in -p) pw="$2"; shift 2 ;; unlock-keychain) shift ;; *) kc="$1"; shift ;; esac; done
+    echo "security unlock-keychain -p <redacted> $kc" >> "${FAKE_LOG:-/dev/null}"
+    [ "$pw" = "${FAKE_KC_PASS:-pw}" ] || { echo "security: The user name or passphrase you entered is not correct." >&2; exit 51; }
+    touch "${FAKE_STATE:-/tmp}/kc-unlocked"; exit 0 ;;
+esac
+echo "security $args" >> "${FAKE_LOG:-/dev/null}"
 echo '  1) 20B850F78235F69B870CDB40EA3DE0E35C5D93D7 "Apple Development: dev@example.com (ABCDE12345)"'
 echo '     1 valid identities found'

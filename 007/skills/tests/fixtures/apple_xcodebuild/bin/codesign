@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Fake codesign. FAKE_KC_LOCKED=1: signing from a --keychain fails (errSecInternalComponent) until
+# the fake security has unlocked it; FAKE_CODESIGN_RC/OUT force a result.
 echo "codesign $*" >> "${FAKE_LOG:-/dev/null}"
+case " $* " in
+  *" --keychain "*)
+    if [ -n "${FAKE_KC_LOCKED:-}" ] && [ ! -e "${FAKE_STATE:-/tmp}/kc-unlocked" ]; then
+      echo "probe: errSecInternalComponent" >&2; exit 1
+    fi ;;
+esac
 [ -n "${FAKE_CODESIGN_OUT:-}" ] && echo "$FAKE_CODESIGN_OUT" >&2
 exit "${FAKE_CODESIGN_RC:-0}"

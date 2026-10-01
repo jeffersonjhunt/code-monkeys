@@ -52,10 +52,11 @@ def build_one(root, base_args, platform, config, team, extra_settings=(), adhoc=
     ]
     if signing.get("provisioning"):
         argv.append("-allowProvisioningUpdates")
+    argv += signing.get("auth", [])
 
     xc.log(f"building {platform} ({config}, signing: {signing['style']})")
     t0 = time.time()
-    r = xc.remote(BUILD, [xc.host_path(log_local), *argv], timeout=3600)
+    r = xc.remote(xc.unlock_preamble(signing) + BUILD, [xc.host_path(log_local), *argv], timeout=3600)
     seconds = round(time.time() - t0, 1)
     head, _, settings = r.stdout.partition("---SETTINGS---")
     rc_line = [ln for ln in head.splitlines() if ln.startswith("RC=")]

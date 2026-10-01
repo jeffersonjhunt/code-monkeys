@@ -148,8 +148,11 @@ def run_scheme(root, base, platform, device, adhoc=False, settings=(), allow_loc
         *signing["settings"],
         *settings,
     ]
+    if signing.get("provisioning"):
+        argv.append("-allowProvisioningUpdates")
+    argv += signing.get("auth", [])
     xc.log(f"testing {platform} ({dest})")
-    r = xc.remote(XCTEST, [xc.host_path(log_local), xc.host_path(bundle_local),
+    r = xc.remote(xc.unlock_preamble(signing) + XCTEST, [xc.host_path(log_local), xc.host_path(bundle_local),
                            "yes" if platform == "macos" else "no", *argv], timeout=3600)
     head, _, summary = r.stdout.partition("---SUMMARY---")
     rc_line = [ln for ln in head.splitlines() if ln.startswith("RC=")]

@@ -4,7 +4,7 @@ description: Scaffold, build, test, run and screenshot iOS, iPadOS and macOS app
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.2.2"
+  version: "1.3.0"
 ---
 
 # apple-xcodebuild
@@ -67,7 +67,7 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 | XcodeGen version | project's `.xcodegen-version` (`2.45.4`, or `<version>@<commit>` for versions the skill does not know), default 2.45.4 — always verified against a pinned commit |
 | macOS signing | `--adhoc`; else `.signid` (named identity, manual); else team (`--team`, `TEAM_ID`, `.devteam`); else ad-hoc |
 | Device signing | team required (`--team`, `TEAM_ID`, `.devteam`) |
-
+| Signing over SSH | the Mac's `api.env` (`ASC_ENV`, else `$HOME/.config/appstoreconnect/api.env` on the Mac): a signing keychain unlocked in the build's own session, and an App Store Connect API key — see signing-and-tcc.md › A signing keychain for SSH |
 | Where commands run | on a Mac: right there (unless `XC_HOST` or `HOST_IP` names another Mac); elsewhere: over SSH. `XC_LOCAL=1`/`0` forces it |
 
 From a container, the project must live in a host-shared directory (e.g. `~/workspace`) —
@@ -155,8 +155,10 @@ No Accessibility (Device Control & Data Access) grant is needed for any of this.
 
 ## Limits
 
-- **Identity signing over SSH** — the login keychain's private keys are usually unusable from SSH
-  (`errSecInternalComponent`). `xc-doctor` detects it; build with `--adhoc`.
+- **Identity signing over SSH** — the login keychain's private keys are unusable from SSH
+  (`errSecInternalComponent`). Build with `--adhoc`, or give the Mac a signing keychain and API
+  key (`api.env`, signing-and-tcc.md) — then identity/team builds sign over SSH; `xc-doctor`
+  checks whichever applies.
 - **Physical devices** — `--platform ios-device` builds; installing/launching on hardware is not
   automated.
 - **Timeouts** stop the local `ssh` only; a remote `xcodebuild` keeps running until it finishes.
