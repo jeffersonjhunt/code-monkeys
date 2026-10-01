@@ -882,3 +882,98 @@ def test_doctor_reports_the_screen_saver(project, env, idle, status, words):
     c = next(c for c in r.json["checks"] if c["check"] == "screen-saver")
     assert c["status"] == status and words in c["detail"]
     assert ("fix" in c) == (status != "ok")
+
+
+# --- a signing keychain for SSH ---------------------------------------------------------------------
+# A build Mac's api.env names a dedicated signing keychain (and its password file) and an App Store
+# Connect API key. Seen on mighty-mouse: the doctor ignored it and reported "the login keychain is
+# locked to this session" although `make` signed fine — so the doctor now signs exactly as builds do.
+
+
+def signing_mac(env, password="pw"):
+    """Write the Mac's api.env (in the fake HOME) and a password file holding `password`."""
+    d = Path(env["HOME"]) / ".config" / "appstoreconnect"
+    d.mkdir(parents=True)
+    (d / "keychain-pass").write_text(password)
+    kc = Path(env["HOME"]) / "Library" / "Keychains" / "signing.keychain-db"
+    (d / "api.env").write_text(f"ASC_KEY_ID=KEY123\nASC_ISSUER_ID=issuer-1\nASC_KEY_PATH={d}/AuthKey_KEY123.p8\n"
+                               f"SIGNING_KEYCHAIN={kc}\nSIGNING_KEYCHAIN_PASS_FILE={d}/keychain-pass\n")
+    return kc
+
+
+def test_doctor_signs_from_the_signing_keychain(project, env):
+    kc = signing_mac(env)
+    (project / ".devteam").write_text("ABCDE12345")
+    r = run("xc-doctor.py", env=env, cwd=project, FAKE_KC_LOCKED="1")
+    c = next(c for c in r.json["checks"] if c["check"] == "codesign")
+    assert c["status"] == "ok" and "signing keychain" in c["detail"], c
+    log = calls(env)
+    assert f"security unlock-keychain -p <redacted> {kc}" in log
+    assert f"--keychain {kc}" in log
+    assert "pw" not in log.replace("<redacted>", ""), "the password must not appear anywhere"
+
+
+def test_doctor_says_when_the_signing_keychain_will_not_unlock(project, env):
+    signing_mac(env, password="wrong")
+    (project / ".devteam").write_text("ABCDE12345")
+    r = run("xc-doctor.py", env=env, cwd=project, FAKE_KC_LOCKED="1")
+    c = next(c for c in r.json["checks"] if c["check"] == "codesign")
+    assert c["status"] == "fail" and "could not unlock the signing keychain" in c["detail"]
+
+
+def test_team_builds_unlock_the_signing_keychain_and_use_the_api_key(project, env):
+    kc = signing_mac(env)
+    (project / ".devteam").write_text("ABCDE12345")
+    r = run("xc-build.py", ["--platform", "macos"], env=env, cwd=project)
+    assert r.returncode == 0, r.stderr
+    log = calls(env).splitlines()
+    unlock = next(i for i, ln in enumerate(log) if ln.startswith("security unlock-keychain"))
+    build = next(i for i, ln in enumerate(log) if ln.startswith("xcodebuild") and ln.endswith(" build"))
+    assert unlock < build, "unlocked before the build, in its session"
+    assert f"OTHER_CODE_SIGN_FLAGS=--keychain {kc}" in log[build]
+    assert "-authenticationKeyID KEY123" in log[build] and "-allowProvisioningUpdates" in log[build]
+
+
+def test_team_tests_unlock_the_signing_keychain_too(project, env):
+    signing_mac(env)
+    (project / ".devteam").write_text("ABCDE12345")
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project, FAKE_TEST_SUMMARY=summary(1, 1))
+    assert r.returncode == 0, r.stderr
+    assert "security unlock-keychain" in calls(env)
+
+
+@pytest.mark.parametrize("args", [["--platform", "macos", "--adhoc"], ["--platform", "ios-sim"]])
+def test_unsigned_builds_leave_the_keychain_alone(project, env, args):
+    signing_mac(env)
+    (project / ".devteam").write_text("ABCDE12345")
+    assert run("xc-build.py", args, env=env, cwd=project).returncode == 0
+    assert "unlock-keychain" not in calls(env)
+
+
+def test_without_api_env_signing_is_unchanged(project, env):
+    (project / ".devteam").write_text("ABCDE12345")
+    assert run("xc-build.py", ["--platform", "macos"], env=env, cwd=project).returncode == 0
+    log = calls(env)
+    assert "unlock-keychain" not in log and "OTHER_CODE_SIGN_FLAGS" not in log and "authenticationKey" not in log
+
+
+# --- a dialog waiting on the Mac --------------------------------------------------------------------
+# Seen on mighty-mouse: the first team-signed run made macOS ask "“SolitaireUITests-Runner” differs from
+# previously opened versions … Open Anyway"; the runner hung, and xc-test said only "2 failed".
+
+HANG = "Testing failed:\n\tSolitaire (1) encountered an error (The test runner hung before establishing connection.)"
+
+
+def test_a_hung_runner_with_a_dialog_in_front_says_so(project, env):
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project, FAKE_TEST_RC=65,
+            FAKE_BUILD_OUTPUT=HANG, FAKE_FRONT_APP="UserNotificationCenter", FAKE_TEST_SUMMARY=summary(2, 0, 2))
+    assert r.returncode == 1
+    res = r.json["results"][0]
+    assert "dialog (UserNotificationCenter) is waiting" in res["reason"] and "Open Anyway" in res["fix"]
+
+
+def test_a_hung_runner_without_a_dialog_is_reported_as_before(project, env):
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project, FAKE_TEST_RC=65,
+            FAKE_BUILD_OUTPUT=HANG, FAKE_FRONT_APP="Solitaire", FAKE_TEST_SUMMARY=summary(2, 0, 2))
+    res = r.json["results"][0]
+    assert res["ok"] is False and "dialog" not in res["reason"] and "fix" not in res

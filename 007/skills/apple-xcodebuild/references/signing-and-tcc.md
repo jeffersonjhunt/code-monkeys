@@ -41,10 +41,54 @@ Options:
 
 1. **`xc-build.py --adhoc`** — verified. Right for iterating; TCC grants will not persist.
 2. **Build that one on the Mac** (`make run` in avatar's case) when you need the stable identity.
-3. **Unlock the keychain for the SSH session** — *unverified in this setup; try it*:
-   `ssh -t <user>@host.docker.internal security unlock-keychain ~/Library/Keychains/login.keychain-db`
-   (prompts for the Mac password), then build in the same session window. Never put the
-   password in a script or env file.
+3. **A dedicated signing keychain** — verified on a build Mac (below). The way to sign with a
+   real identity, and to provision, unattended over SSH.
+
+## A signing keychain for SSH
+
+Verified on mighty-mouse (macOS 27, Xcode 27), 2026-09/10. A keychain of its own, holding only the
+signing identity, with a password the Mac can read from a file — so an SSH session unlocks it
+without your login password — plus an App Store Connect API key in place of the Apple ID in Xcode
+(also unusable over SSH: builds fail "No Accounts").
+
+1. **Keychain** (once, on the Mac; the password goes in a 600 file and in your secrets vault):
+   ```bash
+   KC=/Users/me/Library/Keychains/signing.keychain-db
+   PW=/Users/me/.config/appstoreconnect/keychain-pass           # chmod 600, a random password
+   security create-keychain -p "$(cat $PW)" $KC
+   security set-keychain-settings $KC                            # no auto-lock
+   security list-keychains -d user -s $KC $(security list-keychains -d user | xargs)
+   ```
+2. **Identity, without a GUI export:** make the key and a CSR on the Mac
+   (`openssl req -new -newkey rsa:2048 -nodes …`), upload the CSR at developer.apple.com ▸
+   Certificates ▸ + ▸ Apple Development, then combine key + downloaded `.cer` into a `.p12` and
+   `security import … -k $KC -T /usr/bin/codesign`; delete the loose key.
+3. **Open the key to codesign** — without this every signature fails `errSecInternalComponent`:
+   `security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$(cat $PW)" $KC`
+4. **Apple's WWDR G3 intermediate.** A fresh Mac may hold only the expired 2023 one ("unable to
+   build chain to self-signed root"): fetch `https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer`,
+   check it chains to Apple Root CA (`openssl verify -CAfile <system roots> g3.pem`), import it into $KC.
+5. **API key:** App Store Connect ▸ Users and Access ▸ Integrations ▸ Team Keys, role Admin;
+   the `.p8` (downloadable once) beside the password file, 600.
+6. **`api.env`** — `$HOME/.config/appstoreconnect/api.env` on the Mac (or `ASC_ENV=`), make syntax,
+   read by this skill and by project Makefiles alike:
+   ```make
+   ASC_KEY_ID=XXXXXXXXXX
+   ASC_ISSUER_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   ASC_KEY_PATH=/Users/me/.config/appstoreconnect/AuthKey_XXXXXXXXXX.p8
+   SIGNING_KEYCHAIN=/Users/me/Library/Keychains/signing.keychain-db
+   SIGNING_KEYCHAIN_PASS_FILE=/Users/me/.config/appstoreconnect/keychain-pass
+   ```
+
+With it, identity- and team-signed `xc-build`/`xc-test` runs unlock the keychain **in the same
+remote session** as `xcodebuild` (the Mac reads its own password file; nothing secret crosses the
+SSH link), sign with `OTHER_CODE_SIGN_FLAGS=--keychain …`, and provision with the API key.
+`xc-doctor`'s `codesign` check signs a probe exactly that way. A locked keychain still refuses to
+sign, as it should.
+
+The first team-signed run after ad-hoc ones makes macOS 27 ask, on the Mac's screen, whether to
+open "“…-Runner” (and the app) — "differs from previously opened versions". Click **Open Anyway**
+once; then keep signing the same way (stop passing `--adhoc` on that Mac), or it asks again.
 
 ## Screen Recording for SSH (macOS screenshots)
 

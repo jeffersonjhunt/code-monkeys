@@ -35,15 +35,24 @@ xcrun simctl list devices available -j 2>/dev/null || echo '{}'
 """
 
 
-# $1 = identity to try ("Apple Development" matches any cert of that kind)
+# $1 = identity to try ("Apple Development" matches any cert of that kind); $2/$3 = the signing
+# keychain and its password file, when api.env names them (unlocked here, in the signing session)
 SIGN_PROBE = r"""
+kc=()
+if [ -n "${2:-}" ]; then
+  set +e
+  security unlock-keychain -p "$(cat "$3" 2>/dev/null)" "$2" >/dev/null 2>&1
+  echo "UNLOCK_RC=$?"
+  set -e
+  kc=(--keychain "$2")
+fi
 n=$(security find-identity -v -p codesigning 2>/dev/null | grep -c '^ *[0-9][0-9]*)' || true)
 echo "IDENTITIES=$n"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 cp /usr/bin/true "$tmp/probe"
 set +e
-out=$(codesign --force --sign "$1" "$tmp/probe" 2>&1)
+out=$(codesign --force --sign "$1" ${kc[@]+"${kc[@]}"} "$tmp/probe" 2>&1)
 rc=$?
 set -e
 echo "SIGN_RC=$rc"
@@ -58,17 +67,29 @@ def signing_check(root):
     if not signid and not team:
         return check("codesign", "ok", "ad-hoc (no .signid/.devteam) — needs no keychain")
     identity = signid or "Apple Development"
-    r = xc.remote(SIGN_PROBE, [identity])
+    kc = xc.signing_keychain()
+    r = xc.remote(SIGN_PROBE, [identity, *(kc or ())])
     f = dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+    where = f"from the signing keychain {kc[0]}" if kc else "over SSH"
+    if kc and f.get("UNLOCK_RC") != "0":
+        return check("codesign", "fail", f"could not unlock the signing keychain {kc[0]} with {kc[1]}",
+                     "check SIGNING_KEYCHAIN / SIGNING_KEYCHAIN_PASS_FILE in the Mac's api.env "
+                     "(references/signing-and-tcc.md › A signing keychain for SSH)")
     if f.get("SIGN_RC") == "0":
-        return check("codesign", "ok", f"signed a probe with {identity!r} over SSH")
+        return check("codesign", "ok", f"signed a probe with {identity!r} {where}")
     out = f.get("SIGN_OUT", "").strip()
+    if kc and "errSecInternalComponent" in out:
+        return check("codesign", "fail",
+                     f"{identity!r} in {kc[0]} is unusable even unlocked (errSecInternalComponent)",
+                     "open its key to codesign: security set-key-partition-list -S apple-tool:,apple:,codesign: "
+                     f"-s {kc[0]} — and make sure Apple's WWDR G3 intermediate is in a keychain "
+                     "(references/signing-and-tcc.md › A signing keychain for SSH)")
     if "errSecInternalComponent" in out:
         return check("codesign", "fail",
                      f"{identity!r} exists but its key is unusable over SSH (errSecInternalComponent: "
                      "the login keychain is locked to this session)",
-                     "build with --adhoc; or try unlocking it over SSH first (unverified — see "
-                     "references/signing-and-tcc.md)")
+                     "build with --adhoc, or set up a signing keychain for SSH "
+                     "(references/signing-and-tcc.md › A signing keychain for SSH)")
     return check("codesign", "fail", f"cannot sign with {identity!r}: {out or 'no identity'} "
                  f"({f.get('IDENTITIES', '?')} codesigning identities)",
                  "fix .signid/.devteam, or build with --adhoc")

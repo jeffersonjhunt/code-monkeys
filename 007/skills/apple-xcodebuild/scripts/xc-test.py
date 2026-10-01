@@ -148,8 +148,11 @@ def run_scheme(root, base, platform, device, adhoc=False, settings=(), allow_loc
         *signing["settings"],
         *settings,
     ]
+    if signing.get("provisioning"):
+        argv.append("-allowProvisioningUpdates")
+    argv += signing.get("auth", [])
     xc.log(f"testing {platform} ({dest})")
-    r = xc.remote(XCTEST, [xc.host_path(log_local), xc.host_path(bundle_local),
+    r = xc.remote(xc.unlock_preamble(signing) + XCTEST, [xc.host_path(log_local), xc.host_path(bundle_local),
                            "yes" if platform == "macos" else "no", *argv], timeout=3600)
     head, _, summary = r.stdout.partition("---SUMMARY---")
     rc_line = [ln for ln in head.splitlines() if ln.startswith("RC=")]
@@ -160,6 +163,12 @@ def run_scheme(root, base, platform, device, adhoc=False, settings=(), allow_loc
     xc.prune(log_local.parent, f"*-test-{platform}.log")
     xc.prune(bundle_local.parent, f"*-{platform}.xcresult")
     res = verdict("scheme", platform, rc, counts, log_local, {"destination": dest, **extra})
+    if (not res["ok"] and platform == "macos" and log_local.exists()
+            and "hung before establishing connection" in log_local.read_text(errors="replace")):
+        prompt = xc.front_prompt()
+        if prompt:
+            res.update(reason=f"a macOS dialog ({prompt}) is waiting on the Mac's screen; the test runner "
+                              "hung until someone answers it", fix=xc.PROMPT_FIX)
     if not res["ok"] and log_local.exists():
         res.update({k: v for k, v in xc.summarize_log(log_local.read_text(errors="replace")).items()
                     if k in ("errors", "error_samples", "tail")})

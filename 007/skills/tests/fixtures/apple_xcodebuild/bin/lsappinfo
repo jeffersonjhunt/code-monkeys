@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fake lsappinfo: the frontmost app is FAKE_FRONT_APP (default Solitaire).
+echo "lsappinfo $*" >> "${FAKE_LOG:-/dev/null}"
+case "$1" in
+  front) echo "ASN:0x0-0x4c04c:" ;;
+  info) echo "\"${FAKE_FRONT_APP:-Solitaire}\" ASN:0x0-0x4c04c: (in front) " ;;
+esac
