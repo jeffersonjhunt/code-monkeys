@@ -744,6 +744,22 @@ def screen_state(wake=False):
     return None, "woke the display"
 
 
+# System dialogs that macOS puts in front of everything — e.g. macOS 27's "“App” differs from
+# previously opened versions … Open Anyway" when a binary's signer changes (ad-hoc ↔ team). A test
+# runner waits on one and fails "The test runner hung before establishing connection".
+PROMPT_PROCESSES = ("UserNotificationCenter", "SecurityAgent", "CoreServicesUIAgent", "coreautha")
+PROMPT_FIX = ("answer the dialog on the Mac's screen (for \"differs from previously opened versions\": "
+              "Open Anyway — it is the build you just made), then rerun; sign the same way every time "
+              "(don't alternate --adhoc and team signing) so it does not come back")
+
+
+def front_prompt():
+    """The system-dialog process in front on the Mac, or None (anything else in front)."""
+    r = remote('lsappinfo info -only name "$(lsappinfo front)" 2>/dev/null || true')
+    m = re.search(r'"([^"]+)"', r.stdout)
+    return m.group(1) if m and m.group(1) in PROMPT_PROCESSES else None
+
+
 SCREEN_RECORDING_FIX = (
     "on the Mac: System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording ▸ enable "
     "sshd-keygen-wrapper (/usr/libexec/sshd-keygen-wrapper — the SSH server; add it with + if absent)"

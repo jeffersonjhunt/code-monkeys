@@ -955,3 +955,25 @@ def test_without_api_env_signing_is_unchanged(project, env):
     assert run("xc-build.py", ["--platform", "macos"], env=env, cwd=project).returncode == 0
     log = calls(env)
     assert "unlock-keychain" not in log and "OTHER_CODE_SIGN_FLAGS" not in log and "authenticationKey" not in log
+
+
+# --- a dialog waiting on the Mac --------------------------------------------------------------------
+# Seen on mighty-mouse: the first team-signed run made macOS ask "“SolitaireUITests-Runner” differs from
+# previously opened versions … Open Anyway"; the runner hung, and xc-test said only "2 failed".
+
+HANG = "Testing failed:\n\tSolitaire (1) encountered an error (The test runner hung before establishing connection.)"
+
+
+def test_a_hung_runner_with_a_dialog_in_front_says_so(project, env):
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project, FAKE_TEST_RC=65,
+            FAKE_BUILD_OUTPUT=HANG, FAKE_FRONT_APP="UserNotificationCenter", FAKE_TEST_SUMMARY=summary(2, 0, 2))
+    assert r.returncode == 1
+    res = r.json["results"][0]
+    assert "dialog (UserNotificationCenter) is waiting" in res["reason"] and "Open Anyway" in res["fix"]
+
+
+def test_a_hung_runner_without_a_dialog_is_reported_as_before(project, env):
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project, FAKE_TEST_RC=65,
+            FAKE_BUILD_OUTPUT=HANG, FAKE_FRONT_APP="Solitaire", FAKE_TEST_SUMMARY=summary(2, 0, 2))
+    res = r.json["results"][0]
+    assert res["ok"] is False and "dialog" not in res["reason"] and "fix" not in res

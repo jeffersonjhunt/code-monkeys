@@ -9,6 +9,10 @@
 - `xc-doctor`'s `codesign` check signs its probe the same way, so "ok" means builds can sign. It
   used to try only the login keychain and report it locked while `make` signed fine; it now also
   says when the signing keychain won't unlock, or unlocks but its key isn't open to codesign.
+- `xc-test` names a dialog waiting on the Mac: when a macOS test runner "hung before establishing
+  connection" and a system dialog is in front (UserNotificationCenter and the like), it says so,
+  with the fix. Seen on the first team-signed run: macOS 27 asks "“…-Runner” differs from
+  previously opened versions" when a binary's signer changes, and the runner waits for the answer.
 - signing-and-tcc.md › A signing keychain for SSH: the verified setup (keychain, CSR-made
   identity, key partition list, WWDR G3, API key, api.env). SKILL.md's configuration table had a
   blank line splitting it in two; fixed.

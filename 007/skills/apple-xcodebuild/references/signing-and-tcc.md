@@ -86,6 +86,10 @@ SSH link), sign with `OTHER_CODE_SIGN_FLAGS=--keychain …`, and provision with 
 `xc-doctor`'s `codesign` check signs a probe exactly that way. A locked keychain still refuses to
 sign, as it should.
 
+The first team-signed run after ad-hoc ones makes macOS 27 ask, on the Mac's screen, whether to
+open "“…-Runner” (and the app) — "differs from previously opened versions". Click **Open Anyway**
+once; then keep signing the same way (stop passing `--adhoc` on that Mac), or it asks again.
+
 ## Screen Recording for SSH (macOS screenshots)
 
 `xc-shot --platform macos` needs the Screen Recording (TCC) grant — not for the app, but for the
