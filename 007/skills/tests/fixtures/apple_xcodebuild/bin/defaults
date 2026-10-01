@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fake `defaults`: only `-currentHost read com.apple.screensaver idleTime`, as FAKE_SAVER_IDLE says
+# (seconds; default 0 = never; "unset" = the key is absent and defaults fails).
+echo "defaults $*" >> "${FAKE_LOG:-/dev/null}"
+case "$*" in
+  *"com.apple.screensaver idleTime"*)
+    [ "${FAKE_SAVER_IDLE:-0}" = unset ] && { echo "does not exist" >&2; exit 1; }
+    echo "${FAKE_SAVER_IDLE:-0}" ;;
+  *) exit 1 ;;
+esac

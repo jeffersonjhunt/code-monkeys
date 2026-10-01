@@ -855,3 +855,30 @@ def test_macos_tests_refuse_when_the_session_cannot_be_read(project, env):
     assert r.returncode == 1
     reason = r.json["results"][0]["reason"]
     assert "could not read" in reason and "nobody" not in reason
+
+
+# --- a screen saver -------------------------------------------------------------------------------
+# On macOS 27 the screen saver runs inside loginwindow; the session reads as locked, and caffeinate's
+# declared activity does not dismiss it. Seen on a build Mac: reported as "stayed locked after waking
+# the display", which named the wrong cause and the wrong setting.
+
+
+def test_a_screen_saver_a_wake_cannot_clear_is_named(project, env):
+    r = run("xc-test.py", ["--platform", "macos"], env=env, cwd=project, FAKE_SCREEN="locked",
+            FAKE_SCREENLOCK="off", FAKE_SCREENSAVER_SHOWING="1", FAKE_TEST_SUMMARY=summary(1, 1))
+    assert r.returncode == 1
+    res = r.json["results"][0]
+    assert "screen saver" in res["reason"] and "Start Screen Saver" in res["fix"]
+    assert "stayed locked" not in res["reason"]
+
+
+@pytest.mark.parametrize("idle, status, words", [
+    ("0", "ok", "never starts"),
+    ("300", "warn", "after 5 min"),
+    ("unset", "warn", "not set"),
+])
+def test_doctor_reports_the_screen_saver(project, env, idle, status, words):
+    r = run("xc-doctor.py", env=env, cwd=project, FAKE_SAVER_IDLE=idle)
+    c = next(c for c in r.json["checks"] if c["check"] == "screen-saver")
+    assert c["status"] == status and words in c["detail"]
+    assert ("fix" in c) == (status != "ok")

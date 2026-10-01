@@ -1,5 +1,13 @@
 # Changelog — apple-xcodebuild
 
+## [1.2.2] - 2026-10-01
+
+- A screen saver is named as such. On macOS 27 it runs inside loginwindow, the session reads as
+  locked while it shows, and `caffeinate -u` does not dismiss it; `xc-test` used to report "the
+  Mac's screen stayed locked after waking the display" with the screen-lock fix. It now says a
+  screen saver is showing, with the Lock Screen ▸ "Start Screen Saver when inactive" fix, and
+  `xc-doctor` has a `screen-saver` check that warns while it can start.
+
 ## [1.2.1] - 2026-09-30
 
 - A failed read of the Mac's desktop session is reported as that ("could not read …"), no longer

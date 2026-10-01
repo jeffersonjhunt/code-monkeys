@@ -4,7 +4,7 @@ description: Scaffold, build, test, run and screenshot iOS, iPadOS and macOS app
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.2.1"
+  version: "1.2.2"
 ---
 
 # apple-xcodebuild
@@ -50,7 +50,7 @@ mapping, unsupported). All take `--help` and `--project-dir` (default: `.`, sear
 
 | Script | Does |
 |---|---|
-| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, the Screen Recording grant macOS screenshots need, Automation Mode for macOS UI tests, that the Mac's desktop session is unlocked (UI tests need it), and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
+| `xc-doctor.py` | Checks SSH, `xcode-select`, first-launch components, SDKs, simulators, that the project is visible on the Mac, the XcodeGen cache, the Screen Recording grant macOS screenshots need, Automation Mode for macOS UI tests, that the Mac's desktop session is unlocked and its screen saver off (UI tests need both), and — for macOS projects that sign with an identity — that codesigning actually works over SSH. Every non-ok check carries a `fix`. |
 | `xc-bootstrap.py <App>` | Scaffolds an XcodeGen project: one app target for `--platforms ios,macos` (either or both), Swift 6, generated Info.plist, asset catalog, Swift Testing target, `.gitignore`, pinned `.xcodegen-version`. Scaffolds into an existing dir (e.g. a fresh repo) only if nothing would be overwritten; extends an existing `.gitignore`. |
 | `xc-build.py` | Regenerates the project from `project.yml`, builds `--platform ios-sim\|ios-device\|macos\|all` in `--config debug\|release`. Full log in `build/logs/`; the built app's path and bundle id (from the build settings) in `build/xc/build-<platform>.json`. `--setting KEY=VALUE` passes extra build settings; `--adhoc` forces ad-hoc macOS signing. |
 | `xc-test.py` | `xcodebuild test` per platform (a concrete simulator for iOS) with counts read from the `.xcresult`; `--package DIR` runs `swift test` for a local package — with `--packages-only` no Xcode project is needed (logs go to the package's `.build/xc/logs`). **Zero tests is a failure**, and so is a run whose counts cannot be read. Takes the same `--setting` and `--adhoc` as `xc-build`. |
@@ -146,7 +146,10 @@ debugging session):
    spending 60 s per test (`--allow-locked` for schemes without UI tests). Waking is not always
    enough: on a Mac Studio with an external display, macOS turned the display off again 12 s after
    the wake, despite `caffeinate`, and the whole run failed. **On a build Mac, also set "Turn
-   display off … when inactive" to Never** (System Settings ▸ Lock Screen).
+   display off … when inactive" to Never** (System Settings ▸ Lock Screen). **And the screen saver
+   to Never** ("Start Screen Saver when inactive"): on macOS 27 it runs inside loginwindow, the
+   session reads as locked while it shows (password or not), and only real input dismisses it —
+   `xc-test` says so rather than retrying, and `xc-doctor` warns (`screen-saver`) while it is on.
 
 No Accessibility (Device Control & Data Access) grant is needed for any of this.
 
