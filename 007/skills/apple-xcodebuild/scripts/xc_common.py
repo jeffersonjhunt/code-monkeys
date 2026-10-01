@@ -640,11 +640,17 @@ case "$s" in *IOConsoleUsers*) echo "PROBE=ok" ;; *) echo "PROBE=failed" ;; esac
 case "$s" in *'"kCGSSessionOnConsoleKey"=Yes'*) echo "CONSOLE=yes" ;; *) echo "CONSOLE=no" ;; esac
 case "$s" in *'"CGSSessionScreenIsLocked"=Yes'*) echo "LOCKED=yes" ;; *) echo "LOCKED=no" ;; esac
 case "$(sysadminctl -screenLock status 2>&1 || true)" in *"screenLock is off"*) echo "PASSWORD=no" ;; *) echo "PASSWORD=yes" ;; esac
+echo "SAVER=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || echo unset)"
 """
 
 SCREEN_LOCK_FIX = ("unlock the Mac — and on a build Mac, stop it locking: System Settings ▸ Lock Screen ▸ "
                    "\"Require password after screen saver begins or display is turned off\" ▸ Never")
 PROBE_FAILED_FIX = "on the Mac: run `ioreg -n Root -d1` and look for IOConsoleUsers"
+# On macOS 27 the screen saver runs inside loginwindow and the session reads as locked while it
+# shows, password or not. Declared activity (caffeinate -u) does not dismiss it — only real input.
+SCREEN_SAVER_FIX = ("on a build Mac: System Settings ▸ Lock Screen ▸ \"Start Screen Saver when inactive\" ▸ "
+                    "Never (and \"Turn display off … when inactive\" ▸ Never); move the mouse once to clear "
+                    "one that is showing now")
 NO_CONSOLE_FIX = "log in to the Mac's desktop (a GUI session, not just SSH) — or turn on automatic login"
 
 
@@ -653,11 +659,18 @@ def _screen_facts():
     return dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
 
 
+def screen_saver_idle():
+    """Seconds before the screen saver starts (0: never), or None if the setting is not set."""
+    v = _screen_facts().get("SAVER", "unset")
+    return int(v) if v.isdigit() else None
+
+
 def screen_state(wake=False):
     """(problem, note): problem is None if macOS UI tests can run, else (reason, fix).
 
     A screen "locked" only because the display slept (no password to wake it) is not a problem:
-    with wake=True the display is woken here; without, the note says it will need waking.
+    with wake=True the display is woken here; without, the note says it will need waking. A
+    screen saver reads the same way but does not wake — that is reported as a screen saver.
     """
     f = _screen_facts()
     if f.get("PROBE") != "ok":
@@ -670,10 +683,12 @@ def screen_state(wake=False):
     if f.get("PASSWORD") == "yes":
         return ("the Mac's screen is locked (waking it asks for a password)", SCREEN_LOCK_FIX), None
     if not wake:
-        return None, "the display is asleep (no password to wake it) — xc-test wakes it"
+        return None, ("the display is asleep or a screen saver is showing (no password) — xc-test wakes a "
+                      "sleeping display; a screen saver needs real input")
     remote("caffeinate -u -t 2 || true")
     if _screen_facts().get("LOCKED") == "yes":
-        return ("the Mac's screen stayed locked after waking the display", SCREEN_LOCK_FIX), None
+        return ("a screen saver is still showing — waking the display does not dismiss it, only real "
+                 "input does", SCREEN_SAVER_FIX), None
     return None, "woke the display"
 
 

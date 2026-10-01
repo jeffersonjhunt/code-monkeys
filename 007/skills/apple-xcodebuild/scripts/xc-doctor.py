@@ -112,6 +112,19 @@ def screen_lock_check():
     return check("screen-lock", "warn", f"{reason} — macOS UI tests will fail 'Running Background'", fix)
 
 
+def screen_saver_check():
+    """A screen saver that starts while the Mac is idle stops unattended macOS UI tests: it reads as
+    a locked session and nothing but real input dismisses it."""
+    idle = xc.screen_saver_idle()
+    if idle == 0:
+        return check("screen-saver", "ok", "never starts")
+    if idle is None:
+        return check("screen-saver", "warn", "not set, so macOS's default applies — macOS UI tests stop once it starts",
+                     xc.SCREEN_SAVER_FIX)
+    return check("screen-saver", "warn", f"starts after {max(idle // 60, 1)} min idle — macOS UI tests then fail "
+                 "until someone moves the mouse", xc.SCREEN_SAVER_FIX)
+
+
 def check(name, status, detail, fix=None):
     c = {"check": name, "status": status, "detail": detail}
     if fix:
@@ -229,6 +242,7 @@ def main():
         checks.append(screen_recording_check())
         checks.append(automation_mode_check())
         checks.append(screen_lock_check())
+        checks.append(screen_saver_check())
     if root is not None and "macos" in platforms:
         checks.append(signing_check(root))
 
