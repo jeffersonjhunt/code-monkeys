@@ -38,17 +38,17 @@ values live in `~/.config/secret-ops.conf` (or env), which is private to each ma
 3. **Non-login ssh drops PATH.** `ssh host 'sops …'` gets only `/usr/bin:/bin:/usr/sbin:/sbin`, so
    docker and the shims come back "command not found". Prepend `/usr/local/bin` and `~/.local/bin`.
    `scripts/secret-host.sh` does this for you — route every host command through it.
-4. **`*.sops` files are BINARY mode** (one encrypted file per original). Always
-   `--input-type binary --output-type binary` on both `-e` and `-d`. A plain `sops -e file.json`
-   writes a structured-JSON sops file the fleet's plain `-d` can no longer read.
-5. **The encrypt INPUT path must match `.sops.yaml`.** Recipients are chosen by `path_regex` against
-   the input filename, so encrypt a file at the matching decrypted path (e.g. `<area>/config.json`),
-   then write the ciphertext to `<name>.sops`. `scripts/sops-reencrypt.sh` handles this.
-6. **Verify before you replace.** Encrypt to a temp, decrypt it back, diff against the source, then
-   atomically replace the real `.sops`. Never `>` straight onto the known-good file.
-7. **vault vs raw sops.** `vault` (`unlock` / `lock [--push]` / `status` / `rekey`) manages only the
-   `personal/*` dotfiles (ssh/, aws/, env, …). Every other `.sops` is edited with `bin/sops` directly.
-   `.sops.yaml` at the hemlighet root holds the per-path recipient lists.
+4. **To encrypt, use `vault`. Never hand-roll `sops -e`.** `vault` is the one encryptor and it owns
+   the three things that are easy to get wrong: `*.sops` files are **binary mode** (`sops -e file.json`
+   plain writes a structured-JSON sops the fleet's `-d` can't read); recipients come from `.sops.yaml`
+   matched against the *decrypted* path (vault uses `--filename-override`, so no copying plaintext
+   around); and the commit is **pathspec-scoped** so unrelated staged changes aren't swept in. A
+   hand-rolled `sops -e … > file.sops` gets all three wrong.
+5. **vault's two scopes.** `vault unlock` / `lock` / `status` / `rekey` manage the `personal/*`
+   dotfiles (ssh/, aws/, env, …). `vault seal <src> <dest.sops> [--push] [-m MSG]` encrypts **any
+   other** file into the clone (e.g. a service config). `.sops.yaml` at the hemlighet root holds the
+   per-path recipient lists. Reading a `*.sops` back is just `sops -d --input-type binary
+   --output-type binary <file>.sops` (via `secret-host.sh`).
 
 ## Configuration
 
@@ -63,30 +63,23 @@ HEMLIGHET_DIR=$HOME/.local/share/hemlighet   # optional; this is the published d
 CHECKOUT_DIR=<path to the code-monkeys checkout on that host>   # optional
 ```
 
-## Scripts
+## Script
 
 ### `scripts/secret-host.sh` — run a host command with a sane PATH
 ```
-secret-host.sh 'sops -d --input-type binary --output-type binary <area>/config.json.sops'
-secret-host.sh --cwd "$CHECKOUT_DIR" 'git status'
+secret-host.sh 'sops -d --input-type binary --output-type binary <area>/config.json.sops'   # read
+secret-host.sh --cwd "$CHECKOUT_DIR" './vault seal <src> <area>/config.json.sops --push -m "msg"'  # write
 ```
 ssh's to `$SECRET_USER@$SECRET_HOST`, prepends `/usr/local/bin:~/.local/bin` to PATH, and runs in the
-hemlighet clone by default (`--cwd` to change). Errors with guidance if the config is missing.
-
-### `scripts/sops-reencrypt.sh` — re-encrypt a decrypted file into hemlighet and push, safely
-```
-sops-reencrypt.sh [--no-push] <plaintext-path-on-host> <hemlighet-rel.sops> ["commit message"]
-```
-On the secret host: copies the plaintext to the matching decrypted path, binary-mode encrypts to a
-temp, decrypts the temp and checks it is byte-identical to the source, atomically replaces the `.sops`,
-then `git add`/`commit`/`push`. Aborts with the original untouched on any mismatch, and never leaves
-plaintext behind.
+hemlighet clone by default (`--cwd` to change). Errors with guidance if the config is missing. This is
+the skill's only script — the encryptor lives in `vault` (see rule 4), reached through here; the skill
+does not hand-roll `sops`.
 
 ## Typical flow (generic)
 
-1. `secret-host.sh 'sops -d --input-type binary --output-type binary <area>/config.json.sops'` to read.
-2. Edit the decrypted working copy of the config (wherever your workflow keeps it).
-3. `sops-reencrypt.sh <plaintext> <area>/config.json.sops "describe the change"` to re-encrypt + push.
+1. **Read:** `secret-host.sh 'sops -d --input-type binary --output-type binary <area>/config.json.sops'`.
+2. **Edit** the decrypted working copy of the config (wherever your workflow keeps it, on the host).
+3. **Encrypt + publish:** `secret-host.sh --cwd "$CHECKOUT_DIR" './vault seal <plaintext> <area>/config.json.sops --push -m "describe the change"'`.
 4. Other machines pick it up on their next pull / config sync.
 
 ## See also
