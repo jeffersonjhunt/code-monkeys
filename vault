@@ -27,6 +27,13 @@
 #                              (--local skips the git fetch)
 #   rekey                      run `sops updatekeys` over all stored files
 #                              after editing recipients in hemlighet/.sops.yaml
+#   seal <src> <dest.sops>     encrypt ANY file (not a personal item) into the
+#        [--push] [-m MSG]      hemlighet clone at <dest.sops> (path relative to
+#                              the clone root). Binary mode; recipients come from
+#                              .sops.yaml matching <dest without .sops>. Commits
+#                              the one file (scoped); --push also pushes. This is
+#                              the one encryptor for non-personal configs — do not
+#                              hand-roll `sops -e` elsewhere.
 #
 # Items: ssh env aws face gitconfig (default: all)
 #
@@ -138,11 +145,15 @@ _nyckel() {
   fi
   _docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp \
     ${key_mount[@]+"${key_mount[@]}"} \
+    ${NYCKEL_EXTRA_MOUNTS[@]+"${NYCKEL_EXTRA_MOUNTS[@]}"} \
     -v "$HL:/hl" \
     -v "$SCRIPT_DIR:/repo:$repo_mode" \
     -w /hl \
     "${IMAGE}:latest" "$@"
 }
+# Optional extra `docker run` args (e.g. a source bind for `seal`). Empty for every
+# existing caller, so the personal lock/unlock path is unchanged.
+NYCKEL_EXTRA_MOUNTS=()
 
 # ---------------------------------------------------------------- checks ---
 
@@ -567,6 +578,88 @@ do_status() {
   fi
 }
 
+# Commit (and optionally push) ONE pathspec in the clone, scoped so nothing else
+# staged or dirty is swept in. The generalization of _publish used by `seal`;
+# _publish stays as-is for the personal path to keep that proven flow untouched.
+_publish_path() {
+  local pathspec="$1" msg="$2" push="$3" sha upstream
+  if [[ -z "$(git -C "$HL" status --porcelain -- "$pathspec" 2>/dev/null)" ]]; then
+    echo "  hemlighet: already up to date — nothing to publish"
+    return 0
+  fi
+  echo "  publishing to hemlighet:"
+  git -C "$HL" add -- "$pathspec"
+  if ! git -C "$HL" commit -q -m "$msg" -- "$pathspec"; then
+    echo "    commit FAILED — resolve in $HL, then commit and push by hand" >&2
+    return 1
+  fi
+  sha=$(git -C "$HL" rev-parse --short HEAD 2>/dev/null || echo '?')
+  echo "    committed  $sha  \"$msg\""
+  if [[ "$push" != "true" ]]; then
+    echo "    (not pushed — the commit is local; push $HL when ready)"
+    return 0
+  fi
+  upstream=$(git -C "$HL" rev-parse --abbrev-ref '@{u}' 2>/dev/null || echo "origin")
+  if git -C "$HL" push -q; then
+    echo "    pushed     $upstream"
+    echo "  hemlighet: PUBLISHED"
+  else
+    echo "    push FAILED — the commit is local; the remote has probably moved" >&2
+    echo "    finish with: git -C $HL pull --rebase && git -C $HL push" >&2
+    return 1
+  fi
+}
+
+# Encrypt an arbitrary file into the clone. The ONE encryptor for non-personal
+# configs — binary mode, recipients from .sops.yaml matched against <dest without
+# .sops> via --filename-override, written with --output (no redirect, no plaintext
+# copy), then a scoped publish. Deliberately does NOT require the main checkout:
+# the source is explicit and the personal plaintext is not touched.
+do_seal() {
+  local push=false msg="" src="" dest=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --push) push=true ;;
+      -m|--message) shift; [[ $# -ge 1 ]] || { echo "Error: -m needs a message" >&2; exit 2; }; msg="$1" ;;
+      -*) echo "Unknown flag for seal: $1" >&2; exit 2 ;;
+      *)
+        if [[ -z "$src" ]]; then src="$1"
+        elif [[ -z "$dest" ]]; then dest="$1"
+        else echo "Error: too many arguments (want: <src> <dest.sops>)" >&2; exit 2
+        fi
+        ;;
+    esac
+    shift
+  done
+  if [[ -z "$src" || -z "$dest" ]]; then
+    echo "Error: usage: vault seal <src> <dest.sops> [--push] [-m MSG]" >&2
+    exit 2
+  fi
+  case "$dest" in *.sops) : ;; *) echo "Error: <dest> must end in .sops (got: $dest)" >&2; exit 2 ;; esac
+  case "$dest" in /*|*..*) echo "Error: <dest> must be a relative path inside the clone (no leading / or ..)" >&2; exit 2 ;; esac
+  if [[ ! -f "$src" ]]; then echo "Error: source file not found: $src" >&2; exit 1; fi
+  _require_hl
+  _require_key
+
+  local abs dec
+  abs="$(cd "$(dirname "$src")" && pwd)/$(basename "$src")"
+  dec="${dest%.sops}"
+  : "${msg:=seal $dest}"
+
+  NYCKEL_EXTRA_MOUNTS=(-v "$abs:/src:ro")
+  _nyckel ro sh -c '
+    set -e
+    mkdir -p "$(dirname "/hl/$1")"
+    sops -e --input-type binary --output-type binary \
+      --filename-override "$2" --output "/hl/$1" /src
+  ' sops-seal "$dest" "$dec"
+  NYCKEL_EXTRA_MOUNTS=()
+
+  echo "  sealed: $src -> $dest"
+  echo ""
+  _publish_path "$dest" "$msg" "$push"
+}
+
 # ------------------------------------------------------------------ main ---
 
 if [[ $# -lt 1 ]]; then
@@ -580,6 +673,7 @@ case "$1" in
   lock)   _require_main_checkout "$@"; shift; do_lock "$@" ;;
   rekey)  _require_main_checkout "$@"; shift; do_rekey "$@" ;;
   status) _require_main_checkout "$@"; shift; do_status "$@" ;;
+  seal)   shift; do_seal "$@" ;;
   sync)
     echo "vault sync is retired — hemlighet is a git repo now:" >&2
     echo "  git -C $HL pull / push" >&2
