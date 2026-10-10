@@ -63,6 +63,7 @@ debian:13-slim → codemonkey → miniforge3 → claude
                              │            → kiro
                              │            → spark-bench   (x86-only)
                              → embedded
+                             → rust
                              → lamp
                              → huggingface
                              → minion
@@ -85,6 +86,7 @@ debian:trixie-slim → samba     (standalone — file-server daemon)
 | **kiro** | Adds Amazon Kiro CLI via native installer, creates `kiro-env` |
 | **spark-bench** | LLM eval harnesses (AIME, GPQA, LiveCodeBench, tau2-bench, SWE-Bench via SWE-agent) run against the cluster endpoint. **amd64-only** (SWE-Bench testbeds are x86) — runs on `intel-nuc.tworivers`; see `007/skills/spark-bench/` |
 | **embedded** | Adds libfmt, libboost, cc65, vasm 6502 assembler |
+| **rust** | Adds the stable Rust toolchain via rustup (`rustc`/`cargo`/`clippy`/`rustfmt`) in `/opt/rust` so the home volume can't shadow it; `CARGO_HOME` defaults to `~/.cargo` in the volume (persistent, writable crate cache). Image-managed — rebuild to upgrade |
 | **lamp** | Adds Apache, MariaDB, PHP |
 | **huggingface** | Adds python3 venv and huggingface-cli |
 | **minion** | Bare codemonkey extension (general-purpose runner) |

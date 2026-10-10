@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-make all                    # Build codemonkey base + all targets (minion, embedded, miniforge3, claude, opencode, aichat, kiro, lamp, huggingface, nyckel, samba)
+make all                    # Build codemonkey base + all targets (minion, embedded, rust, miniforge3, claude, opencode, aichat, kiro, lamp, huggingface, nyckel, samba)
 make codemonkey.build       # Build the codemonkey base image (from parent directory)
 make <name>.build           # Build a specific image, e.g. make claude.build
 make cuda-base.build        # Build the shared CUDA base (cuda-base:runtime + cuda-base:devel); auto-built by the cuda-* targets
@@ -90,6 +90,7 @@ codemonkey (base, dockerfile in parent dir)
 │   ├── kiro         (adds Amazon Kiro CLI via native installer, kiro-env conda env)
 │   └── spark-bench  (x86-only — LLM eval harnesses for the spark-cluster; SWE-Bench Verified via SWE-agent, tau2-bench, LiveCodeBench, AIME/GPQA. Runs on intel-nuc.tworivers)
 ├── embedded         (adds libfmt, libboost, cc65, vasm 6502 assembler)
+├── rust             (adds the stable Rust toolchain via rustup — rustc/cargo/clippy/rustfmt — in /opt/rust, outside the home volume; CARGO_HOME defaults to ~/.cargo in the volume)
 ├── lamp             (adds Apache, MariaDB, PHP)
 ├── huggingface      (adds python3 venv, huggingface-cli)
 └── minion           (empty extension of codemonkey)
