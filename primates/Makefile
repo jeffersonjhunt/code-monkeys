@@ -2,12 +2,12 @@
 
 # What `make all` builds, in dependency order (codemonkey is built first, separately).
 # spark-bench is deliberately absent: it is x86-only and built on its own host.
-TARGETS := minion embedded miniforge3 claude opencode aichat kiro lamp huggingface nyckel samba
+TARGETS := minion embedded rust miniforge3 claude opencode aichat kiro lamp huggingface nyckel samba
 
 # What `make upgrade` syncs dotfiles into. NOT $(TARGETS): spark-bench has a home volume even
 # though `all` does not build it here, and nyckel/samba have none (neither is codemonkey-based,
 # so there is nothing to sync). Different question, different list.
-UPGRADE_TARGETS := codemonkey minion embedded miniforge3 claude opencode aichat kiro lamp huggingface spark-bench
+UPGRADE_TARGETS := codemonkey minion embedded rust miniforge3 claude opencode aichat kiro lamp huggingface spark-bench
 
 MAKEFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 DIR := $(notdir $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))

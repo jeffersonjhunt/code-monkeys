@@ -17,7 +17,7 @@ REGION="${AWS_REGION:-us-east-1}"
 #   cuda-base      — ships :runtime + :devel, has no :latest to assemble
 #   cuda-vllm      — reaches ECR through the spark-cluster's own deploy pipeline, not this sweep
 #                    (see spark/cluster/README.md); run `./manifest-push.sh cuda-vllm` to do it here
-ALL=(codemonkey minion embedded miniforge3 lamp huggingface claude opencode aichat kiro spark-bench cuda-comfy cuda-llama-cpp)
+ALL=(codemonkey minion embedded rust miniforge3 lamp huggingface claude opencode aichat kiro spark-bench cuda-comfy cuda-llama-cpp)
 if [ "$#" -gt 0 ]; then ALL=("$@"); fi
 
 TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" \

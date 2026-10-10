@@ -53,6 +53,7 @@ debian:13-slim → codemonkey → miniforge3 (miniforge3-env) → claude (claude
                             │                             → kiro (kiro-env)
                             │                             → spark-bench (spark-bench-env, x86-only)
                             → embedded
+                            → rust
                             → lamp
                             → huggingface
                             → minion
