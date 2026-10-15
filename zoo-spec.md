@@ -175,6 +175,12 @@ shell, return), not the contract:
   tmux concern: `ctrl-b w` / `ctrl-b 0`.
 - **tmux is now a hard prerequisite on the host** (no in-terminal fallback — a fallback would be
   the deleted hand-off). Absent tmux, zoo exits with a message.
+- **A reachable docker socket is a prerequisite, checked before the handoff.** Absent one, zoo
+  exits with a message naming where it looked. The ordering matters: the inner process's stderr
+  belongs to a tmux window that exits with it, so a daemon failure discovered after the re-exec
+  is invisible — which is how a stopped Docker Desktop read as zoo doing nothing at all. A
+  daemon that dies *later*, mid-session, needs no such treatment: the view has the
+  `daemon unreachable` banner to report it in.
 - **Nesting is accepted, not worked around.** A `primate-session` runs tmux inside the container,
   so attaching nests tmux; the inner prefix becomes `ctrl-b ctrl-b`.
 - **A window is targeted at the session with a trailing colon** (`new-window -t zoo:`): window 0

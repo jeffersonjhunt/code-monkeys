@@ -90,7 +90,8 @@ def socket_path(environ=None, exists=os.path.exists) -> str:
         if exists(path):
             return path
     raise DockerError(
-        "no docker socket at " + " or ".join(DEFAULT_SOCKETS) + " (set DOCKER_HOST=unix://...)"
+        "docker is either not installed or not running: no socket at "
+        + " or ".join(DEFAULT_SOCKETS) + " (set DOCKER_HOST=unix://... if it is elsewhere)"
     )
 
 
@@ -1912,9 +1913,25 @@ def main(argv=None, stdout=None, stderr=None, environ=None, transport: Optional[
     if args.interval is not None and args.interval < CLI_MIN_INTERVAL:
         print(f"zoo: --interval must be at least {CLI_MIN_INTERVAL}s", file=stderr)
         return 2
+    # No docker, no zoo — and this has to be said here, before the tmux handoff below. An
+    # interactive run re-execs itself as window 0 of its own tmux session, so a failure found
+    # after the handoff prints to a window that exits immediately and the message dies with it:
+    # zoo looked like it simply did nothing. Skipped when a transport is injected, so tests do
+    # not depend on whether the machine running them has a daemon (spec req 29).
+    if transport is None:
+        try:
+            sock = socket_path(environ)
+        except DockerError as exc:
+            print(f"zoo: {exc}", file=stderr)
+            return 1
+        if not os.path.exists(sock):
+            # socket_path takes an explicit DOCKER_HOST on trust; this is where that is checked.
+            print(f"zoo: docker is either not installed or not running (no socket at {sock})",
+                  file=stderr)
+            return 1
     # Auto-wrap: an interactive run outside tmux re-execs itself as window 0 of a tmux session it
-    # owns, so attach/shell/launch can open sibling windows (T1) with no hand-off. Done before
-    # touching docker — the outer process does nothing but hand off to tmux. --once and a run
+    # owns, so attach/shell/launch can open sibling windows (T1) with no hand-off. The outer
+    # process does nothing beyond the socket check above and this handoff. --once and a run
     # already inside tmux (or already re-exec'd, --in-tmux) skip this.
     refuse = refuse_reason(args.once, args.in_tmux, environ)
     if refuse:
