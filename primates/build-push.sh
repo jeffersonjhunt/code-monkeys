@@ -7,12 +7,12 @@
 #
 # Usage:  ./build-push.sh [primate ...]      # default: the full CPU chain, in dependency order
 # Pushes: <ECR>/codemonkeys/<name>:latest-<amd64|arm64>   (arch derived from uname -m)
-# Creds:  host ~/.aws  (default profile = the scoped fleet-ecr-push identity covers codemonkeys/*)
+# Creds:  host ~/.aws via docker-credential-ecr-login (default profile = the scoped fleet-ecr-push
+#         identity covers codemonkeys/*). No `docker login` — the helper authenticates each push.
 set -uo pipefail
 
 ECR="${ECR_REGISTRY:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
 NS=codemonkeys
-REGION="${AWS_REGION:-us-east-1}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 case "$(uname -m)" in
@@ -25,14 +25,9 @@ esac
 DEFAULT=(codemonkey minion embedded rust miniforge3 lamp huggingface claude opencode aichat kiro spark-bench)
 if [ "$#" -gt 0 ]; then PRIMATES=("$@"); else PRIMATES=("${DEFAULT[@]}"); fi
 
-# ECR login (containerized aws-cli — no host aws install; fail closed on an empty token).
-docker image inspect amazon/aws-cli >/dev/null 2>&1 || docker pull -q amazon/aws-cli >/dev/null
-TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" \
-  -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
-  amazon/aws-cli ecr get-login-password --region "$REGION")"
-[ -n "$TOKEN" ] || { echo "ERROR: empty ECR token" >&2; exit 8; }
-echo "$TOKEN" | docker login --username AWS --password-stdin "$ECR" >/dev/null || exit 8
-
+# ECR auth is docker-credential-ecr-login (installed by ../setup; a credHelpers entry for $ECR in
+# ~/.docker/config.json): the `docker push` below authenticates straight from ~/.aws, no `docker
+# login`. If ~/.aws holds only a named profile (no [default]), export AWS_PROFILE before running.
 cd "$HERE"
 fail=0
 for p in "${PRIMATES[@]}"; do

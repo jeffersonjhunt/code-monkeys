@@ -24,6 +24,13 @@ DIR_LINKS="fastfetch::config jjh.zsh-theme::oh-my-zsh/custom/themes"
 # The settings and commands never actually reached ~/.claude from setup at all.
 CHILD_LINKS="claude/settings.json::claude claude/commands::claude"
 BIN_DIR="${HOME}/.local/bin"
+
+# ECR credential helper: the fleet registry whose pulls/pushes authenticate from ~/.aws via
+# docker-credential-ecr-login (no `docker login`, no credential store). CODEMONKEYS_ECR overrides.
+ECR_REGISTRY_DEFAULT="521147433280.dkr.ecr.us-east-1.amazonaws.com"
+# macOS has no apt and these boxes carry no Homebrew (and AWS retired the public binary URLs), so the
+# Mac binary is cross-built from source in a Go container. Linux installs the stock apt package.
+ECR_HELPER_VERSION="0.12.0"
 GIT_REPOS=(
   "https://github.com/zsh-users/zsh-autosuggestions.git::${HOME}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
   "https://github.com/zsh-users/zsh-completions.git::${HOME}/.oh-my-zsh/custom/plugins/zsh-completions"
@@ -409,6 +416,102 @@ remove_skills() {
   run make -C "${SRC}/007/skills" uninstall
 }
 
+# ECR credential helper. Installs docker-credential-ecr-login and a `credHelpers` entry so that
+# `docker pull`/`push` of codemonkeys/* images authenticate to ECR straight from ~/.aws — no
+# `docker login`, no OS credential store/keychain (which is what kept breaking). Never fatal: a
+# failure here warns and setup continues; primate-pull reports clearly if the helper is missing.
+install_ecr_helper() {
+  echo "Installing ECR credential helper..."
+  local reg="${CODEMONKEYS_ECR:-$ECR_REGISTRY_DEFAULT}"
+
+  if command -v docker-credential-ecr-login >/dev/null 2>&1; then
+    echo "  skip: docker-credential-ecr-login already on PATH"
+  elif [[ "$OS" == "Linux" || "$OS" == "WSL" ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      echo "  [dry-run] sudo apt-get install -y amazon-ecr-credential-helper"
+    elif ! { sudo apt-get update -qq && sudo apt-get install -y amazon-ecr-credential-helper; }; then
+      echo "  WARNING: could not apt-install amazon-ecr-credential-helper — install it manually." >&2
+    fi
+  elif [[ "$OS" == "MacOS" ]]; then
+    install_ecr_helper_macos || echo "  WARNING: ECR helper not installed (see above)." >&2
+  fi
+
+  ensure_credhelper_config "$reg"
+}
+
+# macOS binary: cross-built from source in a Go container (needs Docker running), dropped in
+# ~/.local/bin (no sudo — same place as our shims).
+install_ecr_helper_macos() {
+  local arch out ver="$ECR_HELPER_VERSION"
+  case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; *) arch=amd64 ;; esac
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  [dry-run] docker run golang ... build docker-credential-ecr-login -> ${BIN_DIR}/"
+    return 0
+  fi
+  if ! docker version >/dev/null 2>&1; then
+    echo "  WARNING: Docker is not running — cannot build the ECR helper. Start Docker and re-run setup." >&2
+    return 1
+  fi
+  echo "  building docker-credential-ecr-login ${ver} (darwin/${arch}) in a Go container..."
+  # Stream the built binary out over the container's stdout rather than bind-mounting an output dir.
+  # A bind mount resolves on the Docker Desktop VM and so depends on its file-sharing list; stdout is
+  # client-streamed and always works (same reason `docker build`/`docker cp` do). go install's own
+  # chatter is sent to stderr so only the binary bytes land in the file.
+  local tmpf; tmpf="$(mktemp)"
+  if docker run --rm -e CGO_ENABLED=0 -e GOOS=darwin -e "GOARCH=${arch}" golang:1.24 \
+       sh -c "go install github.com/awslabs/amazon-ecr-credential-helper/ecr-login/cli/docker-credential-ecr-login@v${ver} 1>&2 && cat /go/bin/darwin_${arch}/docker-credential-ecr-login" \
+       > "$tmpf" && [ -s "$tmpf" ]; then
+    mkdir -p "$BIN_DIR"
+    install -m 0755 "$tmpf" "${BIN_DIR}/docker-credential-ecr-login"
+    echo "  installed ${BIN_DIR}/docker-credential-ecr-login"
+    rm -f "$tmpf"
+  else
+    rm -f "$tmpf"
+    return 1
+  fi
+}
+
+# Merge a credHelpers entry into ~/.docker/config.json (never clobber other docker CLI state).
+ensure_credhelper_config() {
+  local reg="$1" cfg="${HOME}/.docker/config.json" tmp
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  [dry-run] merge credHelpers[${reg}]=ecr-login into ${cfg}"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  WARNING: jq not found — add '\"credHelpers\":{\"${reg}\":\"ecr-login\"}' to ${cfg} by hand." >&2
+    return 0
+  fi
+  mkdir -p "${HOME}/.docker"
+  [[ -s "$cfg" ]] || echo '{}' > "$cfg"
+  tmp="$(mktemp)"
+  if jq --arg reg "$reg" '.credHelpers = ((.credHelpers // {}) + {($reg):"ecr-login"})' "$cfg" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$cfg"
+    echo "  credHelpers[${reg}]=ecr-login in ${cfg}"
+  else
+    rm -f "$tmp"
+    echo "  WARNING: could not update ${cfg} — add the credHelpers entry by hand." >&2
+  fi
+}
+
+remove_ecr_helper() {
+  echo "Removing ECR credential helper config..."
+  local reg="${CODEMONKEYS_ECR:-$ECR_REGISTRY_DEFAULT}" cfg="${HOME}/.docker/config.json" tmp
+  # Only the Mac binary we dropped in ~/.local/bin; leave an apt-installed Linux package in place.
+  if [[ -f "${BIN_DIR}/docker-credential-ecr-login" && ! -L "${BIN_DIR}/docker-credential-ecr-login" ]]; then
+    run rm -f "${BIN_DIR}/docker-credential-ecr-login"
+  fi
+  if [[ "$DRY_RUN" == false && -s "$cfg" ]] && command -v jq >/dev/null 2>&1; then
+    tmp="$(mktemp)"
+    if jq --arg reg "$reg" 'if has("credHelpers") then .credHelpers |= del(.[$reg]) | (if .credHelpers == {} then del(.credHelpers) else . end) else . end' \
+          "$cfg" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$cfg"
+    else
+      rm -f "$tmp"
+    fi
+  fi
+}
+
 # --- Parse args ---
 
 while [[ $# -gt 0 ]]; do
@@ -434,6 +537,7 @@ if [[ "$UNINSTALL" == true ]]; then
   remove_dir_links
   remove_child_links
   remove_bin_links
+  remove_ecr_helper
   remove_zshrc
   remove_repos
   remove_skills
@@ -463,6 +567,8 @@ else
   install_zshrc
   clone_repos
   [[ "$OS" == "MacOS" ]] && setup_macos
+
+  install_ecr_helper
 
   install_hooks
 

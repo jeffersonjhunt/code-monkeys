@@ -4,7 +4,7 @@
 # ECR if it does not.
 #
 #   primate-pull minion            # one image
-#   primate-pull codemonkey minion # several; one ECR login covers them all
+#   primate-pull codemonkey minion # several; one pull covers them all
 #
 # This is THE place the ECR pull lives. It used to be copied into `vault`,
 # `bin/sops`, `bin/age` and `bin/age-keygen` — and the two shims that needed it
@@ -17,24 +17,27 @@
 # which sent you off to `make` instead of to your ~/.aws creds. Every call site
 # now goes through here, so a fix lands once.
 #
-# Creds come from ~/.aws via a containerized aws-cli — nothing is installed on
-# the host. The aws-cli image is public on Docker Hub, so bootstrapping needs no
-# login and there is no cycle with `bin/aws`, which itself runs in `minion`.
+# Auth is the AWS-native credential helper, NOT `docker login`. With a
+# `credHelpers` entry for the ECR registry in ~/.docker/config.json, `docker
+# pull` invokes `docker-credential-ecr-login`, which mints and refreshes the
+# token itself from ~/.aws on every pull — no `docker login`, no OS credential
+# store, no macOS keychain. (The hand-rolled `get-login-password | docker login`
+# this replaced kept breaking: current Docker Desktop forces `docker login`
+# through the keychain regardless of config, so it failed `-25308` whenever the
+# keychain was unreachable — over ssh, or from a zoo/tmux launch window.) The
+# helper is installed by `setup` on hosts and baked into every primate image;
+# this script also self-heals the `credHelpers` entry if it is missing.
 #
 # Env:
 #   CODEMONKEYS_ECR   override the registry
-#   AWS_PROFILE       forwarded; falls back to the only profile when there is
-#                     exactly one and no [default]
-#   HOST_AWS_DIR      set by primate(); the host-side path of ~/.aws, which is
-#                     what the daemon needs when we are called inside a primate
+#   AWS_PROFILE       forwarded to the helper; falls back to the only profile
+#                     when there is exactly one and no [default]
 #
 
 set -uo pipefail
 
 REG="${CODEMONKEYS_ECR:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
 NS="codemonkeys"
-REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
-AWSCLI="${PRIMATE_PULL_AWSCLI:-amazon/aws-cli}"
 ME="primate-pull"
 
 if [[ "$#" -lt 1 ]]; then
@@ -44,9 +47,6 @@ fi
 
 # ------------------------------------------------------------------ docker ---
 
-# Isolated config dir for the login, when we can prove one reaches the daemon.
-# Empty means "use the caller's real config".
-CFG=""
 DOCKER_CMD=""
 
 _docker() {
@@ -62,18 +62,14 @@ _docker() {
     fi
   fi
   if [[ "$DOCKER_CMD" == "sudo" ]]; then
-    # sudo resets the environment, so DOCKER_CONFIG has to be carried explicitly.
-    if [[ -n "$CFG" ]]; then
-      sudo -n env "DOCKER_CONFIG=$CFG" docker "$@"
-    else
-      sudo -n docker "$@"
-    fi
+    # sudo resets the environment, but the ECR credential helper (spawned by the docker CLI) needs
+    # the caller's HOME to find ~/.aws, AWS_PROFILE, and PATH to find docker-credential-ecr-login.
+    local fwd=(HOME="$HOME" PATH="$PATH")
+    [[ -n "${AWS_PROFILE:-}" ]] && fwd+=("AWS_PROFILE=$AWS_PROFILE")
+    [[ -n "${AWS_REGION:-}" ]] && fwd+=("AWS_REGION=$AWS_REGION")
+    sudo -n env "${fwd[@]}" docker "$@"
   else
-    if [[ -n "$CFG" ]]; then
-      DOCKER_CONFIG="$CFG" docker "$@"
-    else
-      docker "$@"
-    fi
+    docker "$@"
   fi
 }
 
@@ -88,9 +84,9 @@ _aws_profiles() {
   } 2>/dev/null | sort -u
 }
 
-# With no AWS_PROFILE the CLI resolves 'default', which does not exist on a
-# machine whose only profile is named — that surfaced as "empty ECR token" and
-# hid the real cause.
+# The credential helper resolves creds through the standard AWS chain. With no AWS_PROFILE it uses
+# 'default', which does not exist on a machine whose only profile is named — so export the sole
+# profile, as the old login path did, and the helper inherits it from this script's environment.
 _pick_profile() {
   local only
   if [[ -n "${AWS_PROFILE:-}" ]] || _aws_profiles | grep -qx default; then
@@ -103,105 +99,33 @@ _pick_profile() {
   fi
 }
 
-# The daemon resolves bind-mount sources on the HOST. Called from inside a
-# primate, "$HOME/.aws" is a container path the host has never heard of and the
-# mount is denied outright — primate() exports HOST_AWS_DIR for exactly this.
-_aws_dir() {
-  local d="${HOST_AWS_DIR:-$HOME/.aws}"
-  if [[ -n "${HOST_AWS_DIR:-}" ]]; then
-    printf '%s' "$HOST_AWS_DIR"
-  elif [[ -d "$d" ]]; then
-    (cd -P "$d" && pwd)
-  fi
-}
+# ---------------------------------------------------------- credential helper ---
 
-# ------------------------------------------------------------------- login ---
-
-# An ECR token is good for 12 hours and has no business in the host's real
-# Docker config or macOS keychain. Logging in under a throwaway config dir also
-# sidesteps the credential helper (`credsStore: desktop`) entirely.
-#
-# An empty config dir falls back to the "default" context — unix:///var/run/docker.sock
-# — which is not where Docker Desktop necessarily listens, so carry the current
-# context across and, if the result still cannot reach the daemon, use the
-# caller's real config instead. Isolation is a nicety; reaching the daemon is not.
-_isolate_config() {
-  local real ctx
-  CFG="$(mktemp -d)" || { CFG=""; return 0; }
-  real="${DOCKER_CONFIG:-$HOME/.docker}"
-  if [[ -d "$real/contexts" ]]; then
-    cp -R "$real/contexts" "$CFG/contexts" 2>/dev/null || true
-  fi
-  if [[ -f "$real/config.json" ]]; then
-    ctx="$(sed -nE 's/.*"currentContext"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' \
-             "$real/config.json" | head -1)"
-    if [[ -n "$ctx" ]]; then
-      printf '{"currentContext":"%s"}\n' "$ctx" > "$CFG/config.json"
-    fi
-  fi
-  if ! _docker version >/dev/null 2>&1; then
-    rm -rf "$CFG"
-    CFG=""
-  fi
-}
-
-_cleanup() {
-  if [[ -n "$CFG" ]]; then
-    rm -rf "$CFG"
-  fi
-}
-trap _cleanup EXIT
-
-_ecr_login() {
-  local tok err mount=() dir
-  _pick_profile
-
-  dir="$(_aws_dir)"
-  if [[ -n "$dir" ]]; then
-    mount=(--volume "${dir}:/root/.aws:ro")
-  fi
-
-  # The aws-cli image is public, but a failure to fetch it must not masquerade
-  # as an auth failure.
-  if ! _docker image inspect "$AWSCLI" >/dev/null 2>&1; then
-    if ! _docker pull -q "$AWSCLI" >/dev/null; then
-      echo "${ME}: could not pull ${AWSCLI} (needed to fetch an ECR token)." >&2
-      return 1
-    fi
-  fi
-
-  err="$(mktemp)"
-  tok="$(_docker run --rm \
-          -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
-          -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
-          ${mount[@]+"${mount[@]}"} \
-          "$AWSCLI" ecr get-login-password --region "$REGION" 2>"$err")"
-  if [[ -z "$tok" ]]; then
-    echo "${ME}: ECR authentication failed (AWS_PROFILE=${AWS_PROFILE:-<unset>})." >&2
-    sed 's/^/  /' "$err" >&2
-    echo "  aws dir mounted: ${dir:-<none found>}" >&2
-    echo "  profiles in ~/.aws: $(_aws_profiles | tr '\n' ' ')" >&2
-    rm -f "$err"
+# docker-credential-ecr-login must be on PATH (installed by setup / baked into every image); we
+# cannot mint one mid-pull. The `credHelpers` entry CAN be added on the fly — it is idempotent and
+# harmless — so a host configured before this change never silently falls back to the OS credential
+# store (which is what produced the keychain failures). DOCKER_CONFIG (or ~/.docker) is where the
+# docker CLI reads it; the same file the sudo path uses, since we forward HOME.
+_ensure_credhelper() {
+  if ! command -v docker-credential-ecr-login >/dev/null 2>&1; then
+    echo "${ME}: docker-credential-ecr-login not found on PATH — it authenticates ECR pulls from" >&2
+    echo "  ~/.aws. Install it by running the repo's ./setup (apt 'amazon-ecr-credential-helper' on" >&2
+    echo "  Linux; built into every primate image). Then re-run." >&2
     return 1
   fi
-  rm -f "$err"
-
-  _isolate_config
-
-  # Held, not silenced, and shown in full when the login fails. A login that
-  # failed quietly is what turned a credentials problem into "the image could
-  # not be pulled" and sent you to `make`. On success the only thing on stderr
-  # is the credential-helper warning, which is exactly what the throwaway
-  # config dir is there to cause.
-  err="$(mktemp)"
-  if ! printf '%s' "$tok" | _docker login --username AWS --password-stdin "$REG" \
-       >/dev/null 2>"$err"; then
-    echo "${ME}: docker login to ${REG} failed." >&2
-    sed 's/^/  /' "$err" >&2
-    rm -f "$err"
-    return 1
+  command -v jq >/dev/null 2>&1 || return 0   # cannot verify/repair config without jq; let the pull try
+  local cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json" tmp
+  mkdir -p "$(dirname "$cfg")"
+  [[ -s "$cfg" ]] || echo '{}' > "$cfg"
+  if [[ "$(jq -r --arg reg "$REG" '.credHelpers[$reg] // ""' "$cfg" 2>/dev/null)" != "ecr-login" ]]; then
+    tmp="$(mktemp)"
+    if jq --arg reg "$REG" '.credHelpers = ((.credHelpers // {}) + {($reg):"ecr-login"})' \
+          "$cfg" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$cfg"
+    else
+      rm -f "$tmp"
+    fi
   fi
-  rm -f "$err"
 }
 
 # -------------------------------------------------------------------- main ---
@@ -218,10 +142,8 @@ if [[ "${#WANTED[@]}" -eq 0 ]]; then
 fi
 
 echo "${ME}: pulling from ECR: ${WANTED[*]}" >&2
-_ecr_login || {
-  echo "  fix: export AWS_PROFILE=<name>, or build locally: cd primates && make ${WANTED[0]}.build" >&2
-  exit 1
-}
+_pick_profile
+_ensure_credhelper || exit 1
 
 rc=0
 for img in "${WANTED[@]}"; do
@@ -229,8 +151,10 @@ for img in "${WANTED[@]}"; do
   if _docker pull -q "$ref" >/dev/null; then
     _docker tag "$ref" "${img}:latest"
   else
-    echo "${ME}: ${img} is not local and could not be pulled (${ref})." >&2
-    echo "  fix: build locally with: cd primates && make ${img}.build" >&2
+    echo "${ME}: ${img} could not be pulled from ECR (${ref})." >&2
+    echo "  Auth is via docker-credential-ecr-login reading ~/.aws. Check your creds resolve" >&2
+    echo "  (AWS_PROFILE=${AWS_PROFILE:-<unset>}; profiles: $(_aws_profiles | tr '\n' ' ')), or" >&2
+    echo "  build locally: cd primates && make ${img}.build" >&2
     rc=1
   fi
 done
