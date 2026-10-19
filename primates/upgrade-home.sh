@@ -71,6 +71,31 @@ if [ -d "$SRC/claude" ]; then
   cp "$SRC/claude/commands/"* "$HOME/.claude/commands/" 2>/dev/null || true
 fi
 
+# ECR credential-helper config. amazon-ecr-credential-helper is baked into the image
+# (/usr/bin/docker-credential-ecr-login); this `credHelpers` entry is what makes `docker pull`/`push`
+# of fleet images authenticate to ECR straight from the mounted ~/.aws — no `docker login`, no
+# credential store, no keychain. The home volume shadows any image-baked ~/.docker, so seed it here,
+# on first-run seed and every upgrade. Merge, never clobber, so other docker CLI state survives.
+# Self-guarded (jq is in the image) so a failure here never aborts the rest of the sync.
+ECR_REG="${CODEMONKEYS_ECR:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
+DOCKER_CFG="$HOME/.docker/config.json"
+mkdir -p "$HOME/.docker"
+[ -s "$DOCKER_CFG" ] || echo '{}' > "$DOCKER_CFG"
+if command -v jq >/dev/null 2>&1; then
+  __tmp="$(mktemp)"
+  # The jq + mv are the condition (not a then-body command), so a failure in either lands in the
+  # else and WARNS — it can never abort the sync under `set -e`, as the comment above promises.
+  if jq --arg reg "$ECR_REG" '.credHelpers = ((.credHelpers // {}) + {($reg):"ecr-login"})' \
+        "$DOCKER_CFG" > "$__tmp" 2>/dev/null && mv "$__tmp" "$DOCKER_CFG"; then
+    :
+  else
+    rm -f "$__tmp"
+    echo "WARNING: could not add the ECR credHelper to $DOCKER_CFG; the rest of the sync is done." >&2
+  fi
+else
+  echo "WARNING: jq missing — skipping ECR credHelper config; the rest of the sync is done." >&2
+fi
+
 # Image-baked ~/.config files are shadowed by the persistent home volume, so a rebuild alone
 # can't refresh them — sync them here too. opencode.json carries the real model + MCP server
 # config; it is gitignored and lives SOPS+age-encrypted in hemlighet (the public image ships

@@ -10,7 +10,6 @@ set -uo pipefail
 
 ECR="${ECR_REGISTRY:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
 NS=codemonkeys
-REGION="${AWS_REGION:-us-east-1}"
 
 # The default sweep. Deliberately excluded, publish these by name instead:
 #   nyckel, samba  — standalone primates, published explicitly (see primates/CLAUDE.md)
@@ -20,12 +19,9 @@ REGION="${AWS_REGION:-us-east-1}"
 ALL=(codemonkey minion embedded rust miniforge3 lamp huggingface claude opencode aichat kiro spark-bench cuda-comfy cuda-llama-cpp)
 if [ "$#" -gt 0 ]; then ALL=("$@"); fi
 
-TOKEN="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" \
-  -e AWS_PROFILE -e AWS_REGION -e AWS_DEFAULT_REGION \
-  amazon/aws-cli ecr get-login-password --region "$REGION")"
-[ -n "$TOKEN" ] || { echo "ERROR: empty ECR token" >&2; exit 8; }
-echo "$TOKEN" | docker login --username AWS --password-stdin "$ECR" >/dev/null || exit 8
-
+# ECR auth is docker-credential-ecr-login (installed by ../setup; a credHelpers entry for $ECR in
+# ~/.docker/config.json): the buildx imagetools calls below authenticate straight from ~/.aws, no
+# `docker login`. If ~/.aws holds only a named profile (no [default]), export AWS_PROFILE first.
 fail=0
 for p in "${ALL[@]}"; do
   repo="$ECR/$NS/$p"

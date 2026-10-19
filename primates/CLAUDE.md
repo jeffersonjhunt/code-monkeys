@@ -46,8 +46,10 @@ manifest.
 ./manifest-push.sh
 ```
 
-- **`build-push.sh`** derives the arch from `uname -m`, logs into ECR (containerized `amazon/aws-cli`, host
-  `~/.aws`), then `make <name>.build FRESH=false` → tag → push `<name>:latest-<arch>` for each primate.
+- **`build-push.sh`** derives the arch from `uname -m`, then `make <name>.build FRESH=false` → tag → push
+  `<name>:latest-<arch>` for each primate. **No `docker login`** — ECR auth is the
+  `docker-credential-ecr-login` helper (installed by `../setup`, via a `credHelpers` entry for the
+  registry), so `docker push` authenticates straight from `~/.aws`.
 - **`manifest-push.sh`** combines the per-arch tags into a multi-arch `:latest` via **`docker buildx
   imagetools create`** (plain `docker manifest create` fails — `docker push` wraps each build in a
   single-entry manifest list it can't nest). It includes only the arches present, so `spark-bench` (amd64

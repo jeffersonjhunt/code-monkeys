@@ -46,7 +46,10 @@ RUN apt-get update \
     && passwd -d codemonkey \
     && chown -R codemonkey:codemonkey /home/codemonkey 
 
-# dev tools
+# dev tools. amazon-ecr-credential-helper installs /usr/bin/docker-credential-ecr-login: with a
+# `credHelpers` entry for the fleet ECR registry (seeded by upgrade-home.sh into the home volume's
+# ~/.docker/config.json), `docker pull`/`push` authenticate to ECR straight from ~/.aws — no
+# `docker login`, no credential store. See CLAUDE.md "Registry" and bin/primate-pull.
 RUN apt-get -y install \
       ssh \
       locales \
@@ -57,6 +60,7 @@ RUN apt-get -y install \
       graphicsmagick \
       libsixel-bin \
       jq \
+      amazon-ecr-credential-helper \
       clamav \
       nmap \
       curl \
