@@ -1069,6 +1069,47 @@ class LayoutTest(unittest.TestCase):
 # --------------------------------------------------------------------------- socket + cli
 
 
+class NoDaemonTest(unittest.TestCase):
+    """With no docker socket, zoo must say so on the user's terminal. The re-exec is what makes
+    this subtle: a message printed after the tmux handoff dies with the window that exits."""
+
+    def run_main(self, environ, argv=()):
+        calls = []
+
+        class _Stdin(io.StringIO):
+            def isatty(self_inner):
+                return True
+        out, err = io.StringIO(), io.StringIO()
+        rc = zoo.main(list(argv), stdin=_Stdin(), stdout=out, stderr=err, environ=environ,
+                      sleep=lambda s: None, exec_fn=lambda f, a: calls.append(f), prog="/opt/zoo")
+        return rc, out.getvalue(), err.getvalue(), calls
+
+    def test_missing_socket_reports_and_never_hands_off_to_tmux(self):
+        rc, out, err, calls = self.run_main({"ZOO_TMUX": "/x/tmux", "TERM": "xterm",
+                                             "DOCKER_HOST": "unix:///nonexistent/d.sock"})
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("docker is either not installed or not running", err)
+        self.assertEqual(calls, [])   # the fix: no re-exec, so the message reaches the terminal
+
+    def test_a_present_socket_is_not_in_the_way(self):
+        # Negative control: with a socket there, the check passes and the normal handoff happens.
+        with tempfile.TemporaryDirectory() as tmp:
+            sock = pathlib.Path(tmp) / "docker.sock"
+            sock.touch()
+            rc, out, err, calls = self.run_main({"ZOO_TMUX": "/x/tmux", "TERM": "xterm",
+                                                 "DOCKER_HOST": f"unix://{sock}"})
+        self.assertEqual(calls, ["/x/tmux"])
+        self.assertEqual(err, "")
+
+    def test_a_non_unix_docker_host_still_refuses_with_its_own_reason(self):
+        rc, out, err, calls = self.run_main({"ZOO_TMUX": "/x/tmux", "TERM": "xterm",
+                                             "DOCKER_HOST": "tcp://1.2.3.4:2375"})
+        self.assertEqual(rc, 1)
+        self.assertIn("unix socket", err)             # a config mistake, not a missing daemon
+        self.assertNotIn("not installed", err)
+        self.assertEqual(calls, [])
+
+
 class SocketPathTest(unittest.TestCase):
     def test_docker_host_unix_wins(self):
         self.assertEqual(zoo.socket_path({"DOCKER_HOST": "unix:///tmp/d.sock"}, exists=lambda p: False),
@@ -1119,11 +1160,15 @@ class OnceTest(unittest.TestCase):
         self.assertIn("zoo: cannot list containers", err)
 
     def test_no_socket_is_reported_not_traced(self):
+        # Now caught by the startup check rather than by the first listing: same contract, a
+        # readable line and a clean exit, never a traceback.
         out, err = io.StringIO(), io.StringIO()
         rc = zoo.main(["--once"], stdout=out, stderr=err, environ={"DOCKER_HOST": "unix:///nonexistent/zoo.sock"},
                       exec_fn=lambda *a: None)
         self.assertEqual((rc, out.getvalue()), (1, ""))
-        self.assertIn("zoo: cannot list containers", err.getvalue())
+        self.assertIn("docker is either not installed or not running", err.getvalue())
+        self.assertIn("/nonexistent/zoo.sock", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
     def test_interval_has_a_floor(self):
         rc, out, err = self.run_main(["-i", "0.01", "--once"], FakeDaemon())
