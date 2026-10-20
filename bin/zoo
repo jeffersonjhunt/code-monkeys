@@ -38,7 +38,7 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -1627,7 +1627,13 @@ class View:
         """Draw a centered bordered box of (text, attr) lines directly on stdscr. Drawing on the
         main screen (not a separate window) means erase() clears it every frame, so a box can
         never bleed through when the next one is a different size — the bug a wider search header
-        exposed in the newwin-per-frame version."""
+        exposed in the newwin-per-frame version.
+
+        The box interior is blanked row by row before its text is written, because the box is only
+        as wide as its longest line (the header) while most rows — image names in the picker, a
+        blank spacer — are far shorter. Without the blank, the list rows drawn behind the box show
+        through every cell past the end of each short line, which made the picker unreadable when
+        many primates were running."""
         import curses
         H, W = self.scr.getmaxyx()
         inner = max((len(t) for t, _ in lines), default=0)
@@ -1648,8 +1654,12 @@ class View:
             self.scr.addch(top + height - 1, left + width - 1, curses.ACS_LRCORNER)
         except curses.error:
             pass   # the bottom-right cell always errors on addch; the border is otherwise drawn
-        for i, (text, attr) in enumerate(lines[: height - 2]):
-            self._put_at(top + 1 + i, left + 2, text[: width - 4], attr)
+        for i in range(height - 2):
+            y = top + 1 + i
+            self._put_at(y, left + 1, " " * (width - 2), 0)   # blank the interior first (no bleed-through)
+            if i < len(lines):
+                text, attr = lines[i]
+                self._put_at(y, left + 2, text[: width - 4], attr)
 
     def draw_picker(self):
         import curses

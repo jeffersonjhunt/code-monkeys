@@ -1044,6 +1044,37 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("q")                          # and Esc did not quit zoo either time
         self.sh.expect(PROMPT_RE)
 
+    def test_picker_is_opaque_over_a_full_list(self):
+        # The reported bug: with many primates running, the list bled through the picker box.
+        # The box is only as wide as its long header while the image rows are short, so every cell
+        # past a label used to show the list row behind it. Seed a screenful of wide rows (each
+        # carrying the marker 'bleedzz') and assert none of it lands on the picker's box rows.
+        self.state.containers = [session(f"bleedzz{i:02d}", f"b{i:02x}") for i in range(18)]
+        self.start_zoo()
+        self.sh.wait_screen("bleedzz00")                 # list populated from the fake daemon
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        # Capture a fully-rendered frame: the list refreshes every tick, so a lone snapshot can
+        # catch a mid-redraw frame with the labels not yet drawn. Poll until the box shows all
+        # three labels, then assert that same frame carries no list text.
+        labels = ("codemonkey", "claude", "minion")
+        deadline = time.monotonic() + 5
+        box = []
+        while time.monotonic() < deadline:
+            text = self.sh.screen.text()
+            hdr = next((i for i, l in enumerate(text) if "choose an image" in l), None)
+            box = text[hdr: hdr + 6] if hdr is not None else []   # header, spacer, image rows, border
+            if all(any(label in l for l in box) for label in labels):
+                break
+            self.sh._read(0.1)
+        else:
+            self.fail(f"picker never fully rendered; box was:\n" + "\n".join(box))
+        self.assertNotIn("bleedzz", "".join(box), "the list bled through the picker box")
+        self.sh.send(b"\x1b")
+        self.sh.wait_screen("launch cancelled")
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
 
 CUDA_ZFUNCS_STUB = """
 function _primate_roster() { print -r -- claude; print -r -- cuda-comfy }
