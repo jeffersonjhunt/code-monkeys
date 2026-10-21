@@ -906,6 +906,8 @@ class LaunchTtyTest(TtyBase):
     def prepare_home(self, home):
         (home / "zfuncs").write_text(ZFUNCS_STUB)
         (home / "proj").mkdir()                 # a real subdirectory for the directory-edit test
+        (home / "docs-alpha").mkdir()           # two sharing a stem, for the Tab-completion test
+        (home / "docs-beta").mkdir()
 
     def test_n_picks_an_image_and_opens_a_primate_window(self):
         before = self.sh.stty()
@@ -1007,6 +1009,36 @@ class LaunchTtyTest(TtyBase):
         nw = self.new_windows()[0]
         self.assertIn("-n primate-codemonkey", nw)
         self.assertIn(f"-c {self.home}/proj", nw)     # the window — and primate's mount — start there
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_tab_completes_a_unique_dir_and_lists_ambiguous_ones(self):
+        # Tab completes the last path component like the maintainer's zsh: case-insensitive and by
+        # substring. Two dirs share the stem 'docs-', so the first Tab fills the stem and lists both;
+        # narrowing to one and Tabbing again completes it and descends (trailing '/').
+        self.sh.run('cd "$HOME"')                     # so the prompt's default, and ~, are $HOME
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("\r")                            # codemonkey
+        self.sh.wait_screen("in which directory?")
+        self.sh.wait_screen("  ~_")
+        self.sh.send("/doc")
+        self.sh.wait_screen("  ~/doc_")
+        self.sh.send("\t")
+        self.sh.wait_screen("  ~/docs-_")             # filled to the common stem
+        self.sh.wait_screen("docs-alpha")             # both candidates listed under the field
+        self.sh.wait_screen("docs-beta")
+        self.assertEqual(self.new_windows(), [])      # completing never launches
+        self.sh.send("A")                             # ~/docs-A -> matches docs-alpha only (ci substring)
+        self.sh.wait_screen("  ~/docs-A_")
+        self.sh.send("\t")
+        self.sh.wait_screen("  ~/docs-alpha/_")       # unique: completed and descended
+        self.sh.wait_screen_gone("docs-beta")         # the stale candidate list is gone
+        self.sh.send("\r")
+        self.sh.wait_screen("opened primate-codemonkey")
+        self.assertIn(f"-c {self.home}/docs-alpha", self.new_windows()[0])
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 

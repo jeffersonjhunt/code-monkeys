@@ -115,7 +115,10 @@ is pre-filled with zoo's own cwd, home-abbreviated (start zoo in `~` and it offe
 not reimplement the launchers' rules — the `$HOME` refusal still lives there (§7.2 above) — but it
 pre-flights the two failures that would otherwise kill the window the instant it opened: a path
 that is not an existing directory, and `$HOME` itself. Either keeps the prompt open with the reason,
-so `~` can be edited to `~/Source/Edda` and the launch redirected rather than lost.
+so `~` can be edited to `~/Source/Edda` and the launch redirected rather than lost. **Tab completes**
+the last path component against the filesystem the way the maintainer's zsh does — case-insensitively
+and by substring (`our` matches `Source`), directories only; one match fills it and appends `/` to
+descend, several fill the common stem and list the names under the field (`complete_dir`).
 
 ### 7.3 Container identity
 
