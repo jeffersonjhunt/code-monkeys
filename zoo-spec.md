@@ -108,6 +108,15 @@ Using the existing launchers is not a requirement for the future design. The fun
 reused or entirely replaced by the new zoo feature using any language (zsh, python, c++,
 etc...).
 
+Because the launchers mount `$(pwd)` as the workspace, zoo asks for a **starting directory** as
+the last step of `n`/`s` (after the image, and after the session name for `s`) and runs the launch
+window there (`new-window -c <dir>`), so each primate can start in a different directory. The field
+is pre-filled with zoo's own cwd, home-abbreviated (start zoo in `~` and it offers `~`). zoo does
+not reimplement the launchers' rules — the `$HOME` refusal still lives there (§7.2 above) — but it
+pre-flights the two failures that would otherwise kill the window the instant it opened: a path
+that is not an existing directory, and `$HOME` itself. Either keeps the prompt open with the reason,
+so `~` can be edited to `~/Source/Edda` and the launch redirected rather than lost.
+
 ### 7.3 Container identity
 
 `docker ps` reports a 12-character id. A process's own container id is 64 characters, read
@@ -201,7 +210,8 @@ functions so the logic is testable without a terminal:
   a reason. The requirements table (cuda-* need an NVIDIA GPU; spark-bench is amd64-only) lives in
   zoo, not derived from the dockerfiles. Inside a primate the capability view is the container's,
   which is correct.
-- The picker, session-name prompt and kill confirm are centered curses popup boxes over the list.
+- The picker, session-name prompt, launch-directory prompt and kill confirm are centered curses
+  popup boxes over the list.
 - A letter in the picker is type-ahead (jump to the next matching image, cycling). The main list
   keeps its single-key actions, so type-ahead is picker-only.
 

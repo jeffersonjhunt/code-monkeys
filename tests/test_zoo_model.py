@@ -307,6 +307,30 @@ class NameProblemTest(unittest.TestCase):
         self.assertNotIn("'", zoo.NAME_CHARS)
 
 
+class WorkdirTest(unittest.TestCase):
+    def test_abbreviate_and_expand_round_trip_under_home(self):
+        self.assertEqual(zoo.abbreviate_home("/home/jo/Source/Edda", "/home/jo"), "~/Source/Edda")
+        self.assertEqual(zoo.abbreviate_home("/home/jo", "/home/jo"), "~")
+        self.assertEqual(zoo.abbreviate_home("/home/jo", "/home/jo/"), "~")      # trailing slash on HOME
+        self.assertEqual(zoo.abbreviate_home("/opt/x", "/home/jo"), "/opt/x")    # not under home: unchanged
+        self.assertEqual(zoo.abbreviate_home("/home/joseph/x", "/home/jo"), "/home/joseph/x")  # prefix, not a path boundary
+        self.assertEqual(zoo.expand_home("~/Source/Edda", "/home/jo"), "/home/jo/Source/Edda")
+        self.assertEqual(zoo.expand_home("~", "/home/jo"), "/home/jo")
+        self.assertEqual(zoo.expand_home("/opt/x", "/home/jo"), "/opt/x")
+        self.assertEqual(zoo.expand_home("~user/x", "/home/jo"), "~user/x")      # only bare ~ and ~/ expand
+
+    def test_problem_catches_missing_dir_and_home_but_passes_a_subdir(self):
+        with tempfile.TemporaryDirectory() as home:
+            sub = os.path.join(home, "proj")
+            os.mkdir(sub)
+            self.assertEqual(zoo.workdir_problem("", home), "enter a directory for the workspace")
+            self.assertIn("not a directory", zoo.workdir_problem(os.path.join(home, "nope"), home))
+            self.assertIn("$HOME", zoo.workdir_problem(home, home))       # the whole home is refused
+            self.assertIn("$HOME", zoo.workdir_problem("~", home))        # same, via the ~ the prompt offers
+            self.assertEqual(zoo.workdir_problem(sub, home), "")          # a real subdirectory is fine
+            self.assertEqual(zoo.workdir_problem("~/proj", home), "")     # and via ~
+
+
 class PrintableTest(unittest.TestCase):
     def test_control_characters_never_reach_a_cell(self):
         row = zoo.row_from_listing(listing_row(cid("77"), "ev\x1b[2Joc", "cla\x07ude:latest",
