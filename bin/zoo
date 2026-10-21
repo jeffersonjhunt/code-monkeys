@@ -38,7 +38,7 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -534,6 +534,53 @@ def workdir_problem(path: str, home: str, isdir=os.path.isdir, realpath=os.path.
     if home and realpath(p) == realpath(home):
         return "that is $HOME — pick a subdirectory (a primate won't mount your whole home)"
     return ""
+
+
+def complete_dir(text: str, home: str, cwd: str,
+                 listdir=os.listdir, isdir=os.path.isdir) -> Tuple[str, List[str]]:
+    """Tab-complete the last component of a directory path, like the maintainer's zsh: the fragment
+    matches a subdirectory name **case-insensitively and as a substring** ('our' matches 'Source'),
+    not just as a prefix. Returns (completed_text, candidates).
+
+    Only the last component is a fragment; everything up to the final '/' is kept verbatim, so the
+    ~-form or relative prefix the user typed survives (completing '~/Sou' yields '~/Source/', never
+    the expanded path). A relative head lists against cwd. Directories only (the target is a
+    workspace); a hidden one shows only when the fragment itself starts with '.', as in a shell.
+
+    One match: the component becomes that directory's real name plus '/', so repeated Tab descends.
+    Several: the component becomes their longest common prefix (case-insensitive, in the first
+    match's casing) — zsh's rewrite-to-the-stem — and the names come back as candidates to show.
+    No match, or a head that cannot be listed: the text is returned unchanged with no candidates."""
+    idx = text.rfind("/")
+    head_str, frag = (text[: idx + 1], text[idx + 1:]) if idx >= 0 else ("", text)
+    real_head = expand_home(head_str or ".", home)
+    if not os.path.isabs(real_head):
+        real_head = os.path.join(cwd, real_head)
+    try:
+        names = listdir(real_head)
+    except OSError:
+        return text, []
+    want_hidden = frag.startswith(".")
+    needle = frag.lower()
+    matches = sorted(
+        (n for n in names
+         if (want_hidden or not n.startswith("."))
+         and needle in n.lower()
+         and isdir(os.path.join(real_head, n))),
+        key=str.lower,
+    )
+    if not matches:
+        return text, []
+    if len(matches) == 1:
+        return head_str + matches[0] + "/", []
+    # Several: longest common prefix, compared case-insensitively, kept in the first match's casing.
+    first = matches[0]
+    stem_len = len(first)
+    for other in matches[1:]:
+        stem_len = min(stem_len, len(other))
+        while stem_len and first[:stem_len].lower() != other[:stem_len].lower():
+            stem_len -= 1
+    return head_str + first[:stem_len], matches
 
 
 def actions_for(row: Optional[Row], self_id: str, cli: Optional[str] = None) -> List[Tuple[str, str]]:
@@ -1593,7 +1640,7 @@ class View:
         workspace primate() would mount by default; editing it here is how one picks a different
         one — and how a launch from $HOME is redirected to a subdirectory rather than refused."""
         text = abbreviate_home(self.cwd, self._home())
-        self.workdir = {"kind": kind, "image": image, "name": name, "text": text}
+        self.workdir = {"kind": kind, "image": image, "name": name, "text": text, "candidates": []}
 
     def handle_workdir(self, key: int, now: float) -> None:
         import curses
@@ -1601,6 +1648,9 @@ class View:
         if key in (27,):
             self.workdir = None
             self.say("launch cancelled", now)
+        elif key == 9:                                   # Tab: complete the path (see complete_dir)
+            wd["text"], wd["candidates"] = complete_dir(wd["text"], self._home(), self.cwd)
+            return None                                  # keep any candidates for draw_workdir to show
         elif key in (curses.KEY_BACKSPACE, 127, 8):
             wd["text"] = wd["text"][:-1]
         elif key in (10, 13, curses.KEY_ENTER):
@@ -1614,6 +1664,7 @@ class View:
             self.launch(kind, image, name, target)
         elif 32 <= key < 127 and len(wd["text"]) < 255:   # a path: the full printable range, not NAME_CHARS
             wd["text"] += chr(key)
+        wd["candidates"] = []                            # any edit (not Tab) clears a stale candidate list
         return None
 
     # -- settings
@@ -1774,9 +1825,17 @@ class View:
             what = f"{wd['image']} primate"
         else:
             what = f"{wd['image']} session '{wd['name']}'" if wd["name"] else f"{wd['image']} session"
-        header = f"Start {what} in which directory? (Enter to use it, edit the path, Esc cancels):"
+        header = f"Start {what} in which directory? (Enter to use it, Tab completes, Esc cancels):"
         field = f"  {wd['text']}_"
-        self._popup([(header, curses.A_BOLD), ("", 0), (field, 0)])
+        # The candidate line is ALWAYS present (blank when there are none), so the box keeps a
+        # constant height: _popup re-blanks each interior row every frame, which is what clears a
+        # vanished candidate list — a box that changed height instead would leave the old bottom row
+        # stale, since erase()+curses' partial redraw does not reliably repaint a shrunk popup.
+        W = self.scr.getmaxyx()[1]
+        cand = "  ".join(wd.get("candidates") or [])
+        if len(cand) > W - 6:
+            cand = cand[: max(W - 7, 0)] + "…"
+        self._popup([(header, curses.A_BOLD), ("", 0), (field, 0), ("  " + cand if cand else "", curses.A_DIM)])
 
     def draw_confirm(self):
         import curses

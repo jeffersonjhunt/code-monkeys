@@ -331,6 +331,49 @@ class WorkdirTest(unittest.TestCase):
             self.assertEqual(zoo.workdir_problem("~/proj", home), "")     # and via ~
 
 
+class CompleteDirTest(unittest.TestCase):
+    def _tree(self, home):
+        for d in ("Source", "Documents", "Downloads", ".hidden"):
+            os.mkdir(os.path.join(home, d))
+        os.mkdir(os.path.join(home, "Source", "Edda"))
+        open(os.path.join(home, "notadir"), "w").close()
+
+    def test_substring_case_insensitive_single_match_descends(self):
+        with tempfile.TemporaryDirectory() as home:
+            self._tree(home)
+            # 'our' is a mid-word, lowercase substring of 'Source' — and the only dir with it.
+            self.assertEqual(zoo.complete_dir("~/our", home, home), ("~/Source/", []))
+            self.assertEqual(zoo.complete_dir("~/Sou", home, home), ("~/Source/", []))
+            # descending: a trailing slash lists children, one match completes it
+            self.assertEqual(zoo.complete_dir("~/Source/", home, home), ("~/Source/Edda/", []))
+
+    def test_several_matches_fill_the_common_stem_and_list(self):
+        with tempfile.TemporaryDirectory() as home:
+            self._tree(home)
+            # 'o' is in Source, Documents, Downloads -> no shared leading stem, so just list them.
+            text, cands = zoo.complete_dir("~/o", home, home)
+            self.assertEqual(text, "~/")
+            self.assertEqual(set(cands), {"Source", "Documents", "Downloads"})
+            # 'do' -> Documents, Downloads: common prefix 'Do' (first match's casing), both listed
+            text, cands = zoo.complete_dir("~/do", home, home)
+            self.assertEqual(text, "~/Do")
+            self.assertEqual(set(cands), {"Documents", "Downloads"})
+
+    def test_files_and_hidden_dirs_are_excluded_unless_dotted(self):
+        with tempfile.TemporaryDirectory() as home:
+            self._tree(home)
+            self.assertEqual(zoo.complete_dir("~/nota", home, home), ("~/nota", []))   # a file: no match
+            self.assertEqual(zoo.complete_dir("~/.hid", home, home), ("~/.hidden/", []))  # dotted frag -> hidden ok
+            # a bare substring that also sits inside the hidden name does NOT pull it in
+            self.assertNotIn(".hidden", zoo.complete_dir("~/d", home, home)[1])
+
+    def test_relative_head_lists_against_cwd_and_missing_dir_is_a_noop(self):
+        with tempfile.TemporaryDirectory() as home:
+            self._tree(home)
+            self.assertEqual(zoo.complete_dir("Docu", home, home), ("Documents/", []))   # relative -> cwd
+            self.assertEqual(zoo.complete_dir("~/nope/x", home, home), ("~/nope/x", []))  # unlistable head
+
+
 class PrintableTest(unittest.TestCase):
     def test_control_characters_never_reach_a_cell(self):
         row = zoo.row_from_listing(listing_row(cid("77"), "ev\x1b[2Joc", "cla\x07ude:latest",
