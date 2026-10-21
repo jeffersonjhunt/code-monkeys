@@ -489,6 +489,7 @@ class TtyBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         home = pathlib.Path(self.tmp.name)
+        self.home = home
         (home / "bin").mkdir()
         os.symlink(ZOO, home / "bin" / "zoo")
         stub = home / "bin" / "docker"
@@ -904,6 +905,7 @@ class LaunchTtyTest(TtyBase):
 
     def prepare_home(self, home):
         (home / "zfuncs").write_text(ZFUNCS_STUB)
+        (home / "proj").mkdir()                 # a real subdirectory for the directory-edit test
 
     def test_n_picks_an_image_and_opens_a_primate_window(self):
         before = self.sh.stty()
@@ -915,6 +917,8 @@ class LaunchTtyTest(TtyBase):
             self.sh.wait_screen(image)
         self.sh.send("j")
         self.sh.send("\r")
+        self.sh.wait_screen("in which directory?")  # the directory step, pre-filled with zoo's cwd
+        self.sh.send("\r")                          # accept the default directory
         self.sh.wait_screen("opened primate-claude")
         self.sh.wait_screen("KIND")                 # zoo stays on its list
         nw = self.new_windows()[0]
@@ -937,6 +941,8 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("scratchx\x7f")            # a typo, backspaced
         self.sh.wait_screen("  scratch_")
         self.sh.send("\r")
+        self.sh.wait_screen("in which directory?")   # the directory step follows the name
+        self.sh.send("\r")                           # accept the default directory
         self.sh.wait_screen("opened session-scratch")
         nw = self.new_windows()[0]
         self.assertIn("-n session-scratch", nw)
@@ -970,10 +976,37 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("\r")                       # codemonkey, the first
         self.sh.wait_screen("Session name for codemonkey")
         self.sh.send("\r")
+        self.sh.wait_screen("in which directory?")
+        self.sh.send("\r")
         self.sh.wait_screen("opened session-codemonkey")
         nw = self.new_windows()[0]
         self.assertIn("-n session-codemonkey", nw)
         self.assertTrue(nw.rstrip().endswith("primate-session codemonkey"))   # no name passed
+        self.sh.send("q")
+        self.sh.expect(PROMPT_RE)
+
+    def test_the_directory_can_be_changed_and_home_is_refused(self):
+        # The point of the feature: start zoo in $HOME, the directory step offers '~', trying to use
+        # it is refused (a primate won't mount the whole home), and editing to a subdirectory starts
+        # there — so the launch is redirected rather than dying on primate()'s $HOME guard.
+        self.sh.run('cd "$HOME"')                     # zoo's cwd, hence the default dir, is $HOME
+        self.start_zoo()
+        self.sh.wait_screen("n new  s session")
+        self.sh.send("n")
+        self.sh.wait_screen("choose an image")
+        self.sh.send("\r")                            # codemonkey, the first image
+        self.sh.wait_screen("in which directory?")
+        self.sh.wait_screen("  ~_")                   # offered the home-abbreviated cwd
+        self.sh.send("\r")                            # try to use $HOME
+        self.sh.wait_screen("that is $HOME")          # refused; the prompt stays open to edit
+        self.assertEqual(self.new_windows(), [])      # nothing launched yet
+        self.sh.send("/proj")                         # ~ -> ~/proj, a real subdirectory
+        self.sh.wait_screen("  ~/proj_")
+        self.sh.send("\r")
+        self.sh.wait_screen("opened primate-codemonkey")
+        nw = self.new_windows()[0]
+        self.assertIn("-n primate-codemonkey", nw)
+        self.assertIn(f"-c {self.home}/proj", nw)     # the window — and primate's mount — start there
         self.sh.send("q")
         self.sh.expect(PROMPT_RE)
 
@@ -1003,7 +1036,9 @@ class LaunchTtyTest(TtyBase):
         self.sh.wait_screen("/  (type to search")       # search line shown
         self.sh.send("min")
         self.sh.wait_screen("/min")
-        self.sh.send("\r")                              # Enter launches the match
+        self.sh.send("\r")                              # Enter picks the match, then the directory step
+        self.sh.wait_screen("in which directory?")
+        self.sh.send("\r")                              # accept the default -> launch
         self.wait_tmux("new-window")
         self.assertIn("-n primate-minion", self.new_windows()[-1])
         # A letter that is nav in the list (c has no bare meaning here) works inside search:
@@ -1011,14 +1046,18 @@ class LaunchTtyTest(TtyBase):
         self.sh.send("/cl")                             # -> claude
         self.sh.wait_screen("/cl")
         self.sh.send("\r")
+        self.sh.wait_screen("in which directory?")
+        self.sh.send("\r")
         self.wait_tmux("primate-claude")
         self.assertIn("-n primate-claude", self.new_windows()[-1])
-        # Esc leaves search but keeps the selection; Enter then launches it.
+        # Esc leaves search but keeps the selection; Enter then picks it, then the directory.
         self.sh.send("n"); self.sh.wait_screen("choose an image")
         self.sh.send("/co")                             # -> codemonkey
         self.sh.wait_screen("/co")
         self.sh.send(b"\x1b")                           # Esc: back to nav, selection stays on codemonkey
         self.sh.wait_screen("( / to search")            # header back to the non-search form
+        self.sh.send("\r")
+        self.sh.wait_screen("in which directory?")
         self.sh.send("\r")
         self.wait_tmux("primate-codemonkey")
         self.assertIn("-n primate-codemonkey", self.new_windows()[-1])
@@ -1054,22 +1093,23 @@ class LaunchTtyTest(TtyBase):
         self.sh.wait_screen("bleedzz00")                 # list populated from the fake daemon
         self.sh.send("n")
         self.sh.wait_screen("choose an image")
-        # Capture a fully-rendered frame: the list refreshes every tick, so a lone snapshot can
-        # catch a mid-redraw frame with the labels not yet drawn. Poll until the box shows all
-        # three labels, then assert that same frame carries no list text.
+        # The list refreshes every tick, so a lone snapshot can catch a mid-redraw diff — the labels
+        # not yet drawn, or the box's bottom border row not yet repainted over the list beneath it.
+        # Poll for a fully-opaque frame: all three labels present AND no list marker anywhere in the
+        # box. An opaque box reaches that within a few frames; a box that truly bleeds never does
+        # (every short-label row keeps the list text behind it), so this still fails on the real bug.
         labels = ("codemonkey", "claude", "minion")
         deadline = time.monotonic() + 5
-        box = []
+        box, clean = [], False
         while time.monotonic() < deadline:
             text = self.sh.screen.text()
             hdr = next((i for i, l in enumerate(text) if "choose an image" in l), None)
             box = text[hdr: hdr + 6] if hdr is not None else []   # header, spacer, image rows, border
-            if all(any(label in l for l in box) for label in labels):
+            if all(any(label in l for l in box) for label in labels) and "bleedzz" not in "".join(box):
+                clean = True
                 break
             self.sh._read(0.1)
-        else:
-            self.fail(f"picker never fully rendered; box was:\n" + "\n".join(box))
-        self.assertNotIn("bleedzz", "".join(box), "the list bled through the picker box")
+        self.assertTrue(clean, "the list bled through the picker box; last box was:\n" + "\n".join(box))
         self.sh.send(b"\x1b")
         self.sh.wait_screen("launch cancelled")
         self.sh.send("q")
@@ -1103,6 +1143,8 @@ class PlatformRosterTtyTest(TtyBase):
         self.assertIn("choose an image", self.sh.screen)         # picker still open
         self.assertEqual(self.new_windows(), [])                 # nothing launched
         self.sh.send("k")                                 # back to claude (runnable)
+        self.sh.send("\r")
+        self.sh.wait_screen("in which directory?")        # runnable -> on to the directory step
         self.sh.send("\r")
         self.wait_tmux("new-window")
         self.assertIn("-n primate-claude", self.new_windows()[0])
@@ -1290,6 +1332,8 @@ class RealTmuxTest(unittest.TestCase):
         self.sh.send("n")
         self.sh.wait_screen("choose an image")
         self.sh.send("\r")                           # the one image, alpha
+        self.sh.wait_screen("in which directory?")
+        self.sh.send("\r")                           # accept the default directory
         self.wait_tmux_ok(["list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}"],
                           "1 primate-alpha")         # opened AND focused (the whole point)
         pane = self.wait_tmux_ok(["capture-pane", "-p", "-t", "zoo-rt:primate-alpha"], "LAUNCHED-alpha")
@@ -1305,6 +1349,8 @@ class RealTmuxTest(unittest.TestCase):
         # A second launch of the same image focuses the one window, not a duplicate.
         self.sh.send("n")
         self.sh.wait_screen("choose an image")
+        self.sh.send("\r")
+        self.sh.wait_screen("in which directory?")
         self.sh.send("\r")
         self.wait_tmux_ok(["list-windows", "-t", "zoo-rt", "-F", "#{window_active} #{window_name}"],
                           "1 primate-alpha")
@@ -1342,6 +1388,8 @@ class RealTmuxTest(unittest.TestCase):
         self.sh.send("n")
         self.sh.wait_screen("choose an image")
         self.sh.send("j")                            # move to the second image, boom
+        self.sh.send("\r")
+        self.sh.wait_screen("in which directory?")
         self.sh.send("\r")
         # The window opened, its command failed, and hold_command kept it: the pane shows the
         # failure and the prompt, and the window is still there.
@@ -1441,6 +1489,8 @@ class TwoTerminalsTest(unittest.TestCase):
         sh1.send("n")
         sh1.wait_screen("choose an image")
         sh1.send("\r")                                  # alpha, first in the roster
+        sh1.wait_screen("in which directory?")
+        sh1.send("\r")                                  # accept the default directory
         import time
         deadline = time.monotonic() + 25
         while True:

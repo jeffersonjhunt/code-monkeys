@@ -38,7 +38,7 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 # Where the daemon's socket usually is. macOS Docker Desktop keeps the real one under ~/.docker
 # and normally symlinks the /var/run path to it; native Linux has only the /var/run one.
@@ -496,6 +496,44 @@ def name_problem(name: str) -> str:
     if not name or _NAME_RE.match(name):
         return ""
     return f"session names start with a letter or digit and use only letters, digits, _ . - : {name!r}"
+
+
+def abbreviate_home(path: str, home: str) -> str:
+    """Render a path under $HOME as ~/… — what the launch-directory prompt offers by default, so a
+    user who started zoo in their home sees '~' rather than the full path (and the prompt stays
+    short). The inverse of expand_home."""
+    home = home.rstrip("/")
+    if home and (path == home or path.startswith(home + "/")):
+        return "~" + path[len(home):]
+    return path
+
+
+def expand_home(path: str, home: str) -> str:
+    """Turn a leading ~ back into $HOME before the directory is checked or handed to the window. Only
+    a bare ~ or a ~/ prefix expands (that is all the prompt offers); ~user is left untouched."""
+    p = path.strip()
+    if p == "~":
+        return home
+    if p.startswith("~/"):
+        return os.path.join(home.rstrip("/"), p[2:])
+    return p
+
+
+def workdir_problem(path: str, home: str, isdir=os.path.isdir, realpath=os.path.realpath) -> str:
+    """Why the chosen launch directory would be refused, or "" if it is fine. primate() /
+    primate-session() remain the one authority on the workspace mount (spec §7.2) — this is only a
+    pre-flight so the two failures that would otherwise kill the launch window the instant it opens
+    are caught while the prompt is still up and editable: a path that is not an existing directory,
+    and $HOME itself (which _primate_workspace_guard refuses, since the whole home dir would land in
+    the container read-write). It deliberately does not reimplement anything else the launchers do."""
+    p = expand_home(path, home)
+    if not p.strip():
+        return "enter a directory for the workspace"
+    if not isdir(p):
+        return f"not a directory: {p}"
+    if home and realpath(p) == realpath(home):
+        return "that is $HOME — pick a subdirectory (a primate won't mount your whole home)"
+    return ""
 
 
 def actions_for(row: Optional[Row], self_id: str, cli: Optional[str] = None) -> List[Tuple[str, str]]:
@@ -1162,8 +1200,8 @@ NO_ROSTER = "no primate roster here (launch needs a host checkout: ~/.zfuncs bes
 
 def help_lines(roster: bool) -> Tuple[str, ...]:
     if roster:
-        extra = ("  n                 start a primate from the roster",
-                 "  s                 start a session from the roster, optionally named")
+        extra = ("  n                 start a primate from the roster (then pick its directory)",
+                 "  s                 start a session from the roster, optionally named (then its directory)")
     else:
         extra = (f"  n / s             unavailable: {NO_ROSTER}",)
     return HELP_LINES[:3] + extra + HELP_LINES[3:]
@@ -1302,6 +1340,7 @@ class View:
         self.tmux = tmux
         self.picker: Optional[dict] = None    # {"kind", "sel"} while choosing an image
         self.prompt: Optional[dict] = None    # {"image", "text"} while naming a session
+        self.workdir: Optional[dict] = None   # {"kind","image","name","text"} while choosing the launch directory
         self.sel = 0
         self.selected_id = ""   # the container under the highlight; the index follows it
         self.offset = 0
@@ -1395,6 +1434,8 @@ class View:
             return self.handle_picker(key, now)
         if self.prompt is not None:
             return self.handle_prompt(key, now)
+        if self.workdir is not None:
+            return self.handle_workdir(key, now)
         if self.confirm is not None:
             row, _ = self.confirm
             self.confirm = None
@@ -1518,9 +1559,9 @@ class View:
         kind = pk["kind"]
         self.picker = None
         if kind == PRIMATE:
-            self.launch(PRIMATE, image, "")
+            self._open_workdir(PRIMATE, image, "")   # a primate goes straight to the directory step
         else:
-            self.prompt = {"image": image, "text": ""}
+            self.prompt = {"image": image, "text": ""}   # a session is named first, then the directory
 
     def handle_prompt(self, key: int, now: float) -> None:
         import curses
@@ -1535,10 +1576,44 @@ class View:
             if problem:
                 self.say(problem, now)
                 return None
+            image, name = pr["image"], pr["text"]
             self.prompt = None
-            self.launch(SESSION, pr["image"], pr["text"])
+            self._open_workdir(SESSION, image, name)   # name chosen; now the directory
         elif 32 <= key < 127 and chr(key) in NAME_CHARS and len(pr["text"]) < 64:
             pr["text"] += chr(key)
+        return None
+
+    # -- launch directory
+
+    def _home(self) -> str:
+        return self.environ.get("HOME", "")
+
+    def _open_workdir(self, kind: str, image: str, name: str) -> None:
+        """Open the directory step, pre-filled with zoo's own cwd (home-abbreviated). That is the
+        workspace primate() would mount by default; editing it here is how one picks a different
+        one — and how a launch from $HOME is redirected to a subdirectory rather than refused."""
+        text = abbreviate_home(self.cwd, self._home())
+        self.workdir = {"kind": kind, "image": image, "name": name, "text": text}
+
+    def handle_workdir(self, key: int, now: float) -> None:
+        import curses
+        wd = self.workdir
+        if key in (27,):
+            self.workdir = None
+            self.say("launch cancelled", now)
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            wd["text"] = wd["text"][:-1]
+        elif key in (10, 13, curses.KEY_ENTER):
+            problem = workdir_problem(wd["text"], self._home())
+            if problem:
+                self.say(problem, now)       # keep the prompt open so the path can be corrected
+                return None
+            target = expand_home(wd["text"], self._home())
+            kind, image, name = wd["kind"], wd["image"], wd["name"]
+            self.workdir = None
+            self.launch(kind, image, name, target)
+        elif 32 <= key < 127 and len(wd["text"]) < 255:   # a path: the full printable range, not NAME_CHARS
+            wd["text"] += chr(key)
         return None
 
     # -- settings
@@ -1594,8 +1669,8 @@ class View:
 
     # -- launching
 
-    def launch(self, kind: str, image: str, name: str) -> None:
-        self.open_window(launch_plan(kind, self.zfuncs, image, name, self.cwd))
+    def launch(self, kind: str, image: str, name: str, cwd: Optional[str] = None) -> None:
+        self.open_window(launch_plan(kind, self.zfuncs, image, name, cwd if cwd is not None else self.cwd))
 
     def open_window(self, win: Window) -> None:
         """Open (or focus) the window an action asked for. Nothing to hand over: zoo keeps its own
@@ -1690,6 +1765,17 @@ class View:
         pr = self.prompt
         header = f"Session name for {pr['image']} (Enter for the default '{pr['image']}-session', Esc cancels):"
         field = f"  {pr['text']}_"
+        self._popup([(header, curses.A_BOLD), ("", 0), (field, 0)])
+
+    def draw_workdir(self):
+        import curses
+        wd = self.workdir
+        if wd["kind"] == PRIMATE:
+            what = f"{wd['image']} primate"
+        else:
+            what = f"{wd['image']} session '{wd['name']}'" if wd["name"] else f"{wd['image']} session"
+        header = f"Start {what} in which directory? (Enter to use it, edit the path, Esc cancels):"
+        field = f"  {wd['text']}_"
         self._popup([(header, curses.A_BOLD), ("", 0), (field, 0)])
 
     def draw_confirm(self):
@@ -1811,6 +1897,8 @@ class View:
             self.draw_picker()
         elif self.prompt is not None:
             self.draw_prompt()
+        elif self.workdir is not None:
+            self.draw_workdir()
         elif self.confirm is not None:
             self.draw_confirm()
         self.scr.noutrefresh()
