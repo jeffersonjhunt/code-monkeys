@@ -1,0 +1,23 @@
+# craft-build config — copy to ~/.config/craft-build.conf and fill in.
+# PRIVATE: never commit the filled-in copy. The public repo ships only this example.
+# Precedence: environment variables override these; this file overrides script defaults.
+
+# The Mac where the app repos live and macOS packaging runs. Reached over ssh.
+BUILD_HOST=some-mac.example
+
+# ssh user on the build host. Optional — omit to use your ssh config / default user.
+#BUILD_USER=you
+
+# Absolute path, ON THE BUILD HOST, to the workspace root that holds the app repos as
+# sibling directories. craft-all.sh builds every sibling with packaging/macos/package.sh.
+CRAFT_ROOT=/Users/you/Source/3rd_Party/Craft
+
+# Target arch for the .dmg: aarch64 (Apple Silicon) | x86_64 | universal.
+CRAFT_ARCH=aarch64
+
+# Path, ON THE BUILD HOST, to the repo manifest ("name = git-remote" per line). Any name
+# not already cloned under CRAFT_ROOT is cloned before the build. Default if unset:
+# $CRAFT_ROOT/craft.manifest. Example manifest content:
+#   designcraft = git@github.com:org/designcraft.git
+#   solidcraft  = git@github.com:other-org/solidcraft.git
+#CRAFT_MANIFEST=/Users/you/Source/3rd_Party/Craft/craft.manifest
