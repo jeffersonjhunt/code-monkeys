@@ -21,3 +21,11 @@ CRAFT_ARCH=aarch64
 #   designcraft = git@github.com:org/designcraft.git
 #   solidcraft  = git@github.com:other-org/solidcraft.git
 #CRAFT_MANIFEST=/Users/you/Source/3rd_Party/Craft/craft.manifest
+
+# Publish target for built artifacts, as an rsync-over-ssh destination (user@host:/path),
+# reachable BY SSH FROM THE BUILD HOST. When set, each successfully-built app's .dmg and
+# its matching -cli-*.zip are rsync'd here after packaging (old versions are kept, never
+# deleted). Leave blank for build-only. Prefer this over an NFS/SMB mount: it needs no
+# mount and no Kerberos ticket, and writes as the ssh user. craft-all.sh deploys by
+# default when this is set; pass --no-deploy to skip, or --deploy to force.
+#CRAFT_DEPLOY_DEST=you@fileserver.example:/data/Software/Craft
