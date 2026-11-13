@@ -1,10 +1,10 @@
 ---
 name: craft-build
-description: Refresh the Craft macOS app builds — pull, cargo-build and package a .dmg for each app in the suite on the build Mac. Use when asked to "refresh the craft builds", "rebuild the craft/mac apps", "update the open-source app builds", or to add a new app repo to the set. Builds run on the configured build host over ssh, NOT inside a primate. Host, workspace root and the repo manifest come from env or ~/.config/craft-build.conf (never hardcoded here).
+description: Refresh the Craft macOS app builds — pull, cargo-build, package a .dmg for each app in the suite on the build Mac, and publish the artifacts to a fileserver. Use when asked to "refresh the craft builds", "rebuild the craft/mac apps", "update the open-source app builds", "deploy/publish the craft apps", or to add a new app repo to the set. Builds run on the configured build host over ssh, NOT inside a primate. Host, workspace root, repo manifest and deploy destination come from env or ~/.config/craft-build.conf (never hardcoded here).
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # craft-build
@@ -28,8 +28,9 @@ The real values live in `~/.config/craft-build.conf` (or env), private to each m
 ## The shape of it (no private data)
 
 - Each app is a Rust workspace repo cloned under one **ROOT** dir on the build Mac. The deliverable is
-  a signed `.dmg` in each app's `dist/release/`. There is **no deploy step beyond the `.dmg`** — "build
-  and deploy the same way" means: package it like the others.
+  a signed `.dmg` (plus a `-cli-*.zip`) in each app's `dist/release/`, which is then **published** to a
+  fileserver (an rsync-over-ssh destination) so others can download it. "Build and deploy the same way"
+  means: package and publish it like the others.
 - Apps are discovered, not listed: `craft-all.sh` builds every sibling dir under ROOT that has
   `packaging/macos/package.sh`, reading its version from `[workspace.package]` in `Cargo.toml`. So an
   app that follows that convention needs **no** script change — only to be present under ROOT.
@@ -49,6 +50,7 @@ BUILD_USER=<ssh user on that host>            # optional; else your ssh default
 CRAFT_ROOT=<absolute path to the workspace root holding the app repos, on the build host>
 CRAFT_ARCH=aarch64                            # aarch64 | x86_64 | universal
 CRAFT_MANIFEST=<path to the manifest on the build host, default $CRAFT_ROOT/craft.manifest>
+CRAFT_DEPLOY_DEST=<rsync-over-ssh publish target, user@host:/path; blank = build-only>
 ```
 
 The **manifest** itself lives on the build host (co-located with the repos), e.g.
@@ -82,8 +84,11 @@ solidcraft      = git@github.com:<other-org>/solidcraft.git
    ssh "$TARGET" "cd '$CRAFT_ROOT' && nohup bash craft-all.sh --root '$CRAFT_ROOT' --arch '${CRAFT_ARCH:-aarch64}' > craft-all.console.log 2>&1 & echo pid=\$!"
    ```
    Then poll `pgrep -f craft-all.sh` on the host until it is gone (a background waiter is ideal), and
-   report `$CRAFT_ROOT/craft-all.report.txt` — per-app version, commit drift, build rc, and the `.dmg`.
-   One app (`--only <app>`), skip pulling (`--no-pull`) or skip packaging (`--no-package`) as needed.
+   report `$CRAFT_ROOT/craft-all.report.txt` — per-app version, commit drift, build rc, the `.dmg`, and
+   the deploy status. When `CRAFT_DEPLOY_DEST` is set, each rc=0 app is **published there automatically**
+   (`.dmg` + `-cli-*.zip`, rsync-over-ssh from the build host, old versions kept); pass `--no-deploy` to
+   build without publishing, or `--deploy-dest` to override. One app (`--only <app>`), skip pulling
+   (`--no-pull`) or skip packaging (`--no-package`) as needed.
 
 ## Hard rules (where agents get stuck — don't)
 
@@ -97,6 +102,12 @@ solidcraft      = git@github.com:<other-org>/solidcraft.git
    Untracked junk (`.DS_Store`) does not block a fast-forward.
 4. **Adding an app = a manifest line, not a code change.** As long as the repo has
    `packaging/macos/package.sh` and a `[workspace.package]` version, discovery handles the rest.
+5. **Publish is rsync-over-ssh, not a mount.** The deploy writes to `CRAFT_DEPLOY_DEST` directly over
+   ssh from the build host (which must have ssh access to it), as the ssh user. Don't reintroduce an
+   NFS/SMB mount for this — a mount silently breaks on an auth/path change and the publish stops
+   happening unnoticed (which is exactly how it lapsed before). The build host uses macOS `openrsync`,
+   so the deploy uses only portable flags (`-rtz`, no `--chmod`); set the destination dir setgid if you
+   want a consistent group.
 
 ## Tests
 

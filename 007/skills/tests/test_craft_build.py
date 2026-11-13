@@ -5,6 +5,7 @@ handling — driven against a FIXTURE workspace tree in tmp_path. No network, no
 packaging, so every test runs everywhere with nothing conditional.
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -14,8 +15,11 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = str(ROOT / "craft-build" / "scripts" / "craft-all.sh")
 
 
-def run(*args):
-    return subprocess.run(["bash", SCRIPT, *args], capture_output=True, text=True)
+def run(*args, env=None):
+    e = dict(os.environ)
+    if env:
+        e.update(env)
+    return subprocess.run(["bash", SCRIPT, *args], capture_output=True, text=True, env=e)
 
 
 def make_app(root: Path, name: str, version: str) -> None:
@@ -111,3 +115,39 @@ def test_list_does_no_build_and_writes_no_report(tree):
     r = run("--root", str(tree), "--list")
     assert r.returncode == 0, r.stderr
     assert not (tree / "craft-all.report.txt").exists()
+
+
+# --- deploy planning ---------------------------------------------------------------------
+
+
+def test_list_deploy_off_by_default(tree):
+    r = run("--root", str(tree), "--list")
+    assert r.returncode == 0, r.stderr
+    assert "deploy:   <off>" in r.stdout
+
+
+def test_list_shows_deploy_dest_from_env(tree):
+    r = run("--root", str(tree), "--list",
+            env={"CRAFT_DEPLOY_DEST": "me@fs.example:/data/Software/Craft"})
+    assert r.returncode == 0, r.stderr
+    assert "deploy:   me@fs.example:/data/Software/Craft" in r.stdout
+
+
+def test_list_shows_deploy_dest_from_flag(tree):
+    r = run("--root", str(tree), "--deploy-dest", "me@fs.example:/pub", "--list")
+    assert r.returncode == 0, r.stderr
+    assert "deploy:   me@fs.example:/pub" in r.stdout
+
+
+def test_deploy_flag_requires_a_destination(tree):
+    """--deploy with no destination configured must fail loudly, not silently build-only."""
+    r = run("--root", str(tree), "--deploy", "--list")
+    assert r.returncode == 2
+    assert "needs a destination" in r.stderr
+
+
+def test_no_deploy_overrides_a_configured_dest(tree):
+    r = run("--root", str(tree), "--no-deploy", "--list",
+            env={"CRAFT_DEPLOY_DEST": "me@fs.example:/pub"})
+    assert r.returncode == 0, r.stderr
+    assert "deploy:   <off>" in r.stdout
