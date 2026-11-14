@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1
+
+- Fix: the run/dry-run commands now **forward `--deploy-dest "$CRAFT_DEPLOY_DEST"`** to the host.
+  Config is read agent-side, but `craft-all.sh` runs on the build host over ssh and never sees the
+  agent's env — so without forwarding it, `CRAFT_DEPLOY_DEST` was unset on the host and deploy
+  silently stayed off (`deploy: <off>`) despite being configured. Documented the forwarding rule in
+  step 1. (Script unchanged — it already honored `--deploy-dest`.)
+
 ## 1.1.0
 
 - Add a **publish/deploy step**. When `CRAFT_DEPLOY_DEST` (or `--deploy-dest`) is set, each

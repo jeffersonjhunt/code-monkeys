@@ -4,7 +4,7 @@ description: Refresh the Craft macOS app builds — pull, cargo-build, package a
 license: Apache-2.0
 metadata:
   author: ooe
-  version: "1.1.0"
+  version: "1.1.1"
 ---
 
 # craft-build
@@ -65,7 +65,11 @@ solidcraft      = git@github.com:<other-org>/solidcraft.git
 ## How to run it
 
 1. **Load config.** Read `~/.config/craft-build.conf` (or env). You need `BUILD_HOST` and `CRAFT_ROOT`
-   at minimum. Build the ssh target as `${BUILD_USER:+$BUILD_USER@}$BUILD_HOST`.
+   at minimum. Build the ssh target as `${BUILD_USER:+$BUILD_USER@}$BUILD_HOST`. **The config is read
+   here (agent-side); the script runs on the host over ssh and does NOT see it — so forward the values
+   the host needs on the command line** (`--root`, `--arch`, and `--deploy-dest "$CRAFT_DEPLOY_DEST"`
+   when publishing). Without `--deploy-dest`, the host has no `CRAFT_DEPLOY_DEST` and deploy stays off
+   (the report/`--list` show `deploy: <off>`).
 
 2. **Sync the script to the host.** The versioned copy is this skill's `scripts/craft-all.sh`. Push it
    so the host always runs the current one (this also replaces any older loose copy):
@@ -73,15 +77,15 @@ solidcraft      = git@github.com:<other-org>/solidcraft.git
    scp scripts/craft-all.sh "$TARGET:$CRAFT_ROOT/craft-all.sh"
    ```
 
-3. **Dry-run first** to show the plan (what would clone, what would build) — no network, no build:
+3. **Dry-run first** to show the plan (what would clone / build / deploy) — no network, no build:
    ```
-   ssh "$TARGET" "bash '$CRAFT_ROOT/craft-all.sh' --root '$CRAFT_ROOT' --list"
+   ssh "$TARGET" "bash '$CRAFT_ROOT/craft-all.sh' --root '$CRAFT_ROOT' ${CRAFT_DEPLOY_DEST:+--deploy-dest '$CRAFT_DEPLOY_DEST'} --list"
    ```
 
 4. **Run it.** Packaging all apps takes many minutes, so launch it **detached** and poll — do not hold
    the ssh connection open for the whole build:
    ```
-   ssh "$TARGET" "cd '$CRAFT_ROOT' && nohup bash craft-all.sh --root '$CRAFT_ROOT' --arch '${CRAFT_ARCH:-aarch64}' > craft-all.console.log 2>&1 & echo pid=\$!"
+   ssh "$TARGET" "cd '$CRAFT_ROOT' && nohup bash craft-all.sh --root '$CRAFT_ROOT' --arch '${CRAFT_ARCH:-aarch64}' ${CRAFT_DEPLOY_DEST:+--deploy-dest '$CRAFT_DEPLOY_DEST'} > craft-all.console.log 2>&1 & echo pid=\$!"
    ```
    Then poll `pgrep -f craft-all.sh` on the host until it is gone (a background waiter is ideal), and
    report `$CRAFT_ROOT/craft-all.report.txt` — per-app version, commit drift, build rc, the `.dmg`, and
