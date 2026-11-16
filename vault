@@ -34,6 +34,19 @@
 #                              the one file (scoped); --push also pushes. This is
 #                              the one encryptor for non-personal configs — do not
 #                              hand-roll `sops -e` elsewhere.
+#   show <path>                decrypt ONE sealed secret to stdout using the
+#                              passphrase-protected OFFLINE ADMIN key (prompts for
+#                              its passphrase). <path> is the sealed file without
+#                              .sops, e.g. g.deceiver/forge/gitea/pg_password. The
+#                              admin identity is decrypted inside nyckel and never
+#                              written to the host; the host's own key is not used,
+#                              so the passphrase is always required. Works for any
+#                              secret the admin key is a recipient of. Interactive
+#                              terminal required.
+#   wrap-admin <identity>      one-time: passphrase-encrypt the offline admin age
+#                              identity (a file holding its AGE-SECRET-KEY-… line)
+#                              to the admin-key path, prompting for a new passphrase,
+#                              so `show` can use it. Refuses to overwrite.
 #
 # Items: ssh env aws face gitconfig (default: all)
 #
@@ -43,6 +56,8 @@
 #   VAULT_HEMLIGHET   hemlighet clone location. Default:
 #                     ${XDG_DATA_HOME:-~/.local/share}/hemlighet, falling back to
 #                     a legacy ~/hemlighet clone if one already exists there.
+#   VAULT_ADMIN_KEY   passphrase-encrypted offline admin age identity used by
+#                     `show`/`wrap-admin`. Default: ~/.config/sops/age/admin.key.age.
 #
 # New-machine setup:
 #   git clone ssh://git-codecommit.us-east-1.amazonaws.com/v1/repos/hemlighet \
@@ -78,6 +93,7 @@ HL="${VAULT_HEMLIGHET:-$(_default_hl)}"
 HL_SUB="code-monkeys/personal"
 AGE_DIR="$HOME/.config/sops/age"
 IMAGE="nyckel"
+ADMIN_KEY="${VAULT_ADMIN_KEY:-$AGE_DIR/admin.key.age}"
 
 # Display order matches the old vault.
 ITEMS="ssh env aws face gitconfig"
@@ -660,6 +676,109 @@ do_seal() {
   _publish_path "$dest" "$msg" "$push"
 }
 
+# ------------------------------------------------------------- show/admin ---
+
+# List sibling sealed secrets to help when a show path is wrong. Filenames only
+# (never contents): the .sops names are not secret.
+_show_suggest() {
+  local path="$1" dir
+  dir="$(dirname "$HL/$path")"
+  [[ -d "$dir" ]] || return 0
+  local any
+  any=$(find "$dir" -maxdepth 1 -type f -name '*.sops' 2>/dev/null | head -1)
+  [[ -n "$any" ]] || return 0
+  echo "  secrets under $(dirname "$path")/ :" >&2
+  find "$dir" -maxdepth 1 -type f -name '*.sops' 2>/dev/null | sort \
+    | sed "s#^$HL/##; s#\.sops\$##; s/^/    /" >&2
+}
+
+# Decrypt ONE sealed secret to stdout with the passphrase-protected admin key.
+# The admin identity is decrypted INSIDE nyckel (to the container's ephemeral
+# /tmp, never the host) and is the only identity sops is given, so the passphrase
+# is always required and the host's own key cannot silently satisfy it.
+do_show() {
+  local path=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -*) echo "Unknown flag for show: $1" >&2; exit 2 ;;
+      *)  if [[ -z "$path" ]]; then path="$1"
+          else echo "Error: show takes one <path> (got extra: $1)" >&2; exit 2; fi ;;
+    esac
+    shift
+  done
+  if [[ -z "$path" ]]; then
+    echo "usage: vault show <path>   e.g. vault show g.deceiver/forge/gitea/pg_password" >&2
+    exit 2
+  fi
+  path="${path%.sops}"                      # tolerate a trailing .sops
+  case "$path" in /*|*..*) echo "Error: <path> must be relative to the clone (no leading / or ..)" >&2; exit 2 ;; esac
+  _require_hl
+  if [[ ! -f "$ADMIN_KEY" ]]; then
+    echo "Error: offline admin key not found at $ADMIN_KEY" >&2
+    echo "  wrap it once (brings the offline key online, passphrase-protected):" >&2
+    echo "    ./vault wrap-admin <file-with-the-admin-AGE-SECRET-KEY>" >&2
+    echo "  or point VAULT_ADMIN_KEY at an existing passphrase-encrypted identity." >&2
+    exit 1
+  fi
+  if [[ ! -f "$HL/$path.sops" ]]; then
+    echo "Error: no sealed secret at '$path' ($path.sops not in hemlighet)" >&2
+    _show_suggest "$path"
+    exit 1
+  fi
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    echo "Error: 'vault show' needs an interactive terminal (it prompts for the admin passphrase)." >&2
+    exit 1
+  fi
+  _ensure_image
+  # -it: age reads the passphrase from the TTY. The decrypted identity lives only
+  # in the container's /tmp and dies with --rm. sops writes the secret to stdout.
+  _docker run --rm -it --user "$(id -u):$(id -g)" -e HOME=/tmp \
+    -v "$ADMIN_KEY:/admin.age:ro" \
+    -v "$HL:/hl:ro" \
+    "${IMAGE}:latest" sh -c '
+      set -e
+      age -d -o /tmp/id /admin.age
+      SOPS_AGE_KEY_FILE=/tmp/id sops -d --input-type binary --output-type binary "/hl/$1.sops"
+      echo
+    ' sops-show "$path"
+}
+
+# One-time: passphrase-encrypt the offline admin age identity so `show` can use it.
+do_wrap_admin() {
+  local src=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -*) echo "Unknown flag for wrap-admin: $1" >&2; exit 2 ;;
+      *)  if [[ -z "$src" ]]; then src="$1"
+          else echo "Error: wrap-admin takes one <identity-file>" >&2; exit 2; fi ;;
+    esac
+    shift
+  done
+  if [[ -z "$src" || ! -f "$src" ]]; then
+    echo "usage: vault wrap-admin <identity-file>   (a file holding the admin AGE-SECRET-KEY-… line)" >&2
+    exit 2
+  fi
+  if [[ -e "$ADMIN_KEY" ]]; then
+    echo "Error: $ADMIN_KEY already exists — remove it first to re-wrap." >&2
+    exit 1
+  fi
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    echo "Error: 'vault wrap-admin' needs an interactive terminal (it prompts for a new passphrase)." >&2
+    exit 1
+  fi
+  local admin_dir; admin_dir="$(dirname "$ADMIN_KEY")"
+  mkdir -p "$admin_dir"
+  local abs; abs="$(cd "$(dirname "$src")" && pwd)/$(basename "$src")"
+  _ensure_image
+  _docker run --rm -it --user "$(id -u):$(id -g)" -e HOME=/tmp \
+    -v "$abs:/src:ro" \
+    -v "$admin_dir:/out" \
+    "${IMAGE}:latest" sh -c 'age -p -o "/out/$(basename "$1")" /src' sops-wrap "$ADMIN_KEY"
+  chmod 600 "$ADMIN_KEY" 2>/dev/null || true
+  echo "  wrapped admin key -> $ADMIN_KEY"
+  echo "  now remove the plaintext identity: rm -P $src   (keep the offline original offline)"
+}
+
 # ------------------------------------------------------------------ main ---
 
 if [[ $# -lt 1 ]]; then
@@ -674,6 +793,8 @@ case "$1" in
   rekey)  _require_main_checkout "$@"; shift; do_rekey "$@" ;;
   status) _require_main_checkout "$@"; shift; do_status "$@" ;;
   seal)   shift; do_seal "$@" ;;
+  show)   shift; do_show "$@" ;;
+  wrap-admin) shift; do_wrap_admin "$@" ;;
   sync)
     echo "vault sync is retired — hemlighet is a git repo now:" >&2
     echo "  git -C $HL pull / push" >&2
