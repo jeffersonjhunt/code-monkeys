@@ -22,7 +22,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REG="$(cm_registry build-push)" || exit 2
 case "${ECR_REGISTRY:-}" in *.dkr.ecr.*) echo "build-push: REFUSED: ECR_REGISTRY names ECR -- retired" >&2; exit 2 ;; esac
 PUSHCFG="$(cm_push_login build-push "$REG")" || exit 8
-trap 'rm -rf "$PUSHCFG"' EXIT
+trap 'cm_shred_dir "$PUSHCFG"' EXIT
+trap 'exit 130' INT TERM HUP        # -> the EXIT trap: the login is shredded on every path
 
 case "$(uname -m)" in
   x86_64)        ARCH=amd64 ;;

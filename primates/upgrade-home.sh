@@ -72,20 +72,14 @@ if [ -d "$SRC/claude" ]; then
 fi
 
 # The retired ECR credential helper (g.deceiver forge F4: the fleet's images moved to a self-hosted Harbor). Earlier
-# syncs seeded a credHelpers entry for an ECR registry into this home's ~/.docker/config.json; drop every such entry
-# (matched by pattern), keep everything else. primate-pull now uses its own file-based credential
+# syncs seeded a credHelpers entry for an ECR registry into this home's ~/.docker/config.json; drop every such
+# credHelpers or auths entry (matched by pattern), keep everything else. primate-pull now uses its own file-based credential
 # (~/.config/code-monkeys/docker; primates/registry-lib.sh). Self-guarded: a failure WARNS, never aborts the sync.
 DOCKER_CFG="$HOME/.docker/config.json"
-if [ -s "$DOCKER_CFG" ] && command -v jq >/dev/null 2>&1; then
-  __tmp="$(mktemp)"
-  if jq 'if has("credHelpers") then .credHelpers |= with_entries(select(.key | test("\\.dkr\\.ecr(-fips)?\\.") | not))
-           | (if .credHelpers == {} then del(.credHelpers) else . end) else . end' "$DOCKER_CFG" > "$__tmp" 2>/dev/null \
-     && mv "$__tmp" "$DOCKER_CFG"; then
-    :
-  else
-    rm -f "$__tmp"
-    echo "WARNING: could not drop the retired ECR credHelper from $DOCKER_CFG; the rest of the sync is done." >&2
-  fi
+# credHelpers AND auths entries, by pattern; the file is rewritten only when one goes (review nit B)
+if [ -f "$SRC/primates/registry-lib.sh" ]; then
+  ( . "$SRC/primates/registry-lib.sh" && cm_drop_ecr_entries "$DOCKER_CFG" ) \
+    || echo "WARNING: could not drop the retired ECR entries from $DOCKER_CFG; the rest of the sync is done." >&2
 fi
 
 # Image-baked ~/.config files are shadowed by the persistent home volume, so a rebuild alone

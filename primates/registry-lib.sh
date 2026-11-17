@@ -46,20 +46,64 @@ cm_write_auth() {
 # The secret: $GD_REGISTRY_PASSWORD_FILE (g.deceiver's harbor-cred.sh) or, with CM_PASSWORD_STDIN=1, stdin. The user:
 # $GD_REGISTRY_USER (default robot$build-push). Exit 8 with the reason when there is none or it is refused.
 cm_push_login() {
-  local what=$1 reg=$2 user=${GD_REGISTRY_USER:-robot\$build-push} d
-  d=$(mktemp -d) || return 8
+  local what=$1 reg=$2 user=${GD_REGISTRY_USER:-robot\$build-push} d shm=${CM_SHM:-/dev/shm}
+  # a 0700 dir under /dev/shm, so the login's base64 credential never touches a disk; only without /dev/shm elsewhere,
+  # and it says so. The caller shreds it on every exit path: trap 'cm_shred_dir "$PUSHCFG"' EXIT + INT TERM HUP.
+  if [ -d "$shm" ] && [ -w "$shm" ]; then d=$(mktemp -d "$shm/cm-push.XXXXXX") || return 8
+  else echo "$what: no writable $shm: the push login goes under ${TMPDIR:-/tmp} (shredded on exit)" >&2; d=$(mktemp -d) || return 8; fi
   chmod 700 "$d"
   if [ -n "${GD_REGISTRY_PASSWORD_FILE:-}" ]; then
-    [ -s "$GD_REGISTRY_PASSWORD_FILE" ] || { rm -rf "$d"; echo "$what: $GD_REGISTRY_PASSWORD_FILE is empty or unreadable" >&2; return 8; }
+    [ -s "$GD_REGISTRY_PASSWORD_FILE" ] || { cm_shred_dir "$d"; echo "$what: $GD_REGISTRY_PASSWORD_FILE is empty or unreadable" >&2; return 8; }
     DOCKER_CONFIG="$d" docker login --username "$user" --password-stdin "$reg" < "$GD_REGISTRY_PASSWORD_FILE" >/dev/null 2>&1 \
-      || { rm -rf "$d"; echo "$what: docker login to $reg as $user was refused" >&2; return 8; }
+      || { cm_shred_dir "$d"; echo "$what: docker login to $reg as $user was refused" >&2; return 8; }
   elif [ "${CM_PASSWORD_STDIN:-0}" = 1 ]; then
     DOCKER_CONFIG="$d" docker login --username "$user" --password-stdin "$reg" >/dev/null 2>&1 \
-      || { rm -rf "$d"; echo "$what: docker login to $reg as $user was refused" >&2; return 8; }
+      || { cm_shred_dir "$d"; echo "$what: docker login to $reg as $user was refused" >&2; return 8; }
   else
-    rm -rf "$d"
+    cm_shred_dir "$d"
     echo "$what: no push credential: GD_REGISTRY_PASSWORD_FILE (g.deceiver's harbor-cred.sh build-push --) or CM_PASSWORD_STDIN=1" >&2
     return 8
   fi
   printf '%s\n' "$d"
+}
+
+# cm_shred_dir DIR -- shred its files, remove it (idempotent; for traps)
+cm_shred_dir() {
+  [ -n "${1:-}" ] && [ -d "$1" ] || return 0
+  find "$1" -type f -exec shred -u {} + 2>/dev/null
+  rm -rf "$1"
+}
+
+# cm_drop_ecr_entries FILE -- remove every credHelpers AND auths entry for an ECR registry (any account, fips too: by
+# pattern) from a docker config.json; everything else is kept. The file is rewritten (atomically, same owner/mode) ONLY
+# when something was removed. python3, not jq: it is on every host, Mac and primate.
+cm_drop_ecr_entries() {
+  [ -s "${1:-}" ] || return 0
+  python3 - "$1" <<'PY'
+import json, os, re, sys
+p = sys.argv[1]
+ecr = re.compile(r"\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com")
+try:
+    d = json.load(open(p))
+except ValueError:
+    print(f"  WARNING: {p} is not JSON -- left alone", file=sys.stderr); sys.exit(0)
+n = 0
+for k in ("credHelpers", "auths"):
+    for r in [r for r in (d.get(k) or {}) if ecr.search(r)]:
+        del d[k][r]; n += 1
+    if k in d and d[k] == {}:
+        del d[k]
+if not n:
+    print(f"  {p}: no retired ECR entry -- nothing to remove"); sys.exit(0)
+st = os.stat(p); t = p + ".cm-tmp"
+with open(t, "w") as f:
+    json.dump(d, f, indent=1); f.write("\n")
+os.chmod(t, st.st_mode & 0o7777)
+try:
+    os.chown(t, st.st_uid, st.st_gid)
+except PermissionError:
+    pass
+os.replace(t, p)
+print(f"  {p}: {n} retired ECR entr{'y' if n == 1 else 'ies'} removed")
+PY
 }

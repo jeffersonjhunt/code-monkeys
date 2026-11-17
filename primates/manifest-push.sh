@@ -15,7 +15,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REG="$(cm_registry manifest-push)" || exit 2
 case "${ECR_REGISTRY:-}" in *.dkr.ecr.*) echo "manifest-push: REFUSED: ECR_REGISTRY names ECR -- retired" >&2; exit 2 ;; esac
 PUSHCFG="$(cm_push_login manifest-push "$REG")" || exit 8
-trap 'rm -rf "$PUSHCFG"' EXIT
+trap 'cm_shred_dir "$PUSHCFG"' EXIT
+trap 'exit 130' INT TERM HUP        # -> the EXIT trap: the login is shredded on every path
 export DOCKER_CONFIG="$PUSHCFG"      # imagetools inspect + create both talk to the registry, nothing else here
 
 # The default sweep. Deliberately excluded, publish these by name instead:

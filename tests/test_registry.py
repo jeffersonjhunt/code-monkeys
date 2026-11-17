@@ -18,7 +18,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 PP = REPO / "bin" / "primate-pull"
-ECR = "521147433280.dkr.ecr.us-east-1.amazonaws.com"
+ECR = "000000000000.dkr.ecr.us-east-1.amazonaws.com"     # a fake account: the refusal matches by pattern
 REG = "registry.example:8443"
 DOCKER = r'''#!/bin/sh
 printf '%s cfg=%s\n' "$*" "${DOCKER_CONFIG:-none}" >> "$STUB/calls"
@@ -37,7 +37,8 @@ def env(tmp_path):
     b = tmp_path / "bin"; b.mkdir(); (b / "docker").write_text(DOCKER); (b / "docker").chmod(0o755)
     home = tmp_path / "home"; home.mkdir()
     e = {k: v for k, v in os.environ.items() if not k.startswith(("CODEMONKEYS_", "GD_REGISTRY", "CM_"))}
-    e.update(PATH=f"{b}:{os.environ['PATH']}", STUB=str(tmp_path), HOME=str(home))
+    (tmp_path / "shm").mkdir()
+    e.update(PATH=f"{b}:{os.environ['PATH']}", STUB=str(tmp_path), HOME=str(home), CM_SHM=str(tmp_path / "shm"))
     return tmp_path, home, e
 
 
@@ -134,3 +135,40 @@ def test_push_logs_in_to_a_throwaway_config_with_the_secret_on_stdin(env):
     assert "pushSECRET" not in calls + out and (t / "stdin").read_text() == "pushSECRET\n"
     tmpcfg = login.split("cfg=")[1]
     assert not Path(tmpcfg).exists(), "the throwaway DOCKER_CONFIG is removed on exit"
+
+
+def test_this_public_repo_names_no_real_aws_account():
+    """Review minor 6: the refusal is by pattern, so nothing here needs the fleet's account id."""
+    acct = "5211" + "47433280"
+    r = subprocess.run(["git", "-C", str(REPO), "grep", "-n", acct], capture_output=True, text=True)
+    assert r.returncode == 1 and r.stdout == "", r.stdout
+
+
+def test_the_push_login_lives_in_shm_and_is_shredded(env):
+    """Review nit A: cm_push_login's DOCKER_CONFIG is a 0700 dir under /dev/shm (CM_SHM here), gone on exit."""
+    t, home, e = env
+    (t / "robot").write_text("pushSECRET\n")
+    rc, out = run(["bash", str(REPO / "primates" / "manifest-push.sh"), "minion"],
+                  dict(e, CODEMONKEYS_REGISTRY=REG, GD_REGISTRY_PASSWORD_FILE=str(t / "robot")))
+    assert rc == 0, out
+    login = [c for c in (t / "calls").read_text().splitlines() if c.startswith("login")][0]
+    assert login.split("cfg=")[1].startswith(str(t / "shm") + "/cm-push."), login
+    assert list((t / "shm").iterdir()) == []
+
+
+def test_the_retired_ecr_entries_go_credhelpers_and_auths_and_nothing_else_is_rewritten(tmp_path):
+    """Review nit B: setup and upgrade-home.sh drop ECR credHelpers AND auths entries (any account, fips too), keep the
+    rest, and leave the file untouched (same inode, same mtime) when there is nothing to drop."""
+    f = tmp_path / "config.json"
+    f.write_text(json.dumps({"credHelpers": {ECR: "ecr-login", "x.io": "y"}, "auths": {ECR: {"auth": "eA=="},
+                 "123456789012.dkr.ecr-fips.us-west-2.amazonaws.com": {}, "ghcr.io": {}}, "credsStore": "desktop"}))
+    lib = REPO / "primates" / "registry-lib.sh"
+    r = subprocess.run(["bash", "-c", f'. {lib} && cm_drop_ecr_entries "$1"', "_", str(f)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(f.read_text()) == {"credHelpers": {"x.io": "y"}, "auths": {"ghcr.io": {}}, "credsStore": "desktop"}
+    st = f.stat()
+    r = subprocess.run(["bash", "-c", f'. {lib} && cm_drop_ecr_entries "$1"', "_", str(f)], capture_output=True, text=True)
+    assert r.returncode == 0 and "nothing to remove" in r.stdout
+    assert (f.stat().st_ino, f.stat().st_mtime_ns) == (st.st_ino, st.st_mtime_ns), "no rewrite when nothing changes"
+    for script in ("setup", "primates/upgrade-home.sh"):
+        assert "cm_drop_ecr_entries" in (REPO / script).read_text(), script

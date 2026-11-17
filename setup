@@ -432,7 +432,7 @@ setup_registry() {
   remove_ecr_helper
 }
 
-# The retired ECR credential helper (forge F4): drop every credHelpers entry for an ECR registry (matched by
+# The retired ECR credential helper (forge F4): drop every credHelpers AND auths entry for an ECR registry (matched by
 # pattern -- this public repo names no account) and the Mac binary setup once dropped in ~/.local/bin.
 remove_ecr_helper() {
   echo "Removing the retired ECR credential helper config..."
@@ -440,15 +440,10 @@ remove_ecr_helper() {
   if [[ -f "${BIN_DIR}/docker-credential-ecr-login" && ! -L "${BIN_DIR}/docker-credential-ecr-login" ]]; then
     run rm -f "${BIN_DIR}/docker-credential-ecr-login"
   fi
-  if [[ "$DRY_RUN" == false && -s "$cfg" ]] && command -v jq >/dev/null 2>&1; then
-    tmp="$(mktemp)"
-    if jq 'if has("credHelpers") then .credHelpers |= with_entries(select(.key | test("\\.dkr\\.ecr(-fips)?\\.") | not))
-             | (if .credHelpers == {} then del(.credHelpers) else . end) else . end' "$cfg" > "$tmp" 2>/dev/null; then
-      mv "$tmp" "$cfg"
-    else
-      rm -f "$tmp"
-      echo "  WARNING: could not update ${cfg} — remove any *.dkr.ecr.* credHelpers entry by hand." >&2
-    fi
+  if [[ "$DRY_RUN" == false ]]; then
+    # credHelpers AND auths, by pattern; rewritten only when something goes (primates/registry-lib.sh)
+    ( . "${SRC}/primates/registry-lib.sh" && cm_drop_ecr_entries "$cfg" ) \
+      || echo "  WARNING: could not update ${cfg} — remove any *.dkr.ecr.* credHelpers/auths entry by hand." >&2
   fi
 }
 
