@@ -1,49 +1,62 @@
 #!/usr/bin/env bash
 #
 # primate-pull — ensure <image>:latest exists locally, pulling it from the fleet
-# ECR if it does not.
+# registry if it does not.
 #
 #   primate-pull minion            # one image
 #   primate-pull codemonkey minion # several; one pull covers them all
+#   primate-pull --login           # store the registry's pull credential (a secret on STDIN, never argv)
+#   primate-pull --registry        # print the configured registry (scripts use it)
 #
-# This is THE place the ECR pull lives. It used to be copied into `vault`,
+# This is THE place the pull lives. It used to be copied into `vault`,
 # `bin/sops`, `bin/age` and `bin/age-keygen` — and the two shims that needed it
-# most, `bin/aws` and `bin/spark-bench`, never got a copy. On a host whose
-# images had been pruned they ran `docker run … minion`, docker fell through to
-# Docker Hub for a bare local tag, and the failure read as
+# most, `bin/aws` and `bin/spark-bench`, never got a copy. Every call site now
+# goes through here, so a fix lands once.
 #
-#   pull access denied for minion, repository does not exist or may require 'docker login'
+# WHERE (g.deceiver forge F4): the fleet's images moved from AWS ECR (retired, and
+# refused here) to a self-hosted Harbor. This repo is public and names no host:
+# the registry comes from $CODEMONKEYS_REGISTRY or ~/.config/code-monkeys/registry.conf
+# (a CODEMONKEYS_REGISTRY=<host:port> line). None configured = exit 2, nothing pulled.
 #
-# which sent you off to `make` instead of to your ~/.aws creds. Every call site
-# now goes through here, so a fix lands once.
-#
-# Auth is the AWS-native credential helper, NOT `docker login`. With a
-# `credHelpers` entry for the ECR registry in ~/.docker/config.json, `docker
-# pull` invokes `docker-credential-ecr-login`, which mints and refreshes the
-# token itself from ~/.aws on every pull — no `docker login`, no OS credential
-# store, no macOS keychain. (The hand-rolled `get-login-password | docker login`
-# this replaced kept breaking: current Docker Desktop forces `docker login`
-# through the keychain regardless of config, so it failed `-25308` whenever the
-# keychain was unreachable — over ssh, or from a zoo/tmux launch window.) The
-# helper is installed by `setup` on hosts and baked into every primate image;
-# this script also self-heals the `credHelpers` entry if it is missing.
+# AUTH is a FILE, not `docker login` into the shared ~/.docker and not a keychain:
+# `primate-pull --login` (secret on stdin; user $CODEMONKEYS_REGISTRY_USER, default
+# robot$primate-pull — pull on the codemonkeys project only) writes
+# ~/.config/code-monkeys/docker/config.json (0600, no credsStore), and every pull
+# runs with DOCKER_CONFIG pointed there. That works over ssh and from a zoo/tmux
+# launch window on a Mac, where Docker Desktop's keychain store fails (-25308) —
+# the reason the old ECR path used a credential helper. The registry's CA must be
+# trusted by the docker DAEMON (a host: /etc/docker/certs.d/<registry>/ca.crt; a
+# Mac: the forge CA in the System keychain, then restart Docker Desktop).
 #
 # Env:
-#   CODEMONKEYS_ECR   override the registry
-#   AWS_PROFILE       forwarded to the helper; falls back to the only profile
-#                     when there is exactly one and no [default]
+#   CODEMONKEYS_REGISTRY        the registry (else registry.conf)
+#   CODEMONKEYS_CONF            registry.conf's path
+#   CODEMONKEYS_DOCKER_CONFIG   the credential dir (default ~/.config/code-monkeys/docker)
+#   CODEMONKEYS_REGISTRY_USER   --login's user (default robot$primate-pull)
 #
 
 set -uo pipefail
 
-REG="${CODEMONKEYS_ECR:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
-NS="codemonkeys"
 ME="primate-pull"
+NS="codemonkeys"
+# the lib sits in ../primates beside this script's REAL path (bin/ is symlinked into ~/.local/bin one file at a time)
+_self="$0"
+while [ -L "$_self" ]; do
+  _l="$(readlink "$_self")"; case "$_l" in /*) _self="$_l" ;; *) _self="$(dirname "$_self")/$_l" ;; esac
+done
+# shellcheck source=../primates/registry-lib.sh
+. "$(cd "$(dirname "$_self")" && pwd)/../primates/registry-lib.sh" || { echo "${ME}: registry-lib.sh not found" >&2; exit 1; }
 
 if [[ "$#" -lt 1 ]]; then
-  echo "Usage: ${ME} <image> [image...]" >&2
+  echo "Usage: ${ME} <image> [image...] | --login | --registry" >&2
   exit 2
 fi
+DCFG="$(cm_docker_config)"
+case "$1" in
+  --registry) REG="$(cm_registry "$ME")" || exit 2; printf '%s\n' "$REG"; exit 0 ;;
+  --login)    REG="$(cm_registry "$ME")" || exit 2; cm_write_auth "$REG" "${CODEMONKEYS_REGISTRY_USER:-robot\$primate-pull}"; exit $? ;;
+  -*)         echo "${ME}: unknown option $1" >&2; exit 2 ;;
+esac
 
 # ------------------------------------------------------------------ docker ---
 
@@ -62,75 +75,16 @@ _docker() {
     fi
   fi
   if [[ "$DOCKER_CMD" == "sudo" ]]; then
-    # sudo resets the environment, but the ECR credential helper (spawned by the docker CLI) needs
-    # the caller's HOME to find ~/.aws, AWS_PROFILE, and PATH to find docker-credential-ecr-login.
-    local fwd=(HOME="$HOME" PATH="$PATH")
-    [[ -n "${AWS_PROFILE:-}" ]] && fwd+=("AWS_PROFILE=$AWS_PROFILE")
-    [[ -n "${AWS_REGION:-}" ]] && fwd+=("AWS_REGION=$AWS_REGION")
-    sudo -n env "${fwd[@]}" docker "$@"
+    # sudo resets the environment: carry DOCKER_CONFIG (the pull credential) and PATH across
+    sudo -n env HOME="$HOME" PATH="$PATH" ${DOCKER_CONFIG:+DOCKER_CONFIG="$DOCKER_CONFIG"} docker "$@"
   else
     docker "$@"
   fi
 }
 
-# --------------------------------------------------------------- aws creds ---
-
-# Profiles present in ~/.aws (config writes "[profile x]", credentials "[x]").
-# config's "[sso-session x]" / "[services x]" sections are deliberately skipped.
-_aws_profiles() {
-  { sed -nE 's/^\[profile ([^]]+)\][[:space:]]*$/\1/p; s/^\[(default)\][[:space:]]*$/\1/p' \
-      "$HOME/.aws/config"
-    sed -nE 's/^\[([^][:space:]]+)\][[:space:]]*$/\1/p' "$HOME/.aws/credentials"
-  } 2>/dev/null | sort -u
-}
-
-# The credential helper resolves creds through the standard AWS chain. With no AWS_PROFILE it uses
-# 'default', which does not exist on a machine whose only profile is named — so export the sole
-# profile, as the old login path did, and the helper inherits it from this script's environment.
-_pick_profile() {
-  local only
-  if [[ -n "${AWS_PROFILE:-}" ]] || _aws_profiles | grep -qx default; then
-    return 0
-  fi
-  only="$(_aws_profiles)"
-  if [[ -n "$only" && "$(printf '%s\n' "$only" | wc -l)" -eq 1 ]]; then
-    export AWS_PROFILE="$only"
-    echo "${ME}: no 'default' AWS profile; using the only one present: ${AWS_PROFILE}" >&2
-  fi
-}
-
-# ---------------------------------------------------------- credential helper ---
-
-# docker-credential-ecr-login must be on PATH (installed by setup / baked into every image); we
-# cannot mint one mid-pull. The `credHelpers` entry CAN be added on the fly — it is idempotent and
-# harmless — so a host configured before this change never silently falls back to the OS credential
-# store (which is what produced the keychain failures). DOCKER_CONFIG (or ~/.docker) is where the
-# docker CLI reads it; the same file the sudo path uses, since we forward HOME.
-_ensure_credhelper() {
-  if ! command -v docker-credential-ecr-login >/dev/null 2>&1; then
-    echo "${ME}: docker-credential-ecr-login not found on PATH — it authenticates ECR pulls from" >&2
-    echo "  ~/.aws. Install it by running the repo's ./setup (apt 'amazon-ecr-credential-helper' on" >&2
-    echo "  Linux; built into every primate image). Then re-run." >&2
-    return 1
-  fi
-  command -v jq >/dev/null 2>&1 || return 0   # cannot verify/repair config without jq; let the pull try
-  local cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json" tmp
-  mkdir -p "$(dirname "$cfg")"
-  [[ -s "$cfg" ]] || echo '{}' > "$cfg"
-  if [[ "$(jq -r --arg reg "$REG" '.credHelpers[$reg] // ""' "$cfg" 2>/dev/null)" != "ecr-login" ]]; then
-    tmp="$(mktemp)"
-    if jq --arg reg "$REG" '.credHelpers = ((.credHelpers // {}) + {($reg):"ecr-login"})' \
-          "$cfg" > "$tmp" 2>/dev/null; then
-      mv "$tmp" "$cfg"
-    else
-      rm -f "$tmp"
-    fi
-  fi
-}
-
 # -------------------------------------------------------------------- main ---
 
-# Nothing to do at all? Then never touch AWS, the network, or the daemon.
+# Nothing to do at all? Then never touch the registry, the network, or the daemon.
 WANTED=()
 for img in "$@"; do
   if ! _docker image inspect "${img}:latest" >/dev/null 2>&1; then
@@ -141,20 +95,24 @@ if [[ "${#WANTED[@]}" -eq 0 ]]; then
   exit 0
 fi
 
-echo "${ME}: pulling from ECR: ${WANTED[*]}" >&2
-_pick_profile
-_ensure_credhelper || exit 1
+# only now is a registry needed: a machine whose images are all local never needs registry.conf
+REG="$(cm_registry "$ME")" || exit 2
+echo "${ME}: pulling from ${REG}: ${WANTED[*]}" >&2
+if [[ ! -s "$DCFG/config.json" ]]; then
+  echo "${ME}: no pull credential in $DCFG/config.json — store it once with" >&2
+  echo "  <the primate-pull robot's secret> | ${ME} --login" >&2
+  exit 1
+fi
 
 rc=0
 for img in "${WANTED[@]}"; do
   ref="${REG}/${NS}/${img}:latest"
-  if _docker pull -q "$ref" >/dev/null; then
+  if DOCKER_CONFIG="$DCFG" _docker pull -q "$ref" >/dev/null; then
     _docker tag "$ref" "${img}:latest"
   else
-    echo "${ME}: ${img} could not be pulled from ECR (${ref})." >&2
-    echo "  Auth is via docker-credential-ecr-login reading ~/.aws. Check your creds resolve" >&2
-    echo "  (AWS_PROFILE=${AWS_PROFILE:-<unset>}; profiles: $(_aws_profiles | tr '\n' ' ')), or" >&2
-    echo "  build locally: cd primates && make ${img}.build" >&2
+    echo "${ME}: ${img} could not be pulled (${ref})." >&2
+    echo "  Check: the credential (${ME} --login), the daemon's trust of ${REG}'s CA, or build" >&2
+    echo "  locally: cd primates && make ${img}.build" >&2
     rc=1
   fi
 done

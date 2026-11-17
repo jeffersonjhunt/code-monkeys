@@ -25,12 +25,12 @@ make clean                  # Remove all built images
 
 All builds use `docker buildx build`. `cuda-llama-cpp` and `cuda-vllm` are multi-stage (`--target`).
 
-## Publishing to ECR (`codemonkeys/*`)
+## Publishing to the fleet registry (`codemonkeys/*`)
 
-The family is published to the private registry
-`521147433280.dkr.ecr.us-east-1.amazonaws.com/codemonkeys/*`, **multi-arch (amd64 + arm64)** so any fleet
-host pulls its native arch. The `make` targets above only build **local `<name>:latest` for the host arch**;
-two helper scripts publish to ECR.
+The family is published to the fleet's private registry, `<registry>/codemonkeys/*` (a self-hosted Harbor since
+g.deceiver forge F4; AWS ECR is retired and refused). The registry comes from `registry.conf` (`registry-lib.sh`: this
+public repo names no host). Images are **multi-arch (amd64 + arm64)** so any fleet host pulls its native arch. The
+`make` targets above only build **local `<name>:latest` for the host arch**; two helper scripts publish.
 
 **Why native-per-arch (not `buildx --platform`):** the CPU chain `FROM`s local tags
 (`codemonkey → miniforge3 → claude`…), so a single emulated multi-platform build is unreliable. Instead
@@ -38,25 +38,24 @@ build the chain **natively on one x86_64 host and one aarch64 host**, push per-a
 manifest.
 
 ```bash
-# 1. On an x86_64 push host (minerva) AND an aarch64 push host (hutch):
-./build-push.sh                            # CPU chain, dependency order -> <name>:latest-<amd64|arm64>
-./build-push.sh cuda-comfy cuda-llama-cpp  # GPU images — run on a GPU host of each arch (stimpy amd64, hutch arm64)
+# 1. On an x86_64 push host AND an aarch64 push host, with the push robot for this run:
+CM_PASSWORD_STDIN=1 ./build-push.sh < <the push robot's secret file>          # CPU chain -> <name>:latest-<arch>
+CM_PASSWORD_STDIN=1 ./build-push.sh cuda-comfy cuda-llama-cpp < <secret file>  # GPU images, on a GPU host of each arch
 
-# 2. Once, on any host with ECR creds (assembles the multi-arch :latest manifests):
-./manifest-push.sh
+# 2. Once (assembles the multi-arch :latest manifests):
+CM_PASSWORD_STDIN=1 ./manifest-push.sh < <secret file>
 ```
+(From g.deceiver's dev box the secret is `harbor-cred.sh build-push -- ...`'s `$GD_REGISTRY_PASSWORD_FILE`, which both
+scripts also read directly; it is never stored on a build host.)
 
 - **`build-push.sh`** derives the arch from `uname -m`, then `make <name>.build FRESH=false` → tag → push
-  `<name>:latest-<arch>` for each primate. **No `docker login`** — ECR auth is the
-  `docker-credential-ecr-login` helper (installed by `../setup`, via a `credHelpers` entry for the
-  registry), so `docker push` authenticates straight from `~/.aws`.
+  `<name>:latest-<arch>` for each primate. The push robot is logged in to a **throwaway `DOCKER_CONFIG`** used by the
+  pushes only; no credential = exit 8 before anything is built.
 - **`manifest-push.sh`** combines the per-arch tags into a multi-arch `:latest` via **`docker buildx
   imagetools create`** (plain `docker manifest create` fails — `docker push` wraps each build in a
   single-entry manifest list it can't nest). It includes only the arches present, so `spark-bench` (amd64
   only) still gets a `:latest`.
-- **Creds:** the default `~/.aws` profile is the scoped `fleet-ecr-push` identity, which covers
-  `codemonkeys/*`. **Creating a new repo** needs admin — use the `[jhunt]` fallback profile once
-  (`aws ecr create-repository --profile jhunt --repository-name codemonkeys/<name>`).
+- **A new repository** needs nothing: the registry creates it on the first push inside the `codemonkeys` project.
 - **Exceptions:** `spark-bench` is **amd64-only** (SWE-Bench testbeds are x86); `samba` is **amd64-only
   today** (only minerva serves files — `arm64` builds fine if an aarch64 host ever needs it); `cuda-base`
   ships `:runtime` + `:devel`, no `:latest`. **`cuda-vllm` is not in `manifest-push.sh`'s default
