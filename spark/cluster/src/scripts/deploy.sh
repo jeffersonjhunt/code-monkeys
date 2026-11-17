@@ -25,13 +25,17 @@ REMOTE_USER="$SSH_USER"
 REMOTE_BASE="/home/$REMOTE_USER/spark-deploy"
 COMPOSE_DIR="$(cd "$script_dir/../compose" && pwd)"
 
-# The vllm stack pulls the cuda-vllm primate from private ECR and gets its .env (HF_TOKEN + serving
+# The vllm stack pulls the cuda-vllm primate from the fleet registry (primates/registry-lib.sh: registry.conf; the
+# fleet's Harbor since g.deceiver forge F4 -- ECR is retired and refused) and gets its .env (HF_TOKEN + serving
 # config) by decrypting hemlighet on the target — replacing the retired ship-image.sh (host->host
 # docker save|ssh|load) and the tar'd plaintext .env. Matches g.deceiver's deploy path. The target host
-# needs ~/.aws, an age key (~/.config/sops/age/keys.txt), and a hemlighet clone in
+# needs primate-pull's credential (~/.config/code-monkeys/docker, `primate-pull --login`), an age key
+# (~/.config/sops/age/keys.txt), and a hemlighet clone in
 # ${XDG_DATA_HOME:-~/.local/share}/hemlighet (a legacy ~/hemlighet is still honoured).
-ECR_REGISTRY="${ECR_REGISTRY:-521147433280.dkr.ecr.us-east-1.amazonaws.com}"
-NYCKEL="$ECR_REGISTRY/codemonkeys/nyckel:latest"
+# shellcheck source=../../../../primates/registry-lib.sh
+. "$script_dir/../../../../primates/registry-lib.sh"
+REG="$(cm_registry spark-deploy)" || exit 2
+NYCKEL="$REG/codemonkeys/nyckel:latest"
 
 # Generate haproxy.cfg from haproxy.cfg.template by expanding $REPLICAS into
 # `server <h> <h>:$VLLM_PORT check` lines on the # __REPLICAS__ marker, and
@@ -89,16 +93,13 @@ deploy_stack() {
   # --force-recreate so bind-mounted config / .env changes are picked up. For vLLM the container
   # restarts and re-loads the model from disk cache (~5 min); for HAProxy/LiteLLM it's near-instant.
   if [[ "$stack" == "vllm" ]]; then
-    echo ">> [$host] ECR login + decrypt .env (hemlighet) + pull + up ($stack)"
-    ssh "$REMOTE_USER@$host" "REG='$ECR_REGISTRY' NYCKEL='$NYCKEL' BASE='$REMOTE_BASE/$stack' bash -s" <<'RSH'
+    echo ">> [$host] registry credential + decrypt .env (hemlighet) + pull + up ($stack)"
+    ssh "$REMOTE_USER@$host" "REG='$REG' NYCKEL='$NYCKEL' BASE='$REMOTE_BASE/$stack' bash -s" <<'RSH'
 set -euo pipefail
 cd "$BASE"
-# ECR login (containerized aws-cli; verify token non-empty — a cold aws-cli pull once yielded an
-# empty token that "logged in" with no creds, then image pulls hit "no basic auth credentials").
-docker image inspect amazon/aws-cli >/dev/null 2>&1 || docker pull -q amazon/aws-cli >/dev/null
-TOK="$(docker run --rm -v "$HOME/.aws:/root/.aws:ro" amazon/aws-cli ecr get-login-password --region us-east-1)"
-[ -n "$TOK" ] || { echo "deploy: empty ECR token (aws creds on $(hostname)?)" >&2; exit 8; }
-echo "$TOK" | docker login --username AWS --password-stdin "$REG" >/dev/null
+# the pull credential is primate-pull's FILE (no docker login, no keychain): every pull below uses it
+export DOCKER_CONFIG="$HOME/.config/code-monkeys/docker"
+[ -s "$DOCKER_CONFIG/config.json" ] || { echo "deploy: no pull credential on $(hostname): run primate-pull --login there" >&2; exit 8; }
 # secrets: decrypt the vllm env (HF_TOKEN + config) from hemlighet -> .env
 # Clone location on the target: VAULT_HEMLIGHET, else the XDG data dir, else a
 # legacy ~/hemlighet — so hosts that predate the move keep deploying untouched.
@@ -114,9 +115,10 @@ docker run --rm -v "$HOME/.config/sops/age:/age:ro" -v "$HL:/hl:ro" \
   sops -d --input-type binary --output-type binary /hl/code-monkeys/cluster-vllm.env > .env.tmp
 mv .env.tmp .env && chmod 600 .env
 echo ">> decrypted .env from hemlighet ($HL)"
+# the image: .env's VLLM_IMAGE if it sets one, else the cuda-vllm primate in the configured registry
+grep -q '^VLLM_IMAGE=' .env || export VLLM_IMAGE="$REG/codemonkeys/cuda-vllm:latest"
 docker compose pull
 docker compose up -d --force-recreate --remove-orphans
-docker logout "$REG" >/dev/null 2>&1 || true
 RSH
   else
     echo ">> [$host] docker compose up -d --force-recreate ($stack)"

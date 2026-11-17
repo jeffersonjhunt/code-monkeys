@@ -19,10 +19,9 @@ All compose variables have sensible defaults; override by uncommenting lines in 
 
 - `VLLM_MAX_MODEL_LEN` — context window. Lower frees memory for KV cache.
 - `VLLM_GPU_MEM_UTIL` — fraction of GPU memory vLLM may use. Compose default 0.90 (the maintainer's `.env` sets 0.75).
-- `VLLM_IMAGE` — defaults to the private-ECR `cuda-vllm` ref
-  (`521147433280.dkr.ecr.us-east-1.amazonaws.com/codemonkeys/cuda-vllm:latest` — native
+- `VLLM_IMAGE` — deploy.sh defaults it to `<the configured registry>/codemonkeys/cuda-vllm:latest` — native
   sm_89/120/121 cutlass; built from `primates/cuda-vllm.dockerfile` in the repo root and
-  **pushed to ECR**, from where `deploy.sh` pulls it. The old host-to-host
+  **pushed to the fleet registry** (AWS ECR is retired), from where `deploy.sh` pulls it with primate-pull's credential. The old host-to-host
   `docker save | zstd | ssh | docker load` path — `ship-image.sh` — was retired 2026-07-04.)
   Override to a local tag, or to upstream `vllm/vllm-openai:vX.Y.Z-cu129-ubuntu2404` if needed.
 - `MODEL_DIR` — host path mounted read-only at `/models`. Compose default `/srv/models`.

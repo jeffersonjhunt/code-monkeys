@@ -4,12 +4,12 @@
 
 services:
   vllm:
-    # Default pulls the cuda-vllm primate from private ECR (native sm_89/120/121
-    # cutlass — see primates/cuda-vllm.dockerfile). deploy.sh ECR-logs-in + pulls.
+    # deploy.sh sets VLLM_IMAGE to the cuda-vllm primate in the fleet registry (registry.conf; native
+    # sm_89/120/121 cutlass — see primates/cuda-vllm.dockerfile) and pulls with primate-pull's credential.
     # Override VLLM_IMAGE in .env to a local tag or the upstream fallback
     # vllm/vllm-openai:v0.20.1-cu129-ubuntu2404 (AWQ paths work on upstream;
     # NVFP4 / FP8 dense crash on sm_120).
-    image: ${VLLM_IMAGE:-521147433280.dkr.ecr.us-east-1.amazonaws.com/codemonkeys/cuda-vllm:latest}
+    image: ${VLLM_IMAGE:?VLLM_IMAGE (deploy.sh sets it from the configured registry; a local tag also works)}
     container_name: vllm
     restart: unless-stopped
     ipc: host
